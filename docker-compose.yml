@@ -1,0 +1,10 @@
+services:
+  core:
+    build: ./core
+    command: uv run python manage.py runserver 0.0.0.0:8000
+    ports:
+      - "8000:8000"
+    env_file: ./core/.env
+    volumes:
+      - ./core:/app
+      - /app/.venv

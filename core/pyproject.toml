@@ -1,0 +1,20 @@
+[project]
+name = "openmagpie-core"
+version = "0.1.0"
+description = "OpenMagpie core — open-source semantic listener"
+requires-python = ">=3.13"
+dependencies = [
+    "django>=6.0.5",
+    "httpx>=0.28",
+    "pydantic>=2.5",
+    "python-dotenv>=1.1",
+    "ulid>=1.1",
+]
+
+[dependency-groups]
+dev = [
+    "django-stubs>=5.1",
+    "ruff>=0.11",
+    "ty>=0.0.1",
+    "watchfiles>=1.0",
+]

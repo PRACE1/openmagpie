@@ -1,0 +1,21 @@
+"""Constants for the accounts app."""
+
+PROFILE_STATUS_PENDING = "pending"
+PROFILE_STATUS_ACCEPTED = "accepted"
+PROFILE_STATUS_ACTIVE = "active"
+PROFILE_STATUS_REVOKED = "revoked"
+
+PROFILE_STATUS_CHOICES = [
+    (PROFILE_STATUS_PENDING, "Pending"),
+    (PROFILE_STATUS_ACCEPTED, "Accepted"),
+    (PROFILE_STATUS_ACTIVE, "Active"),
+    (PROFILE_STATUS_REVOKED, "Revoked"),
+]
+
+PROFILE_ROLE_OWNER = "owner"
+PROFILE_ROLE_USER = "user"
+
+PROFILE_ROLE_CHOICES = [
+    (PROFILE_ROLE_OWNER, "Owner"),
+    (PROFILE_ROLE_USER, "User"),
+]
