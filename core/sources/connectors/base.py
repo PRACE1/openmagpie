@@ -24,7 +24,7 @@ class Connector(Protocol):
 
     Each implementation:
       - declares its `kind` (matches `StreamSpec.kind`),
-      - declares its `observations` (Observation subclasses it produces — used
+      - declares its `observations` (Observation subclasses it produces, used
         by `events.registry` to hydrate `Event.data` back to typed Observations),
       - yields typed Observations for a given (stream_spec, listener) pair.
     """

@@ -46,7 +46,7 @@ class Listener(BaseModel):
     last_polled_at = models.DateTimeField(_("last polled at"), null=True, blank=True)
     next_poll_at = models.DateTimeField(_("next poll at"), null=True, blank=True)
 
-    # Delivery state. Allowed values: Listener.DeliveryMode.* — callers should
+    # Delivery state. Allowed values: Listener.DeliveryMode.*, callers should
     # run `listeners.services.validate_delivery_mode` before save. The Django
     # field itself does not enforce choices (would force a migration for every
     # enum change).

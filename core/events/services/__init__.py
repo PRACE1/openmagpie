@@ -1,4 +1,4 @@
-"""events.services — public surface.
+"""events.services, public surface.
 
 from events.services import EventService
 svc = EventService(account_id=X)

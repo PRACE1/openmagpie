@@ -8,3 +8,45 @@ services:
     volumes:
       - ./core:/app
       - /app/.venv
+    # Probes /healthz via stdlib urllib (no wget/curl in the image).
+    # urlopen raises HTTPError on 503 so a degraded DB/cache fails the
+    # check just as cleanly as the server being down.
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=2)"
+      interval: 5s
+      timeout: 3s
+      retries: 6
+      start_period: 30s
+
+  web:
+    build: ./web
+    working_dir: /web
+    # pnpm itself is baked into the image (see web/Dockerfile). We
+    # still run install at start because the node_modules volume mount
+    # would hide anything baked in; `pnpm install` is a no-op when the
+    # lockfile matches what's already in the volume.
+    command: sh -c "pnpm install --frozen-lockfile=false && pnpm dev"
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8000
+      NEXT_PUBLIC_API_VERSION: v1
+    ports:
+      - "3001:3001"
+    volumes:
+      - ./web:/web
+      - magpie_node_modules:/web/node_modules
+      - magpie_app_node_modules:/web/apps/app/node_modules
+    depends_on:
+      # service_healthy (not the default service_started) means web only
+      # starts once core's /healthz is green. Without this, web boots
+      # while Django is still resolving uv venv + running migrations and
+      # the first SSR fetches eat connection-refused.
+      core:
+        condition: service_healthy
+
+volumes:
+  magpie_node_modules:
+  magpie_app_node_modules:

@@ -50,3 +50,14 @@ celerybeat.pid
 .ruff_cache/
 .pytest_cache/
 .mypy_cache/
+
+# Web (Next.js / pnpm)
+node_modules/
+.next/
+.turbo/
+.pnpm-store/
+*.tsbuildinfo
+
+# CLI build artifacts
+cli/dist/
+cli/.venv/

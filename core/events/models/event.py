@@ -8,7 +8,7 @@ class Event(BaseModel):
 
     Each Event is owned by exactly one Listener (the one whose engine judged the
     observation relevant). Two listeners hitting the same external observation
-    produce two Event rows — each can have its own delivery state.
+    produce two Event rows, each can have its own delivery state.
     """
 
     user_id = models.CharField(_("user id"), max_length=26)

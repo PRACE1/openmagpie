@@ -1,0 +1,54 @@
+/* OpenMagpie shared Tailwind theme + monorepo source globs.
+ *
+ * Brand palette (locked):
+ *   --color-ink    #111111
+ *   --color-paper  #F7F7F5
+ *   --color-signal #00B7C3
+ *   --color-glow   #7DF9FF
+ *
+ * This file is imported from each app's `globals.css` via a relative path.
+ * Update the brand palette / source globs here once; every app picks it up.
+ */
+
+/* Monorepo source globs — Tailwind v4 does NOT auto-walk into sibling
+ * workspace packages, so we tell it where to look. The wildcard in
+ * `packages/*` and `apps/*` means new packages and new apps are picked up
+ * automatically; no edit needed when adding `packages/foo` or `apps/bar`.
+ * Paths are relative to THIS file (web/packages/tailwind-config/theme.css). */
+@source "../*/src/**/*.{ts,tsx,js,jsx}";
+@source "../../apps/*/src/**/*.{ts,tsx,js,jsx}";
+
+@theme {
+  /* Brand — exact values from the spec */
+  --color-ink: #111111;
+  --color-paper: #f7f7f5;
+  --color-signal: #00b7c3;
+  --color-glow: #7df9ff;
+
+  /* Signal scale (derived hue ramp for hover / focus / disabled). */
+  --color-signal-50: #e7f9fb;
+  --color-signal-100: #c4f0f4;
+  --color-signal-200: #9ce5ec;
+  --color-signal-300: #5fd2dc;
+  --color-signal-400: #2bc1cc;
+  --color-signal-500: #00b7c3;
+  --color-signal-600: #009ba6;
+  --color-signal-700: #00777f;
+  --color-signal-800: #005e64;
+  --color-signal-900: #00474c;
+
+  /* Neutrals derived from ink/paper for surfaces, borders, muted text. */
+  --color-paper-soft: #f3f1ea;
+  --color-paper-deep: #ecebe4;
+  --color-ink-soft: #1c2024;
+  --color-ink-muted: #4b5158;
+  --color-ink-subtle: #6e747b;
+
+  --font-sans: var(--font-poppins), system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, SFMono-Regular, monospace;
+
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 20px;
+}

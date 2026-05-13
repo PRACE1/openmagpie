@@ -12,7 +12,7 @@ class JudgmentJSON(BaseModel):
     Doubles as the structured-output schema we hand to the model (via e.g.
     Ollama's `format` field, OpenAI's `response_format`, etc.) and as the
     parser on the way back. Engine implementations are free to use it as-is
-    or define their own — but the shape they map into `JudgmentResult` is
+    or define their own, but the shape they map into `JudgmentResult` is
     this one.
     """
 

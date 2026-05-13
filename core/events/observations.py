@@ -1,4 +1,4 @@
-"""Base Observation — the typed in-memory event the engine consumes.
+"""Base Observation, the typed in-memory event the engine consumes.
 
 Concrete subclasses live next to their connector (e.g. `sources/connectors/reddit/observations.py`).
 On a hit, the full `observation.model_dump()` is what gets stored in `Event.data`.

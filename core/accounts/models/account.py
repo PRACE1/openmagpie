@@ -11,7 +11,7 @@ from ..constants import (
 
 
 class Account(BaseModel):
-    """A tenant — every domain row is scoped to one Account via account_id."""
+    """A tenant, every domain row is scoped to one Account via account_id."""
 
     name = models.CharField(
         _("name"), max_length=255, help_text=_("Name of the account")
@@ -33,7 +33,7 @@ class Account(BaseModel):
 
 
 class UserProfile(BaseModel):
-    """Joins a User to an Account with role/status. Uses char pointers — no FKs."""
+    """Joins a User to an Account with role/status. Uses char pointers, no FKs."""
 
     user_id = models.CharField(
         _("user id"),

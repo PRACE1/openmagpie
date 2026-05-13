@@ -14,12 +14,12 @@ from typing import Any
 from events.observations import Observation
 from notifications.notifiers.base import HitBatch
 
-# Fields stripped from every payload — they're internal scoping, not for downstream consumers.
+# Fields stripped from every payload, they're internal scoping, not for downstream consumers.
 _EXCLUDED_FIELDS: frozenset[str] = frozenset({"user_id", "account_id"})
 
 
 def _stream_key(obs: Observation) -> str:
-    """The grouping key for hits — `<source>:<slug>` if the observation has a slug, else just source.
+    """The grouping key for hits, `<source>:<slug>` if the observation has a slug, else just source.
     Slug knowledge lives on the Observation subclass (see `Observation.stream_slug`)."""
     slug = obs.stream_slug()
     return f"{obs.source}:{slug}" if slug else obs.source

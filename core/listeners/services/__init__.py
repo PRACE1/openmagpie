@@ -1,4 +1,4 @@
-"""listeners.services — public surface.
+"""listeners.services, public surface.
 
 from listeners.services import ListenerService, poll_listener
 

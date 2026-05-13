@@ -16,7 +16,7 @@ class NewRedditPostObservation(Observation):
     EVENT_KIND: ClassVar[str] = "new_post"
 
     # Reddit-specific fields. `author` lives here (not on Observation base) because
-    # "who emitted this" is a source-shaped concept — Slack has `user`, scheduled
+    # "who emitted this" is a source-shaped concept, Slack has `user`, scheduled
     # jobs have nothing, etc.
     author: str = ""
     permalink: str

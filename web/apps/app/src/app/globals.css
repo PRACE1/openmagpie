@@ -1,0 +1,47 @@
+@import "tailwindcss";
+
+/* Pull in the shared brand theme + monorepo source globs. Single source of
+ * truth for both color tokens AND which workspace dirs Tailwind scans.
+ * Relative path to dodge package-resolution edge cases in PostCSS. */
+@import "../../../../packages/tailwind-config/theme.css";
+
+/* Force Tailwind v4's `dark:` variant to use the `class="dark"` strategy
+ * (next-themes adds the class to <html>) instead of `prefers-color-scheme`. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* Tailwind v4's preflight resets `cursor: default` on <button>; restore the
+ * intuitive pointer for every interactive element so we don't have to sprinkle
+ * `cursor-pointer` everywhere. Disabled state stays default. Labels for
+ * checkboxes / radios should use the wrapping pattern (<label><input>text</label>)
+ * so the whole row gets the pointer cursor from the label itself. */
+@layer base {
+  button:not(:disabled),
+  [role="button"]:not([aria-disabled="true"]),
+  input[type="checkbox"]:not(:disabled),
+  input[type="radio"]:not(:disabled),
+  summary {
+    cursor: pointer;
+  }
+}
+
+html {
+  font-family: var(--font-sans);
+  background: var(--color-paper);
+  color: var(--color-ink);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+html.dark {
+  background: var(--color-ink);
+  color: var(--color-paper);
+}
+
+body {
+  min-height: 100dvh;
+}
+
+::selection {
+  background: var(--color-signal);
+  color: var(--color-ink);
+}

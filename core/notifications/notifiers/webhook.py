@@ -1,4 +1,4 @@
-"""WebhookNotifier — POSTs a JSON payload to a configured URL.
+"""WebhookNotifier, POSTs a JSON payload to a configured URL.
 
 Two-layer SSRF protection:
   1. Save-time: `WebhookNotifierSpec` validates the URL scheme (http/https).
