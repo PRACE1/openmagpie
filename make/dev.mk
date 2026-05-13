@@ -1,4 +1,4 @@
-.PHONY: up build down logs logs-core dev-exec dev-manage dev-test dev-makemigrations dev-dbshell dev-migrate dev-lint dev-lint-fix dev-types dev-check
+.PHONY: up build down logs logs-core logs-web dev-exec dev-manage dev-test dev-makemigrations dev-dbshell dev-migrate dev-bootstrap dev-lint dev-lint-fix dev-types dev-check dev-web dev-web-shell dev-cli-sync dev-cli
 
 up: ## Start local Docker dev environment
 	docker compose up -d
@@ -15,6 +15,9 @@ logs: ## Tail all Docker container logs
 logs-core: ## Tail Django logs
 	docker compose logs -f core
 
+logs-web: ## Tail Next.js web logs
+	docker compose logs -f web
+
 dev-exec: ## Run a command in a container (e.g. make dev-exec SVC=core CMD="uv run ruff check .")
 	docker compose exec $(SVC) $(CMD)
 
@@ -30,9 +33,27 @@ dev-makemigrations: ## Generate Django migration files (e.g. make dev-makemigrat
 dev-dbshell: ## Open Django's dbshell (SQLite)
 	$(MAKE) dev-manage CMD=dbshell
 
-dev-migrate: ## Run Django database migrations + ensure cache table exists
+dev-migrate: ## Run Django database migrations + ensure cache table exists + bootstrap OAuth Application
 	$(MAKE) dev-manage CMD=migrate
 	$(MAKE) dev-manage CMD=createcachetable
+	$(MAKE) dev-manage CMD=bootstrap_oauth_app
+
+dev-bootstrap: ## Alias for dev-migrate (first-run setup)
+	$(MAKE) dev-migrate
+
+dev-web: ## Start (or restart) just the Next.js dev container and tail its logs
+	docker compose up -d web
+	docker compose logs -f web
+
+dev-web-shell: ## Open a shell in the web container
+	docker compose exec web sh
+
+dev-cli-sync: ## Sync the magpie CLI's uv-managed env (cli/.venv)
+	cd cli && uv sync
+	@echo "Run: cd cli && uv run magpie auth login"
+
+dev-cli: ## Run the magpie CLI via uv (e.g. make dev-cli ARGS="auth login")
+	cd cli && uv run magpie $(ARGS)
 
 dev-lint: ## Run linters (ruff + whitespace/final-newline on tracked text files)
 	$(MAKE) dev-exec SVC=core CMD="uv run ruff check ."

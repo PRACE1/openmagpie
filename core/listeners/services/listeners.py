@@ -1,7 +1,7 @@
 """Listener service.
 
 Account-scoped: `ListenerService(account_id=X)` for per-tenant operations.
-Cross-tenant operations live under `ListenerService.Global` — body in
+Cross-tenant operations live under `ListenerService.Global`, body in
 `_listeners_global.py`, attached here as a class attribute so the public
 call shape (`ListenerService.Global.<op>`) is stable regardless of layout.
 """
@@ -33,7 +33,7 @@ class ListenerService:
     def validate_delivery_mode(mode: str) -> None:
         """Raise ValueError if `mode` is not a `Listener.DeliveryMode` value.
 
-        Account-agnostic utility — exposed as a staticmethod so callers don't
+        Account-agnostic utility, exposed as a staticmethod so callers don't
         need to instantiate the service just to validate.
         """
         valid = {m.value for m in Listener.DeliveryMode}

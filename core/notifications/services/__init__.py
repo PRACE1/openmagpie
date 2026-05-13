@@ -1,4 +1,4 @@
-"""notifications.services — public surface.
+"""notifications.services, public surface.
 
 from notifications.services import DeliveryService
 svc = DeliveryService(account_id=X)

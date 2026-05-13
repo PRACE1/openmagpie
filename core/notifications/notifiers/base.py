@@ -1,4 +1,4 @@
-"""Notifier contract — same shape pattern as connectors and engines.
+"""Notifier contract, same shape pattern as connectors and engines.
 
 `HitBatch` is what every notifier receives: a Listener + a list of Observations.
 Instant mode delivers a batch of 1 per hit. Digest mode delivers batch of N

@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/openmagpielogo.png" alt="OpenMagpie" width="220">
+  <img src="assets/magpie-logo-on-transparent.png" alt="OpenMagpie" width="220">
 </p>
 
 <p align="center">
@@ -78,11 +78,24 @@ git clone git@github.com:obris-dev/openmagpie.git
 cd openmagpie
 cp core/.env.example core/.env
 
-make build           # build and start the Django core
-make dev-migrate     # run Django migrations (SQLite)
+make build           # build and start Django + the web app
+make dev-migrate     # run migrations, create cache table, bootstrap the CLI OAuth app
 ```
 
-Then visit http://localhost:8000.
+Then either:
+
+**Browser**: visit http://localhost:3001 — create an account, you'll be signed in.
+
+**CLI**: install + sign in.
+
+```bash
+make dev-cli-sync                       # uv sync into cli/.venv
+make dev-cli ARGS="auth login"          # opens browser device flow
+# Sign in, click Authorize, return to the terminal.
+make dev-cli ARGS="auth status"
+```
+
+Or invoke directly: `cd cli && uv run magpie auth login`. Run `uv tool install ./cli` to put `magpie` on your `PATH` globally.
 
 Useful targets (run `make help` for the full list):
 
@@ -102,14 +115,17 @@ make dev-check       # lint + types + tests
 
 ```
 core/
-  common/          BaseModel (ULID PK + timestamps), ULIDField
-  accounts/        User (email login), Account, UserProfile
+  common/          BaseModel (ULID PK + timestamps), ULIDField, /healthz
+  accounts/        User / Account / UserProfile + services
+  auth_api/        signup / login / logout / me + tokens/* + device-flow handshake (DRF)
   listeners/       Listener model + Pydantic config + polling orchestrator
   events/          Event model + Observation hierarchy + registry
   sources/         Connectors (Reddit subreddit, ...) + observation classes
   engine/          Engine Protocol + OllamaEngine + registry
   notifications/   Notifier Protocol (Webhook, Log) + instant/digest delivery
-  conf/            settings (base/dev), urls, wsgi
+  conf/            settings (base/local), urls, wsgi
+web/               pnpm workspace: apps/app (Next.js) + packages/{ui,api-utils,auth,tailwind-config}
+cli/               magpie CLI (Typer + httpx + Pydantic)
 make/              Per-concern Makefile targets
 scripts/           Helper scripts (whitespace check, make-help)
 ```

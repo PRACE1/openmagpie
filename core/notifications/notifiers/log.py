@@ -1,4 +1,4 @@
-"""LogNotifier — writes the batch to stdout. Useful for verification before wiring real webhooks."""
+"""LogNotifier, writes the batch to stdout. Useful for verification before wiring real webhooks."""
 
 import json
 import sys

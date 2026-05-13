@@ -39,7 +39,7 @@ StreamSpec = Annotated[
 
 
 class StreamWatch(BaseModel):
-    """A stream this Listener is watching — identity + per-stream poll state."""
+    """A stream this Listener is watching, identity + per-stream poll state."""
 
     spec: StreamSpec
     last_event_at: datetime | None = None  # high-water mark for incremental polling
@@ -48,7 +48,7 @@ class StreamWatch(BaseModel):
 class EngineSpec(BaseModel):
     """Which engine + model this listener uses to judge relevance.
 
-    `kind` must be registered in `engine.registry`. `model` is informational —
+    `kind` must be registered in `engine.registry`. `model` is informational,
     the actual model is currently bound at registry-init time from settings
     (e.g. `OLLAMA_MODEL`). Wire `model` through to the engine call if/when
     per-listener model override becomes a real need.
@@ -59,7 +59,7 @@ class EngineSpec(BaseModel):
 
 
 def _default_engine_spec() -> EngineSpec:
-    """Build the fallback engine spec from settings — avoids hardcoding an
+    """Build the fallback engine spec from settings, avoids hardcoding an
     engine kind in the listeners app."""
     return EngineSpec(kind=settings.ENGINE_DEFAULT_KIND)
 
@@ -73,7 +73,7 @@ class WebhookNotifierSpec(BaseModel):
     Security notes (single-tenant self-host assumption):
       - URL scheme is validated to http/https here. Runtime delivery additionally
         enforces `settings.WEBHOOK_REQUIRE_HTTPS` and `settings.WEBHOOK_BLOCK_PRIVATE_IPS`
-        — see notifications/notifiers/webhook.py.
+       , see notifications/notifiers/webhook.py.
       - `headers` is forwarded verbatim. Fine when the operator controls the listener
         config. If this is reused in a multi-tenant deployment, treat headers as
         untrusted input (allowlist or strip Authorization/Cookie, etc.).
@@ -147,7 +147,7 @@ class SemanticListenerConfig(BaseModel):
     refined_description: str = ""
     engine: EngineSpec = Field(default_factory=_default_engine_spec)
     # An Observation is a hit when engine.judge(...).score >= hit_threshold.
-    # 0.8 as a Pareto default — most of the value with little noise. Dial down
+    # 0.8 as a Pareto default, most of the value with little noise. Dial down
     # to widen the net (more matches, more LLM-questionable hits), or up to
     # only catch the obvious matches.
     hit_threshold: float = Field(default=0.8, ge=0.0, le=1.0)

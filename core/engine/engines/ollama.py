@@ -20,7 +20,7 @@ class OllamaMessage(BaseModel):
 class OllamaChatResponse(BaseModel):
     """Ollama's /api/chat response shape. We only project the fields we read;
     Ollama emits a lot of others (model, created_at, done, eval_count, ...)
-    that we don't need — extra='ignore' lets them pass through."""
+    that we don't need, extra='ignore' lets them pass through."""
 
     message: OllamaMessage
 
@@ -30,7 +30,7 @@ class OllamaChatResponse(BaseModel):
 SYSTEM_PROMPT = """You are a precise relevance scorer. Given a user's stated interest and an event observed from a stream (Reddit, GitHub, etc.), score how strongly the event matches that interest.
 
 Respond with a JSON object matching this schema:
-- score: float between 0.0 and 1.0 — relevance to the user's interest (0.0 = not relevant at all, 1.0 = an obvious, direct match)
+- score: float between 0.0 and 1.0, relevance to the user's interest (0.0 = not relevant at all, 1.0 = an obvious, direct match)
 - reason: short string under 200 characters explaining the score"""
 
 USER_PROMPT_TEMPLATE = """User interest:

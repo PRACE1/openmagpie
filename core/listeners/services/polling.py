@@ -1,12 +1,12 @@
 """Polling orchestrator: drives a Listener's attached streams through the engine.
 
-The pipeline is hit-only — Events are persisted only when an engine judges relevant.
+The pipeline is hit-only, Events are persisted only when an engine judges relevant.
 The connector yields typed Observations in memory; the engine reads them; if a hit,
 we persist the Observation as an Event row. Misses are discarded. For instant-mode
 listeners, the notifier fires immediately and Event.delivered_at is set on success.
 
 Each `poll_listener` cycle starts with a stuck-pending retry sweep for instant-mode
-listeners — any Event whose previous delivery attempt failed is re-tried before
+listeners, any Event whose previous delivery attempt failed is re-tried before
 new polling begins. (Digest-mode listeners get the same effect for free since
 digest delivery already re-batches pending Events each cycle.)
 
@@ -16,11 +16,11 @@ a transient Ollama timeout, or a webhook 5xx can't abort the whole listener cycl
 Polling is live-only: cold start (a StreamWatch with `last_event_at=None`)
 yields whatever a single poll cycle returns from the connector, then sets the
 watermark to the newest item seen. Posts older than that moment are out of
-scope — there is no historical backfill. If a Listener needs deep history, that
+scope, there is no historical backfill. If a Listener needs deep history, that
 is a separate feature with its own state model, not something the watermark
 field is asked to carry.
 
-`PollListenerOperation` is a one-shot operation object — build with a Listener and
+`PollListenerOperation` is a one-shot operation object, build with a Listener and
 call `.run()` once. Not reusable across runs. The module-level `poll_listener`
 function is a thin wrapper kept for callers that just want the function shape.
 """
@@ -50,7 +50,7 @@ from .listeners import ListenerService
 logger = logging.getLogger("listeners")
 
 # Operational failures we expect and recover from. Anything outside this set is
-# a programming bug — it should propagate, not be silently logged.
+# a programming bug, it should propagate, not be silently logged.
 #
 # Today this can log N times per cycle if a shared dep (Ollama, connector) is
 # broken. Acceptable for v0; revisit with a per-cycle circuit breaker or log
@@ -73,7 +73,7 @@ class PollListenerOperation:
     """One-shot operation: poll a single Listener, judge, persist, deliver.
 
     Build with `PollListenerOperation(listener)` and call `.run()` once.
-    Not reusable across runs — internal state (counters, watermarks via the
+    Not reusable across runs, internal state (counters, watermarks via the
     mutated config) is tied to a single cycle.
     """
 
@@ -188,7 +188,7 @@ class PollListenerOperation:
             return False
         event = self.event_svc.persist_hit(obs, self.listener)
         if event is None:
-            # Already persisted (dedup) — nothing to notify.
+            # Already persisted (dedup), nothing to notify.
             return False
         if self.is_instant and self.config.notifiers:
             self.delivery_svc.deliver_instant(event, obs, self.listener, self.config)

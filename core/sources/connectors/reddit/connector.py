@@ -17,7 +17,7 @@ from .payloads import RedditListing
 # "render this page as JSON" side-effect, not the documented API. Filters out
 # custom/library User-Agents (returns 503); browser-shaped UAs get through.
 # For production / heavy use, switch to authenticated PRAW with a registered
-# Reddit app (https://www.reddit.com/prefs/apps) — the real API lives at
+# Reddit app (https://www.reddit.com/prefs/apps), the real API lives at
 # oauth.reddit.com.
 REDDIT_USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -35,7 +35,7 @@ class RedditSubRedditConnector:
     """Polls a single subreddit's `/r/<slug>/new/.json` feed.
 
     Cold-start semantics: the *first* poll for a brand-new Listener (StreamWatch
-    with `last_event_at=None`) yields whatever a single poll cycle returns —
+    with `last_event_at=None`) yields whatever a single poll cycle returns,
     up to `MAX_PAGES × PAGE_SIZE` posts from the head of /new. Every subsequent
     cycle is pure live mode: only posts newer than `last_event_at` are yielded.
 
@@ -65,10 +65,10 @@ class RedditSubRedditConnector:
 
         # `/new` is sorted newest → oldest. Reddit has no server-side `since`
         # filter; the early-return on `obs.occurred_at <= since` works only
-        # because of that ordering — once we see a post older than `since`,
+        # because of that ordering, once we see a post older than `since`,
         # every remaining post on this page and every later page is older too.
         # The `after` cursor walks pages from newest to oldest in the same order.
-        # Trailing slash before .json matters — `/new.json` returns 503, `/new/.json` returns 200.
+        # Trailing slash before .json matters, `/new.json` returns 503, `/new/.json` returns 200.
         url = f"https://www.reddit.com/r/{subreddit}/new/.json"
         after: str | None = None
 
@@ -97,14 +97,14 @@ class RedditSubRedditConnector:
 
             after = listing.data.after
             if not listing.data.children:
-                return  # empty page — nothing more to consume
+                return  # empty page, nothing more to consume
 
             for child in listing.data.children:
                 obs = NewRedditPostObservation.from_reddit_blob(
                     child.data, listener, spec
                 )
                 if since is not None and obs.occurred_at <= since:
-                    # /new is reverse-chronological — all remaining items on
+                    # /new is reverse-chronological, all remaining items on
                     # this and later pages are older. We've caught up.
                     return
                 yield obs
@@ -113,5 +113,5 @@ class RedditSubRedditConnector:
                 return  # end of feed
 
 
-# Register observations for hydration of Event.data — single source of truth via the class attrs.
+# Register observations for hydration of Event.data, single source of truth via the class attrs.
 register(RedditSubRedditConnector.kind, RedditSubRedditConnector.observations)

@@ -1,6 +1,6 @@
 """Pydantic shapes for Reddit's wire format (the JSON returned by /r/<sub>/new.json).
 
-These describe what Reddit sends us — the *transport* layer. Distinct from
+These describe what Reddit sends us, the *transport* layer. Distinct from
 `reddit_observations.py`, which describes our internal `Observation` shape
 that the engine + persistence layer reads.
 
@@ -13,14 +13,14 @@ from pydantic import BaseModel
 
 class RedditPostPayload(BaseModel):
     """The `data` blob inside a `t3` (post) listing child. Subset of Reddit's
-    per-post fields — only what we project into NewRedditPostObservation."""
+    per-post fields, only what we project into NewRedditPostObservation."""
 
     id: str
     created_utc: float  # unix seconds
     permalink: str
     title: str = ""
     selftext: str = ""
-    # Reddit returns null for deleted users — coerce at the call site (`or ""`).
+    # Reddit returns null for deleted users, coerce at the call site (`or ""`).
     author: str | None = None
     subreddit: str = ""
     score: int = 0
@@ -33,7 +33,7 @@ class RedditPostPayload(BaseModel):
 
 
 class RedditListingChild(BaseModel):
-    """One entry in a Reddit listing. `kind` is the "thing prefix" — `t3` for
+    """One entry in a Reddit listing. `kind` is the "thing prefix", `t3` for
     posts, `t1` for comments, etc. /new/.json should only return t3; we don't
     validate the prefix here, trusting the endpoint."""
 

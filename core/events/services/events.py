@@ -8,7 +8,7 @@ EventService is account-scoped: construct with `EventService(account_id=X)` and
 every query / write is automatically filtered to that account. Cross-account
 misuse raises ValueError at the seam.
 
-Cross-tenant operations live under `EventService.Global` — body in
+Cross-tenant operations live under `EventService.Global`, body in
 `_events_global.py`, attached as a class attribute.
 """
 
@@ -94,7 +94,7 @@ class EventService:
         self, *, listener_id: str, limit: int = 25
     ) -> list[Event]:
         """Most recent Events for a listener, ordered by occurred_at desc.
-        Materialized as a list (capped) — ad-hoc spot-check use only."""
+        Materialized as a list (capped), ad-hoc spot-check use only."""
         return list(
             Event.objects.filter(
                 account_id=self.account_id, listener_id=listener_id

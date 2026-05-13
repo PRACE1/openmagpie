@@ -1,10 +1,10 @@
 """Cross-tenant Delivery operations.
 
-Do NOT import from this file directly — use `DeliveryService.Global.<op>(...)`.
+Do NOT import from this file directly, use `DeliveryService.Global.<op>(...)`.
 The leading underscore signals "implementation detail of delivery.py"; the
 `.Global` namespace on the service class is the stable public surface.
 
-Reach for these sparingly — scheduler entry points + admin / debug commands.
+Reach for these sparingly, scheduler entry points + admin / debug commands.
 """
 
 from common.locks import digest_lock
@@ -29,7 +29,7 @@ class DeliveryGlobal:
 
         Acquires `digest_lock(listener.id)`; returns None if another process
         already holds it. Otherwise returns the number of hits delivered
-        (0 on partial / total failure of the notifiers — the Events stay
+        (0 on partial / total failure of the notifiers, the Events stay
         pending and the next cycle re-batches them).
 
         Tests / direct access should call

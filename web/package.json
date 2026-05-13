@@ -1,0 +1,17 @@
+{
+  "name": "magpie-web",
+  "version": "0.1.0",
+  "private": true,
+  "description": "OpenMagpie web — auth + future product UI",
+  "scripts": {
+    "dev": "pnpm --filter @magpie/app dev",
+    "build": "pnpm --filter @magpie/app build",
+    "start": "pnpm --filter @magpie/app start",
+    "lint": "pnpm -r lint",
+    "typecheck": "pnpm -r typecheck"
+  },
+  "packageManager": "pnpm@9.12.0",
+  "engines": {
+    "node": ">=20.11"
+  }
+}

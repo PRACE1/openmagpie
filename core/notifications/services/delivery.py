@@ -1,9 +1,9 @@
-"""Delivery service — fire notifiers for hits, manage `Event.delivered_at`.
+"""Delivery service, fire notifiers for hits, manage `Event.delivered_at`.
 
 Account-scoped: `DeliveryService(account_id=X)`. Internally constructs the
 EventService it needs (same account scope).
 
-Cross-tenant operations live under `DeliveryService.Global` — body in
+Cross-tenant operations live under `DeliveryService.Global`, body in
 `_delivery_global.py`, attached here as a class attribute. The Global helpers
 lazy-import `DeliveryService` to avoid a circular import at module load.
 """
@@ -61,7 +61,7 @@ class DeliveryService:
     ) -> bool:
         """Fire every configured notifier on this batch. Returns True iff all succeeded."""
         if not config.notifiers:
-            return True  # Nothing to deliver to — treat as already-delivered.
+            return True  # Nothing to deliver to, treat as already-delivered.
         all_ok = True
         for spec in config.notifiers:
             notifier = notifiers_registry.get(spec.kind)
@@ -83,7 +83,7 @@ class DeliveryService:
           1. Event row was already committed by `EventService.persist_hit` (its
              own `transaction.atomic()` block, needed there for the IntegrityError
              savepoint pattern), so the hit is durable before we notify.
-          2. Notifiers fire here — external side effects, not transactional.
+          2. Notifiers fire here, external side effects, not transactional.
           3. `mark_one_delivered` flips `delivered_at` (single autocommit UPDATE).
 
         Retry path: if notifiers fail (or the process dies between 2 and 3),

@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 
 def main():
     load_dotenv()
-    env = os.environ.get("DJANGO_ENV", "dev")
+    env = os.environ.get("DJANGO_ENV", "local")
     os.environ.setdefault("DJANGO_SETTINGS_MODULE", f"conf.settings.{env}")
     from django.core.management import execute_from_command_line
 
