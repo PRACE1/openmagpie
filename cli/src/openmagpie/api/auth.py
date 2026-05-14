@@ -98,9 +98,7 @@ class AuthApi:
         )
         return DeviceSessionCreated.model_validate(raw)
 
-    def poll_device_session(
-        self, session_id: str, *, device_secret: str
-    ) -> DeviceSessionPoll:
+    def poll_device_session(self, session_id: str, *, device_secret: str) -> DeviceSessionPoll:
         raw = self._http.get(
             routes.auth.device_session(session_id),
             headers={"X-Device-Secret": device_secret},
@@ -117,9 +115,7 @@ class AuthApi:
                 # An unknown status means the server contract changed
                 # out from under us. Failing loud beats quietly treating
                 # it as pending and looping forever.
-                raise RuntimeError(
-                    f"unknown device-session status from server: {status!r}"
-                )
+                raise RuntimeError(f"unknown device-session status from server: {status!r}")
 
     def me(self) -> AuthUser:
         raw = self._http.get(routes.auth.me)

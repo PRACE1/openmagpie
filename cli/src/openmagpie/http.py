@@ -63,10 +63,7 @@ def _user_agent() -> str:
     structured `client_info` in the request body. The UA exists so
     server logs say something more useful than `python-httpx/0.28.x`.
     """
-    return (
-        f"magpie-cli/{__version__} "
-        f"({platform.system()}; Python/{platform.python_version()})"
-    )
+    return f"magpie-cli/{__version__} ({platform.system()}; Python/{platform.python_version()})"
 
 
 class ApiError(Exception):
@@ -113,9 +110,7 @@ class MagpieClient:
 
     def _auth_headers(self) -> dict[str, str]:
         if self.config.access_token:
-            return {
-                AUTHORIZATION_HEADER: f"{BEARER_SCHEME} {self.config.access_token}"
-            }
+            return {AUTHORIZATION_HEADER: f"{BEARER_SCHEME} {self.config.access_token}"}
         return {}
 
     def _ensure_fresh_token(self) -> None:

@@ -4,7 +4,7 @@ Conventions for the `magpie` CLI. Cross-cutting rules live in [../AGENTS.md](../
 
 ## Stack
 
-Typer + httpx + Pydantic. Binary name: `magpie`. Config: `~/.magpie/config.json` (mode `0600`, Pydantic-validated).
+Typer + httpx + Pydantic + PyYAML. Binary name: `magpie`. Config: `~/.magpie/config.json` (mode `0600`, Pydantic-validated). YAML is the on-disk format for config blobs the CLI feeds the server (e.g. listener configs); the server only speaks JSON. Convert with `yaml.safe_load` at the CLI boundary.
 
 ## Config shape
 
@@ -91,3 +91,14 @@ All RED/YELLOW `typer.secho` writes go to stderr (`err=True`) so command output 
 ## Server-supplied URL safety
 
 The CLI never opens a server-supplied URL blindly. `_safe_authorize_url` requires `scheme in ("http", "https")` and `hostname == configured server hostname` before `webbrowser.open(...)` is allowed to touch it.
+
+## File-driven config commands
+
+Commands that create server-side resources from operator-authored config (currently just `magpie listener create`) accept YAML on disk or stdin, plus a no-argument variant that opens `$EDITOR` on a template:
+
+- `magpie listener create -f listener.yaml`
+- `magpie listener create -f -` (stdin)
+- `magpie listener create` (opens `$EDITOR` on the template via `typer.edit`)
+- `magpie listener template` emits the skeleton to stdout for piping or redirecting
+
+YAML round-trips via `yaml.safe_load` into a `dict` and posts straight at the server's JSON endpoint. The server is the single source of validation truth; the CLI's job is to surface DRF's nested 400 error dict (`{"data": {"streams[0].spec.kind": ["..."]}}`) as one line per leaf path. New file-driven commands should follow the same three modes + template emitter convention.

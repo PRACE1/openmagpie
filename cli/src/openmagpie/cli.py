@@ -7,6 +7,7 @@ from typing import Optional
 import typer
 
 from .commands.auth import auth_app
+from .commands.listener import listener_app
 from .context import AppContext, bind_app_ctx, unbind_app_ctx
 
 app = typer.Typer(
@@ -36,3 +37,8 @@ def main(
 
 
 app.add_typer(auth_app, name="auth", help="Sign in / out and inspect identity.")
+app.add_typer(
+    listener_app,
+    name="listener",
+    help="Create + list listeners.",
+)

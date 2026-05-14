@@ -87,9 +87,7 @@ class Config(BaseModel):
         """
         self.access_token = access_token
         self.refresh_token = refresh_token
-        self.token_expires_at = datetime.now(timezone.utc) + timedelta(
-            seconds=expires_in
-        )
+        self.token_expires_at = datetime.now(timezone.utc) + timedelta(seconds=expires_in)
         if user is not None:
             self.user = user
 
@@ -109,9 +107,7 @@ class ConfigFile(BaseModel):
     """
 
     active_env: str = DEFAULT_ACTIVE_ENV
-    envs: dict[str, Config] = Field(
-        default_factory=lambda: {ENV_LOCAL: Config()}
-    )
+    envs: dict[str, Config] = Field(default_factory=lambda: {ENV_LOCAL: Config()})
 
     @property
     def active(self) -> Config:
@@ -127,8 +123,7 @@ class ConfigFile(BaseModel):
                 self.envs[ENV_LOCAL] = Config()
             else:
                 raise RuntimeError(
-                    f"active_env={self.active_env!r} has no record under "
-                    f"envs in ~/{CONFIG_DIR_NAME}/{CONFIG_FILE_NAME}"
+                    f"active_env={self.active_env!r} has no record under envs in ~/{CONFIG_DIR_NAME}/{CONFIG_FILE_NAME}"
                 )
         return self.envs[self.active_env]
 
@@ -141,9 +136,7 @@ def load_file() -> ConfigFile:
     try:
         raw = json.loads(path.read_text())
     except json.JSONDecodeError as e:
-        raise RuntimeError(
-            f"~/{CONFIG_DIR_NAME}/{CONFIG_FILE_NAME} is corrupt: {e}"
-        ) from e
+        raise RuntimeError(f"~/{CONFIG_DIR_NAME}/{CONFIG_FILE_NAME} is corrupt: {e}") from e
     return ConfigFile.model_validate(raw)
 
 
