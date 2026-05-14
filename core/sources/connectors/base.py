@@ -40,3 +40,22 @@ class Connector(Protocol):
     ) -> Iterator[Observation]:
         """Yield typed Observations for one stream, newer than `since`."""
         ...
+
+    def count(
+        self,
+        spec: StreamSpec,
+        listener: Listener,
+        since: datetime | None,
+    ) -> int:
+        """Exact count of observations newer than `since`. Used by the
+        polling op's warm path to give progress UIs an `N/total` and
+        an ETA.
+
+        Cheapest universal implementation is `sum(1 for _ in self.poll(
+        spec, listener, since=since))`. That walks the upstream pages
+        a second time (so a warm cycle pays 2x bandwidth) but the
+        Observation construction it does is microseconds, negligible
+        next to per-observation LLM judging. Override if your upstream
+        has a cheaper exact-count path.
+        """
+        ...

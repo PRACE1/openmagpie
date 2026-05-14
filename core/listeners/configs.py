@@ -144,7 +144,7 @@ class SemanticListenerConfig(BaseModel):
     LISTENER_KIND: ClassVar[str] = "semantic"
 
     streams: list[StreamWatch] = []
-    refined_description: str = ""
+    refined_instructions: str = ""
     engine: EngineSpec = Field(default_factory=_default_engine_spec)
     # An Observation is a hit when engine.judge(...).score >= hit_threshold.
     # 0.8 as a Pareto default, most of the value with little noise. Dial down

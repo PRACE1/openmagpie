@@ -1,4 +1,5 @@
 import json
+import logging
 from collections.abc import Iterator
 from datetime import datetime
 
@@ -12,6 +13,8 @@ from pydantic import ValidationError
 from ..base import ConnectorParseError
 from .observations import NewRedditPostObservation
 from .payloads import RedditListing
+
+logger = logging.getLogger("sources")
 
 # Reddit's anonymous JSON endpoint (`<any-web-url>.json`) is the website's
 # "render this page as JSON" side-effect, not the documented API. Filters out
@@ -52,6 +55,19 @@ class RedditSubRedditConnector:
 
     kind = "reddit_subreddit"
     observations: list[type[Observation]] = [NewRedditPostObservation]
+
+    def count(
+        self,
+        spec: RedditSubredditStreamSpec,
+        listener: Listener,
+        since: datetime | None,
+    ) -> int:
+        """Pre-count via the same page walk `poll` does, just discarding
+        each observation as it's yielded. Adds one extra pagination
+        per poll cycle (~10 GETs to /new.json); negligible next to the
+        per-observation LLM time the count makes visible.
+        """
+        return sum(1 for _ in self.poll(spec, listener, since=since))
 
     def poll(
         self,

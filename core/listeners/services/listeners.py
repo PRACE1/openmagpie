@@ -6,9 +6,12 @@ Cross-tenant operations live under `ListenerService.Global`, body in
 call shape (`ListenerService.Global.<op>`) is stable regardless of layout.
 """
 
+from collections.abc import Iterator
 from datetime import datetime, timedelta
+from typing import Any
 
 from listeners.models import Listener
+from listeners.registry import get_config_class
 
 from ._listeners_global import ListenerGlobal
 
@@ -45,6 +48,49 @@ class ListenerService:
     def get(self, id: str) -> Listener:
         """Raises Listener.DoesNotExist if missing (or if owned by another account)."""
         return Listener.objects.get(id=id, account_id=self.account_id)
+
+    def list(self, *, chunk_size: int = 100) -> Iterator[Listener]:
+        """All listeners in this account, newest first."""
+        return (
+            Listener.objects.filter(account_id=self.account_id)
+            .order_by("-created_at")
+            .iterator(chunk_size=chunk_size)
+        )
+
+    def create(
+        self,
+        *,
+        user_id: str,
+        name: str,
+        instructions: str,
+        kind: str,
+        delivery_mode: str,
+        poll_interval_seconds: int,
+        data: dict[str, Any],
+    ) -> Listener:
+        """Validate the inputs against the kind's Pydantic config + the
+        DeliveryMode enum, then persist. `data` is stored as the
+        canonical Pydantic JSON dump so downstream readers always see a
+        normalized blob regardless of input ordering / omitted defaults.
+        """
+        self.validate_delivery_mode(delivery_mode)
+        # Re-validate `data` even though the view layer already did. The
+        # service is the seam where wrong shape becomes impossible, so
+        # any caller (mgmt command, future internal flow) gets the same
+        # safety net the HTTP path does.
+        config_class = get_config_class(kind)
+        validated = config_class.model_validate(data)
+        normalized_data = validated.model_dump(mode="json")
+        return Listener.objects.create(
+            user_id=user_id,
+            account_id=self.account_id,
+            kind=kind,
+            name=name,
+            instructions=instructions,
+            delivery_mode=delivery_mode,
+            poll_interval_seconds=poll_interval_seconds,
+            data=normalized_data,
+        )
 
     def update_poll_state(
         self,

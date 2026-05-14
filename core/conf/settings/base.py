@@ -205,3 +205,65 @@ OLLAMA_MODEL = os.environ["OLLAMA_MODEL"]
 # stricter values via env for multi-tenant / public deployments.
 WEBHOOK_REQUIRE_HTTPS = env_bool("WEBHOOK_REQUIRE_HTTPS", "false")
 WEBHOOK_BLOCK_PRIVATE_IPS = env_bool("WEBHOOK_BLOCK_PRIVATE_IPS", "false")
+
+# ── Logging ────────────────────────────────────────────────────────────
+#
+# App loggers are configured explicitly so the warnings the polling /
+# delivery / engine code emits surface predictably regardless of
+# Python's default lastResort handler quirks. App level is INFO by
+# default; per-logger override via the `LOG_LEVEL_<APP>` env so an
+# operator can crank `LOG_LEVEL_LISTENERS=DEBUG` without editing code.
+#
+# Django's own loggers are left at framework defaults via
+# `disable_existing_loggers=False`.
+
+LOG_LEVEL_APP = os.environ.get("LOG_LEVEL_APP", "INFO").upper()
+
+
+def _app_log_level(app: str) -> str:
+    key = f"LOG_LEVEL_{app.upper()}"
+    return os.environ.get(key, LOG_LEVEL_APP).upper()
+
+
+_APP_LOGGERS = (
+    "accounts",
+    "auth_api",
+    "common",
+    "engine",
+    "events",
+    "listeners",
+    "notifications",
+    "sources",
+)
+
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "concise": {
+            "format": "{asctime} {levelname:<7} {name}: {message}",
+            "style": "{",
+            "datefmt": "%H:%M:%S",
+        },
+    },
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+            "formatter": "concise",
+            # stdout so application logs interleave cleanly with
+            # management-command output and `docker compose logs` (and
+            # `tee` capture). Operational errors still get emitted via
+            # logger.warning/.error (same handler, same stdout); we
+            # don't split INFO/ERROR across streams in v0.
+            "stream": "ext://sys.stdout",
+        },
+    },
+    "loggers": {
+        app: {
+            "handlers": ["console"],
+            "level": _app_log_level(app),
+            "propagate": False,
+        }
+        for app in _APP_LOGGERS
+    },
+}
