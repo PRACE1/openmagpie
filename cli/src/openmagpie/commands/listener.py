@@ -127,10 +127,12 @@ def create(
             raise typer.Exit(code=1)
 
     result = _create_or_abort(ac, body, dry_run=False)
-    if result.dry_run:
-        # The real create must come back dry_run=False. True means it
-        # didn't persist (a stale dry-run response, a proxy replaying the
-        # GET preview, etc.) - don't claim success.
+    if result.dry_run or not result.id:
+        # A real create must come back dry_run=False AND with a persisted
+        # id - that's one invariant, not two. dry_run=True, or a missing
+        # id on a dry_run=False response, both mean it didn't persist (a
+        # stale/replayed dry-run response, a proxy serving the GET
+        # preview, etc.). Don't claim success.
         typer.secho(
             "Unexpected server response: create did not confirm persistence.",
             fg=typer.colors.RED,
@@ -138,7 +140,7 @@ def create(
         )
         raise typer.Exit(code=1)
     typer.secho(
-        f"✓ Created listener {result.name} ({result.id or '?'})",
+        f"✓ Created listener {result.name} ({result.id})",
         fg=typer.colors.GREEN,
     )
 
