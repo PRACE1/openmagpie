@@ -14,12 +14,6 @@ from listeners.registry import get_config_class
 
 from ._listeners_global import ListenerGlobal
 
-# Hard ceiling on the un-paginated list endpoint. An account is not
-# expected to approach this in v0; if that changes, add real pagination
-# rather than raising the cap. Bounds the response so a pathological
-# account can't ask for an unbounded result set.
-LISTENERS_LIST_CAP = 500
-
 
 class ListenerService:
     """Account-scoped service for Listener reads and writes.
@@ -62,17 +56,20 @@ class ListenerService:
         return Listener.objects.get(id=id, account_id=self.account_id)
 
     def list(self) -> list[Listener]:
-        """This account's listeners, newest first, capped at
-        `LISTENERS_LIST_CAP`.
+        """This account's listeners, newest first.
 
-        Returns a materialized list, not a streaming iterator: the only
-        caller serializes `many=True` which materializes anyway, so a
-        chunked cursor bought nothing. No pagination in v0 (see the cap
-        rationale on the constant)."""
+        No pagination and no cap: listeners are account-scoped config
+        objects created one at a time (realistically 1-50 per account),
+        not an unbounded feed, so there's nothing to bound in v0 and a
+        silent cap would only hide data. If listeners ever become
+        unbounded, add real pagination (cursor or limit/offset) here and
+        at the endpoint, not a magic truncation.
+
+        Materialized list, not a streaming iterator: the only caller
+        serializes `many=True` which materializes anyway, so a chunked
+        cursor bought nothing."""
         return list(
-            Listener.objects.filter(account_id=self.account_id).order_by("-created_at")[
-                :LISTENERS_LIST_CAP
-            ]
+            Listener.objects.filter(account_id=self.account_id).order_by("-created_at")
         )
 
     def build(
