@@ -48,10 +48,11 @@ class Command(BaseCommand):
         total_skipped = 0
         total_errored = 0
         for listener in ListenerService.Global.list_due_for_poll(now=now):
-            # Listener name first so the operator sees liveness before
-            # the connector fetch + first engine call (which together
-            # can take 30+ seconds on a cold cycle).
-            self.stdout.write(f"\n{listener.name}")
+            # Listener name + id first so the operator sees liveness
+            # before the connector fetch + first engine call (which
+            # together can take 30+ seconds on a cold cycle). The id is
+            # what other commands/log lines key on, so include it here.
+            self.stdout.write(f"\n{listener.name} | {listener.id}")
             printer = _ProgressPrinter(self.stdout.write, quiet=quiet)
             started_at = time.monotonic()
             # Recoverable per-stream/per-obs failures are already isolated
