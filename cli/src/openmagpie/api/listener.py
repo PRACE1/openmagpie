@@ -14,6 +14,7 @@ callers that want it.
 
 from __future__ import annotations
 
+import builtins
 from typing import Any
 
 from pydantic import BaseModel
@@ -88,7 +89,9 @@ class ListenerApi:
         raw = self._http.post(routes.listeners.collection, json_body=body, params=params)
         return ListenerMutationResponse.model_validate(raw)
 
-    def list(self) -> list[ListenerSummary]:
+    def list(self) -> builtins.list[ListenerSummary]:
+        # builtins.list: the method is named `list`, which shadows the
+        # builtin inside its own (deferred) annotation scope.
         """List listeners in the caller's account, newest-first.
 
         Server returns `{"items": [<listener>, ...]}`; parsed through

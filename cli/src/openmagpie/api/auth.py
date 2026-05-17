@@ -16,7 +16,7 @@ from typing import Literal
 from pydantic import BaseModel
 
 from .. import routes
-from ..constants import BEARER_TOKEN_TYPE, DeviceSessionStatus
+from ..constants import DeviceSessionStatus
 from ..http import MagpieClient, client_info
 
 
@@ -31,7 +31,7 @@ class TokenPair(BaseModel):
     access_token: str
     refresh_token: str
     expires_in: int
-    token_type: Literal[BEARER_TOKEN_TYPE]
+    token_type: Literal["Bearer"]  # OAuth2 token_type per RFC 6750
     user: AuthUser
 
 
