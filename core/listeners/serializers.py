@@ -10,6 +10,7 @@ problem surfaces at the right path on the client.
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from listeners.models import Listener
@@ -18,6 +19,8 @@ from pydantic import ValidationError as PydanticValidationError
 from rest_framework import serializers
 
 from .models.listener import MIN_POLL_INTERVAL_SECONDS
+
+logger = logging.getLogger("listeners")
 
 
 # ── Input ──────────────────────────────────────────────────────────────
@@ -143,6 +146,23 @@ class ListenerSerializer(serializers.Serializer):
         spec (see configs.NotifierSpecBase.redacted), so the serializer
         carries no schema knowledge and can't drift when a new
         secret-bearing notifier is added.
+
+        Per-row fail-safe: re-validation can fail for a single row
+        (unknown kind, data drift, settings-dependent validators like
+        the webhook URL check). That MUST NOT 500 the whole account's
+        list (`many=True` would abort entirely, hiding healthy
+        listeners). On failure return a redacted sentinel - never raw
+        `obj.data`, which would leak unredacted webhook secrets. The row
+        stays visible (its model columns: id/name/kind/...) so the
+        operator sees it exists and is broken.
         """
-        config = get_config_class(str(obj.kind)).model_validate(obj.data or {})
-        return config.redacted_dump()
+        try:
+            config = get_config_class(str(obj.kind)).model_validate(obj.data or {})
+            return config.redacted_dump()
+        except Exception:
+            logger.exception(
+                "listener %s data failed redaction (kind=%s); returning sentinel",
+                obj.id,
+                obj.kind,
+            )
+            return {"error": "config_unreadable"}

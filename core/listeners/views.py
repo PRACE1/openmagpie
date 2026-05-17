@@ -33,6 +33,25 @@ def _is_truthy(value: str | None) -> bool:
     return value is not None and value.strip().lower() in _TRUTHY
 
 
+def _no_primary_account_response(user_id: str) -> Response:
+    """Shared 500 for the 'user has no primary account' invariant.
+
+    Signup invariants should have created one; its absence is account
+    corruption, not a normal empty state. POST and GET both return THIS
+    (identical body + status) so the two endpoints can't drift - GET
+    masking it as `{"items": []}` would turn a corruption into a silent
+    'you have no listeners' data-loss report.
+    """
+    logger.error("user %s has no primary account", user_id)
+    return Response(
+        {
+            "error": "no_primary_account",
+            "detail": "current user has no primary account",
+        },
+        status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+    )
+
+
 def _serialize(listener) -> dict[str, Any]:
     """Serialize a Listener to its wire dict.
 
@@ -60,17 +79,7 @@ class ListenerListCreateView(APIView):
             user_id=str(request.user.id)
         )
         if account_id is None:
-            # User has no primary account, signup invariants should
-            # have created one. Surface as a server-side problem so
-            # an operator can investigate rather than the client
-            # quietly getting an empty 4xx.
-            return Response(
-                {
-                    "error": "no_primary_account",
-                    "detail": "current user has no primary account",
-                },
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            )
+            return _no_primary_account_response(str(request.user.id))
 
         svc = ListenerService(account_id=account_id)
 
@@ -121,14 +130,6 @@ class ListenerListCreateView(APIView):
             user_id=str(request.user.id)
         )
         if account_id is None:
-            # Same invariant the POST path treats as a 500: every user
-            # should have a primary account. GET can't usefully error
-            # mid-list, but it must not silently mask the corruption -
-            # log it so the broken path is observable either way.
-            logger.error(
-                "user %s has no primary account on listener list",
-                request.user.id,
-            )
-            return Response({"items": []})
+            return _no_primary_account_response(str(request.user.id))
         listeners = ListenerService(account_id=account_id).list()
         return Response({"items": ListenerSerializer(listeners, many=True).data})
