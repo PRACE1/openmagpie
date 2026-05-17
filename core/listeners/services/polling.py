@@ -139,6 +139,11 @@ class PollListenerOperation:
         self.is_instant = listener.delivery_mode == Listener.DeliveryMode.INSTANT
         # No-op default so the per-obs callsite stays unconditional.
         self.on_progress: PollProgressCallback = on_progress or (lambda _: None)
+        # Whether anyone actually consumes progress. The scheduler path
+        # (poll_listener with no callback) does not, so it must skip the
+        # warm-path pre-count (a full second upstream walk) that only
+        # exists to feed a progress UI.
+        self._progress_active = on_progress is not None
 
     @cached_property
     def listener_svc(self) -> ListenerService:
@@ -242,14 +247,19 @@ class PollListenerOperation:
             )
             return 0, 0
 
-        # Warm path. Cheap pre-count so progress UIs can render N/total
-        # + ETA. Same network walk as `poll`, just skipping Observation
-        # construction; the bandwidth doubles for the poll cycle but is
-        # negligible relative to the per-judgment LLM time the count
-        # makes visible.
-        expected_max = connector.count(
-            watch.spec, self.listener, since=watch.last_event_at
-        )
+        # Warm path. The pre-count is a full second upstream walk (same
+        # pages as `poll`, minus Observation construction) whose ONLY
+        # purpose is feeding `expected_max` to a progress UI. Skip it
+        # entirely when no progress consumer is attached (the scheduler
+        # path): there it would double the upstream request volume - and
+        # halve the Reddit anon rate-limit headroom - for a number that
+        # goes straight to a no-op.
+        if self._progress_active:
+            expected_max = connector.count(
+                watch.spec, self.listener, since=watch.last_event_at
+            )
+        else:
+            expected_max = 0
         self.on_progress(
             StreamStarted(
                 listener=self.listener,

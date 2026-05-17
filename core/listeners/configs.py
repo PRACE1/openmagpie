@@ -11,6 +11,7 @@ from typing import Annotated, Any, ClassVar, Literal, Union
 from urllib.parse import urlparse, urlsplit
 
 from django.conf import settings
+from django.utils import timezone
 from pydantic import BaseModel, Field, field_validator
 
 # Replacement for any secret value in a redacted dump.
@@ -66,6 +67,27 @@ class StreamWatch(BaseModel):
 
     spec: StreamSpec
     last_event_at: datetime | None = None  # high-water mark for incremental polling
+
+    @field_validator("last_event_at")
+    @classmethod
+    def _reject_future(cls, value: datetime | None) -> datetime | None:
+        # A future watermark means "yield nothing until wall-clock passes
+        # this", i.e. it silently disables the stream with no error - a
+        # real footgun the template's date example invites. (We do NOT
+        # bound how far *back* it can go: the only connector is API-capped
+        # at ~1000 items regardless, so an old timestamp is already
+        # bounded; an arbitrary age horizon would be a magic number with
+        # no real connector behind it.)
+        if value is None:
+            return value
+        now = timezone.now()
+        v = value if value.tzinfo else value.replace(tzinfo=now.tzinfo)
+        if v > now:
+            raise ValueError(
+                f"last_event_at is in the future ({value.isoformat()}); "
+                "a future watermark silently disables the stream until then"
+            )
+        return value
 
 
 class EngineSpec(BaseModel):
