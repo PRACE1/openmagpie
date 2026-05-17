@@ -10,6 +10,7 @@ problem surfaces at the right path on the client.
 
 from __future__ import annotations
 
+import copy
 from typing import Any
 
 from listeners.models import Listener
@@ -106,5 +107,26 @@ class ListenerSerializer(serializers.Serializer):
     next_poll_at = serializers.DateTimeField(allow_null=True)
     last_digest_at = serializers.DateTimeField(allow_null=True)
     next_digest_at = serializers.DateTimeField(allow_null=True)
-    data = serializers.JSONField()
+    # user_id is the creator for audit/display. Listeners are account-scoped
+    # (any user in the account can read/manage them); this field shows who
+    # created the listener, it is not an ownership filter. See ListenerService.
+    user_id = serializers.CharField()
+    data = serializers.SerializerMethodField()
     created_at = serializers.DateTimeField()
+
+    _REDACTED = "***"
+
+    def get_data(self, obj: Listener) -> dict[str, Any]:
+        """Return the config blob with notifier header values redacted.
+
+        Webhook notifiers can carry Authorization/Cookie style secrets in
+        `headers` (see configs.WebhookNotifierSpec). Those must never be
+        echoed back on create (201) or list (GET). Header *names* are kept
+        so an operator can confirm which headers are set without exposing
+        the secret value.
+        """
+        data = copy.deepcopy(obj.data or {})
+        for notifier in data.get("notifiers", []):
+            if isinstance(notifier, dict) and isinstance(notifier.get("headers"), dict):
+                notifier["headers"] = dict.fromkeys(notifier["headers"], self._REDACTED)
+        return data

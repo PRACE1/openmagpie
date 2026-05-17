@@ -17,7 +17,14 @@ from ._listeners_global import ListenerGlobal
 
 
 class ListenerService:
-    """Account-scoped service for Listener reads and writes."""
+    """Account-scoped service for Listener reads and writes.
+
+    Ownership model: listeners are owned by the *account*, not the
+    individual user. Any user in the account can read and manage every
+    listener in it; `Listener.user_id` records who created it, for audit
+    and display only, it is deliberately not a read/write filter. Reads
+    here scope by `account_id` alone by design.
+    """
 
     Global = ListenerGlobal
 

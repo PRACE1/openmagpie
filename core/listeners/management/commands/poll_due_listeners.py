@@ -1,3 +1,4 @@
+import logging
 import time
 from typing import Any
 
@@ -11,6 +12,8 @@ from listeners.services import (
     StreamStarted,
     poll_listener,
 )
+
+logger = logging.getLogger("listeners")
 
 _TITLE_TRUNCATE = 80
 # Heartbeat interval during miss-streaks. Time-based (not count-based)
@@ -43,6 +46,7 @@ class Command(BaseCommand):
         total_observed = 0
         total_hits = 0
         total_skipped = 0
+        total_errored = 0
         for listener in ListenerService.Global.list_due_for_poll(now=now):
             # Listener name first so the operator sees liveness before
             # the connector fetch + first engine call (which together
@@ -50,7 +54,22 @@ class Command(BaseCommand):
             self.stdout.write(f"\n{listener.name}")
             printer = _ProgressPrinter(self.stdout.write, quiet=quiet)
             started_at = time.monotonic()
-            result = poll_listener(listener, on_progress=printer)
+            # Recoverable per-stream/per-obs failures are already isolated
+            # inside the poll op. This guard is for the non-recoverable
+            # rest (a bad engine.kind, a connector missing poll, ...): one
+            # malformed listener must not abort the whole scheduler run and
+            # starve every listener after it. Log + skip, keep going.
+            try:
+                result = poll_listener(listener, on_progress=printer)
+            except Exception:
+                total_errored += 1
+                logger.exception(
+                    "listener poll aborted listener=%s name=%s",
+                    listener.id,
+                    listener.name,
+                )
+                self.stdout.write("  error: poll aborted (see logs); skipping listener")
+                continue
             if result is None:
                 total_skipped += 1
                 self.stdout.write("  skipped (lock held by another process)")
@@ -68,13 +87,13 @@ class Command(BaseCommand):
                     f"  result: {result.hits} {noun} in {_format_seconds(elapsed)}"
                 )
 
-        if total_listeners == 0 and total_skipped == 0:
+        if total_listeners == 0 and total_skipped == 0 and total_errored == 0:
             self.stdout.write("No listeners due for poll.")
         else:
             self.stdout.write(
                 f"\nPolled {total_listeners} listener(s), "
                 f"{total_observed} observed, {total_hits} hits, "
-                f"{total_skipped} skipped"
+                f"{total_skipped} skipped, {total_errored} errored"
             )
 
 

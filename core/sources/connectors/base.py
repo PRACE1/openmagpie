@@ -51,11 +51,39 @@ class Connector(Protocol):
         polling op's warm path to give progress UIs an `N/total` and
         an ETA.
 
-        Cheapest universal implementation is `sum(1 for _ in self.poll(
-        spec, listener, since=since))`. That walks the upstream pages
-        a second time (so a warm cycle pays 2x bandwidth) but the
-        Observation construction it does is microseconds, negligible
-        next to per-observation LLM judging. Override if your upstream
-        has a cheaper exact-count path.
+        This is a structural signature only. There is no free default
+        from this Protocol; inherit `BaseConnector` to get the universal
+        poll-walk implementation, or implement `count` yourself.
         """
         ...
+
+
+class BaseConnector:
+    """Concrete base supplying the universal `count` implementation.
+
+    Inherit this and a new connector gets a correct `count` for free:
+    it re-walks `poll` and discards each Observation. That doubles the
+    upstream bandwidth for a warm cycle, but the Observation construction
+    is microseconds, negligible next to per-observation LLM judging.
+    Override `count` only if your upstream has a cheaper exact-count path.
+
+    `Connector` stays a Protocol so the registry types structurally; this
+    class is the opt-in default, not a required parent. Subclasses still
+    supply `kind`, `observations`, and `poll`.
+    """
+
+    def count(
+        self,
+        spec: StreamSpec,
+        listener: Listener,
+        since: datetime | None,
+    ) -> int:
+        return sum(1 for _ in self.poll(spec, listener, since=since))
+
+    def poll(
+        self,
+        spec: StreamSpec,
+        listener: Listener,
+        since: datetime | None,
+    ) -> Iterator[Observation]:  # pragma: no cover - subclass responsibility
+        raise NotImplementedError

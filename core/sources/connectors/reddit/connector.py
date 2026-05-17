@@ -10,7 +10,7 @@ from listeners.configs import RedditSubredditStreamSpec
 from listeners.models import Listener
 from pydantic import ValidationError
 
-from ..base import ConnectorParseError
+from ..base import BaseConnector, ConnectorParseError
 from .observations import NewRedditPostObservation
 from .payloads import RedditListing
 
@@ -34,7 +34,7 @@ PAGE_SIZE = 100
 MAX_PAGES = 10
 
 
-class RedditSubRedditConnector:
+class RedditSubRedditConnector(BaseConnector):
     """Polls a single subreddit's `/r/<slug>/new/.json` feed.
 
     Cold-start semantics: the *first* poll for a brand-new Listener (StreamWatch
@@ -56,18 +56,10 @@ class RedditSubRedditConnector:
     kind = "reddit_subreddit"
     observations: list[type[Observation]] = [NewRedditPostObservation]
 
-    def count(
-        self,
-        spec: RedditSubredditStreamSpec,
-        listener: Listener,
-        since: datetime | None,
-    ) -> int:
-        """Pre-count via the same page walk `poll` does, just discarding
-        each observation as it's yielded. Adds one extra pagination
-        per poll cycle (~10 GETs to /new.json); negligible next to the
-        per-observation LLM time the count makes visible.
-        """
-        return sum(1 for _ in self.poll(spec, listener, since=since))
+    # `count` is the universal poll-walk default from BaseConnector: it
+    # re-walks the page fetch (~10 GETs to /new.json) discarding each
+    # observation. Reddit has no cheaper exact-count path, so we don't
+    # override it.
 
     def poll(
         self,

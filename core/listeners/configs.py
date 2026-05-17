@@ -57,6 +57,22 @@ class EngineSpec(BaseModel):
     kind: str
     model: str = ""
 
+    @field_validator("kind")
+    @classmethod
+    def _validate_kind(cls, value: str) -> str:
+        # Reject an unregistered engine kind at create time. Without this a
+        # typo passes validation, cold-start succeeds, then the first warm
+        # poll raises KeyError out of engine.registry.get and (being
+        # non-recoverable) aborts the whole scheduler run. Lazy import:
+        # engine.registry instantiates engines from settings at import, so
+        # importing it at validation time avoids an app-load import cycle.
+        from engine import registry as engine_registry
+
+        valid = engine_registry.kinds()
+        if value not in valid:
+            raise ValueError(f"unknown engine kind {value!r}; expected one of {valid}")
+        return value
+
 
 def _default_engine_spec() -> EngineSpec:
     """Build the fallback engine spec from settings, avoids hardcoding an
