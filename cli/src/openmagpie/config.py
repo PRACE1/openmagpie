@@ -22,10 +22,11 @@ crashing later.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import tempfile
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from pydantic import BaseModel, Field
@@ -70,7 +71,7 @@ class Config(BaseModel):
     def access_token_expired(self, *, leeway_seconds: int = 0) -> bool:
         if not self.token_expires_at:
             return True
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         return (self.token_expires_at - now).total_seconds() <= leeway_seconds
 
     def apply_credentials(
@@ -87,7 +88,7 @@ class Config(BaseModel):
         """
         self.access_token = access_token
         self.refresh_token = refresh_token
-        self.token_expires_at = datetime.now(timezone.utc) + timedelta(seconds=expires_in)
+        self.token_expires_at = datetime.now(UTC) + timedelta(seconds=expires_in)
         if user is not None:
             self.user = user
 
@@ -181,8 +182,6 @@ def save(config: Config) -> None:
         os.replace(tmp_path, target)
     except Exception:
         if tmp_path is not None:
-            try:
+            with contextlib.suppress(FileNotFoundError):
                 os.unlink(tmp_path)
-            except FileNotFoundError:
-                pass
         raise

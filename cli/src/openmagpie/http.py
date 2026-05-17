@@ -102,7 +102,7 @@ class MagpieClient:
     def close(self) -> None:
         self._client.close()
 
-    def __enter__(self) -> "MagpieClient":
+    def __enter__(self) -> MagpieClient:
         return self
 
     def __exit__(self, *exc_info: Any) -> None:

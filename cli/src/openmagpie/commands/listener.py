@@ -25,7 +25,7 @@ from __future__ import annotations
 import sys
 from importlib import resources
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import httpx
 import typer
@@ -58,7 +58,7 @@ def template() -> None:
 
 @listener_app.command("create")
 def create(
-    file: Optional[str] = typer.Option(
+    file: str | None = typer.Option(
         None,
         "--file",
         "-f",
@@ -165,21 +165,21 @@ def list_() -> None:
             fg=typer.colors.RED,
             err=True,
         )
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from None
     except ApiError as e:
         typer.secho(
             f"Server returned an error (HTTP {e.status}).",
             fg=typer.colors.RED,
             err=True,
         )
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from None
     except httpx.HTTPError as e:
         typer.secho(
             f"Couldn't reach the server ({type(e).__name__}).",
             fg=typer.colors.RED,
             err=True,
         )
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from None
 
     if not items:
         typer.echo("No listeners yet. Try `magpie listener template`.")
@@ -242,7 +242,7 @@ def _parse_yaml_or_abort(text: str) -> dict[str, Any]:
         parsed = yaml.safe_load(text)
     except yaml.YAMLError as e:
         typer.secho(f"YAML parse error: {e}", fg=typer.colors.RED, err=True)
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from None
     if not isinstance(parsed, dict):
         typer.secho(
             "Config root must be a YAML mapping (key: value pairs).",
@@ -265,17 +265,17 @@ def _create_or_abort(ac: AppContext, body: dict[str, Any], *, dry_run: bool) -> 
             fg=typer.colors.RED,
             err=True,
         )
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from None
     except ApiError as e:
         _print_api_error(e)
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from None
     except httpx.HTTPError as e:
         typer.secho(
             f"Couldn't reach the server ({type(e).__name__}).",
             fg=typer.colors.RED,
             err=True,
         )
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from None
 
 
 def _print_preview(p: ListenerMutationResponse) -> None:

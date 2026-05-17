@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Optional
-
 import typer
 
 from .commands.auth import auth_app
@@ -20,7 +18,7 @@ app = typer.Typer(
 @app.callback()
 def main(
     ctx: typer.Context,
-    server: Optional[str] = typer.Option(
+    server: str | None = typer.Option(
         None,
         "--server",
         "-s",
