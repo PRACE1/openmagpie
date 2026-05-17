@@ -10,9 +10,7 @@ problem surfaces at the right path on the client.
 
 from __future__ import annotations
 
-import copy
 from typing import Any
-from urllib.parse import urlsplit
 
 from listeners.models import Listener
 from listeners.registry import get_config_class
@@ -136,51 +134,15 @@ class ListenerSerializer(serializers.Serializer):
     data = serializers.SerializerMethodField()
     created_at = serializers.DateTimeField(allow_null=True)
 
-    _REDACTED = "***"
-
     def get_data(self, obj: Listener) -> dict[str, Any]:
-        """Return the config blob with webhook secrets redacted.
+        """Config blob with secrets redacted, via the kind's typed config.
 
-        Webhook notifiers carry secrets two ways and BOTH must be scrubbed
-        before this blob is echoed on create (201), list (GET), or the
-        dry-run (200) response:
-
-          - `headers`: Authorization/Cookie style values. Names are kept
-            (so an operator can see which headers are set) but every value
-            is masked.
-          - `url`: Slack/Discord/HMAC webhooks embed the token in the URL
-            path or query (`hooks.slack.com/services/T../B../XXXXSECRET`).
-            We keep only `scheme://host[:port]` so the destination is still
-            recognizable, and replace path/query/userinfo with `/***`.
+        Symmetric with the create path (`model_validate(...).model_dump`):
+        we validate `obj.data` against the kind's config and let it
+        `redacted_dump()`. What is secret is declared once on the typed
+        spec (see configs.NotifierSpecBase.redacted), so the serializer
+        carries no schema knowledge and can't drift when a new
+        secret-bearing notifier is added.
         """
-        data = copy.deepcopy(obj.data or {})
-        for notifier in data.get("notifiers", []):
-            if not isinstance(notifier, dict):
-                continue
-            if isinstance(notifier.get("headers"), dict):
-                notifier["headers"] = dict.fromkeys(notifier["headers"], self._REDACTED)
-            if notifier.get("kind") == "webhook" and isinstance(
-                notifier.get("url"), str
-            ):
-                notifier["url"] = _redact_webhook_url(notifier["url"])
-        return data
-
-
-def _redact_webhook_url(url: str) -> str:
-    """Strip the secret-bearing parts of a webhook URL, keep the host.
-
-    Slack/Discord put the token in the path, so dropping only the query
-    would still leak. We keep `scheme://host[:port]` for recognition and
-    collapse everything after the authority to `/***`. A URL that won't
-    parse is replaced wholesale rather than risking a partial leak.
-    """
-    try:
-        parts = urlsplit(url)
-    except ValueError:
-        return ListenerSerializer._REDACTED
-    if not parts.scheme or not parts.hostname:
-        return ListenerSerializer._REDACTED
-    netloc = parts.hostname
-    if parts.port:
-        netloc = f"{netloc}:{parts.port}"
-    return f"{parts.scheme}://{netloc}/***"
+        config = get_config_class(str(obj.kind)).model_validate(obj.data or {})
+        return config.redacted_dump()

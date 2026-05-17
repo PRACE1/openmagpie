@@ -7,11 +7,34 @@ everything else lives here, typed.
 
 import ipaddress
 from datetime import datetime
-from typing import Annotated, ClassVar, Literal, Union
-from urllib.parse import urlparse
+from typing import Annotated, Any, ClassVar, Literal, Union
+from urllib.parse import urlparse, urlsplit
 
 from django.conf import settings
 from pydantic import BaseModel, Field, field_validator
+
+# Replacement for any secret value in a redacted dump.
+REDACTED = "***"
+
+
+def _redact_webhook_url(url: str) -> str:
+    """Strip the secret-bearing parts of a webhook URL, keep the host.
+
+    Slack/Discord put the token in the path, so dropping only the query
+    would still leak. Keep `scheme://host[:port]` for recognition and
+    collapse everything after the authority to `/***`. A URL that won't
+    parse is replaced wholesale rather than risking a partial leak.
+    """
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return REDACTED
+    if not parts.scheme or not parts.hostname:
+        return REDACTED
+    netloc = parts.hostname
+    if parts.port:
+        netloc = f"{netloc}:{parts.port}"
+    return f"{parts.scheme}://{netloc}/***"
 
 
 # ── Stream specs (discriminated union over kind) ──────────────────────────
@@ -83,7 +106,17 @@ def _default_engine_spec() -> EngineSpec:
 # ── Notifier specs (discriminated union over kind) ────────────────────────
 
 
-class WebhookNotifierSpec(BaseModel):
+class NotifierSpecBase(BaseModel):
+    """Common base for notifier specs. Owns the redaction contract so it
+    lives next to the schema it redacts (single source of truth; symmetric
+    with how create validates through this same typed config). Default:
+    nothing secret, return self. Specs with secrets override `redacted`."""
+
+    def redacted(self) -> "NotifierSpecBase":
+        return self
+
+
+class WebhookNotifierSpec(NotifierSpecBase):
     """POSTs a JSON payload to a configured URL.
 
     Security notes (single-tenant self-host assumption):
@@ -136,9 +169,21 @@ class WebhookNotifierSpec(BaseModel):
                     )
         return value
 
+    def redacted(self) -> "WebhookNotifierSpec":
+        """Mask both secret carriers: header values and the URL (Slack/
+        Discord/HMAC tokens live in the path/query). Header names are
+        kept so an operator can see which headers are set."""
+        return self.model_copy(
+            update={
+                "url": _redact_webhook_url(self.url),
+                "headers": dict.fromkeys(self.headers, REDACTED),
+            }
+        )
 
-class LogNotifierSpec(BaseModel):
-    """Writes the batch to stdout. For dev / verification."""
+
+class LogNotifierSpec(NotifierSpecBase):
+    """Writes the batch to stdout. For dev / verification. No secrets,
+    so it inherits the no-op `redacted` from NotifierSpecBase."""
 
     kind: Literal["log"] = "log"
     prefix: str = "[hit]"
@@ -154,7 +199,20 @@ NotifierSpec = Annotated[
 # ── Listener kind configs ─────────────────────────────────────────────────
 
 
-class SemanticListenerConfig(BaseModel):
+class ListenerConfig(BaseModel):
+    """Base for every listener-kind config.
+
+    Owns `redacted_dump()`: the read-path counterpart to the create-path
+    `model_validate(...).model_dump(...)`. The serializer calls this
+    instead of hand-walking the raw blob, so what is secret is declared
+    once, on the typed config, and never drifts from the schema. Default:
+    nothing secret. Kinds with secret-bearing sub-specs override."""
+
+    def redacted_dump(self) -> dict[str, Any]:
+        return self.model_dump(mode="json")
+
+
+class SemanticListenerConfig(ListenerConfig):
     """Schema for Listener.data when Listener.kind == 'semantic'."""
 
     LISTENER_KIND: ClassVar[str] = "semantic"
@@ -172,3 +230,12 @@ class SemanticListenerConfig(BaseModel):
     digest_interval_seconds: int = 3600
 
     model_config = {"extra": "ignore"}
+
+    def redacted_dump(self) -> dict[str, Any]:
+        """Redact per notifier spec, then dump. Each spec masks its own
+        secrets (see NotifierSpecBase.redacted), so adding a new
+        secret-bearing notifier needs no change here."""
+        scrubbed = self.model_copy(
+            update={"notifiers": [n.redacted() for n in self.notifiers]}
+        )
+        return scrubbed.model_dump(mode="json")
