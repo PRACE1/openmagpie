@@ -218,6 +218,20 @@ class PollListenerOperation:
             # create time so this branch doesn't fire for them. Keeps
             # cold-starts free of surprise multi-hour LLM bills.
             watch.last_event_at = timezone.now()
+            # Log the cold-start: this is a one-time, irreversible
+            # watermark init - everything before `last_event_at` is
+            # permanently out of scope (no backfill). The on_progress
+            # event below only surfaces in the management command (its
+            # callback is a no-op elsewhere), so without this the most
+            # common operator surprise ("my new listener missed a recent
+            # post") has no trace via poll_listener / future schedulers.
+            logger.info(
+                "cold-start: listener=%s stream=%s watermark set to %s; "
+                "items before this are out of scope (no backfill)",
+                self.listener.id,
+                watch.spec.display(),
+                watch.last_event_at.isoformat(),
+            )
             self.on_progress(
                 StreamStarted(
                     listener=self.listener,
