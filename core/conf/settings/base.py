@@ -10,17 +10,24 @@ SECRET_KEY = os.environ["DJANGO_SECRET_KEY"]
 DJANGO_ENV = os.environ.get("DJANGO_ENV", "local")
 IS_PRODUCTION = DJANGO_ENV == "prod"
 
-INSTALLED_APPS = [
+DJANGO_APPS = [
     "django.contrib.auth",
     "django.contrib.contenttypes",
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
-    # Third-party
+]
+
+THIRD_PARTY_APPS = [
     "corsheaders",
     "oauth2_provider",
     "rest_framework",
-    # Local apps
+]
+
+# Single source of truth for our apps: drives INSTALLED_APPS *and*
+# `_APP_LOGGERS` below. Add an app here once and it gets a logger config
+# automatically, no second list to keep in sync.
+LOCAL_APPS = [
     "common",
     "accounts",
     "auth_api",
@@ -30,6 +37,8 @@ INSTALLED_APPS = [
     "engine",
     "notifications",
 ]
+
+INSTALLED_APPS = DJANGO_APPS + THIRD_PARTY_APPS + LOCAL_APPS
 
 AUTH_USER_MODEL = "accounts.User"
 
@@ -225,16 +234,9 @@ def _app_log_level(app: str) -> str:
     return os.environ.get(key, LOG_LEVEL_APP).upper()
 
 
-_APP_LOGGERS = (
-    "accounts",
-    "auth_api",
-    "common",
-    "engine",
-    "events",
-    "listeners",
-    "notifications",
-    "sources",
-)
+# Derived from LOCAL_APPS so a new app can't ship without its logger
+# config (the drift this avoids).
+_APP_LOGGERS = tuple(LOCAL_APPS)
 
 LOGGING = {
     "version": 1,
