@@ -6,7 +6,6 @@ Cross-tenant operations live under `ListenerService.Global`, body in
 call shape (`ListenerService.Global.<op>`) is stable regardless of layout.
 """
 
-from collections.abc import Iterator
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -14,6 +13,12 @@ from listeners.models import Listener
 from listeners.registry import get_config_class
 
 from ._listeners_global import ListenerGlobal
+
+# Hard ceiling on the un-paginated list endpoint. An account is not
+# expected to approach this in v0; if that changes, add real pagination
+# rather than raising the cap. Bounds the response so a pathological
+# account can't ask for an unbounded result set.
+LISTENERS_LIST_CAP = 500
 
 
 class ListenerService:
@@ -56,12 +61,18 @@ class ListenerService:
         """Raises Listener.DoesNotExist if missing (or if owned by another account)."""
         return Listener.objects.get(id=id, account_id=self.account_id)
 
-    def list(self, *, chunk_size: int = 100) -> Iterator[Listener]:
-        """All listeners in this account, newest first."""
-        return (
-            Listener.objects.filter(account_id=self.account_id)
-            .order_by("-created_at")
-            .iterator(chunk_size=chunk_size)
+    def list(self) -> list[Listener]:
+        """This account's listeners, newest first, capped at
+        `LISTENERS_LIST_CAP`.
+
+        Returns a materialized list, not a streaming iterator: the only
+        caller serializes `many=True` which materializes anyway, so a
+        chunked cursor bought nothing. No pagination in v0 (see the cap
+        rationale on the constant)."""
+        return list(
+            Listener.objects.filter(account_id=self.account_id).order_by("-created_at")[
+                :LISTENERS_LIST_CAP
+            ]
         )
 
     def build(
@@ -92,6 +103,9 @@ class ListenerService:
         config_class = get_config_class(kind)
         validated = config_class.model_validate(data)
         normalized_data = validated.model_dump(mode="json")
+        # Scope is enforced by construction here (account_id is bound to
+        # this service instance), so `_assert_scope` isn't needed on the
+        # write path the way it is for update_poll_state/update_digest.
         return Listener(
             user_id=user_id,
             account_id=self.account_id,

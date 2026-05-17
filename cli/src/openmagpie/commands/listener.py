@@ -23,6 +23,7 @@ user can correct their YAML.
 from __future__ import annotations
 
 import sys
+from importlib import resources
 from pathlib import Path
 from typing import Any, Optional
 
@@ -30,7 +31,8 @@ import httpx
 import typer
 import yaml
 
-from ..context import app_ctx
+from ..api.listener import ListenerMutationResponse
+from ..context import AppContext, app_ctx
 from ..http import ApiError, AuthError
 
 listener_app = typer.Typer(no_args_is_help=True)
@@ -39,51 +41,10 @@ listener_app = typer.Typer(no_args_is_help=True)
 # ── Template ───────────────────────────────────────────────────────────
 
 
-# Commented-out example showing every common field so first-time users
-# can fill in rather than invent. `instructions` uses the YAML `|`
-# block scalar so the prompt reads as plain prose.
-TEMPLATE_YAML = """\
-# Magpie listener config.
-#
-# Save and run:
-#   magpie listener create -f listener.yaml
-#
-# Or pipe through stdin (--yes required, no TTY to confirm on):
-#   magpie listener template | magpie listener create -f - --yes
-
-name: my-listener
-instructions: |
-  What should the engine consider a hit? Plain-English criteria
-  the LLM reads verbatim. Be specific about what counts AND what
-  doesn't, e.g. "Posts about X, but skip jokes and ads."
-
-kind: semantic
-delivery_mode: digest      # 'instant' = fire per hit; 'digest' = batch
-poll_interval_seconds: 300
-
-data:
-  engine:
-    kind: ollama
-    model: qwen2.5:7b
-
-  streams:
-    - spec:
-        kind: reddit_subreddit
-        subreddit: MachineLearning
-      # last_event_at: 2026-04-14T00:00:00Z   # optional; default = "from now forward"
-
-  notifiers:
-    - kind: log
-      prefix: "[my-listener]"
-      include_fields: []
-    # - kind: webhook
-    #   url: https://example.com/hook
-    #   headers: {}
-    #   include_fields: []
-
-  hit_threshold: 0.7            # engine score >= this counts as a hit
-  digest_interval_seconds: 3600 # only consulted when delivery_mode = digest
-"""
+# The starter config lives as a real `.yaml` resource (syntax-highlighted,
+# editable as YAML) rather than a Python heredoc. Shipped as package data;
+# read once at import.
+TEMPLATE_YAML = resources.files("openmagpie").joinpath("listener_template.yaml").read_text(encoding="utf-8")
 
 
 @listener_app.command("template")
@@ -142,8 +103,8 @@ def create(
 
     # Server-side validate-only first. Catches a bad engine kind, an
     # unknown stream kind, a malformed `data` blob, etc. BEFORE anything
-    # is persisted, and returns the normalized would-be record so the
-    # preview is exactly what create would store.
+    # is persisted, and returns the normalized record. This is a
+    # validation preview, not a create-success guarantee.
     preview = _create_or_abort(ac, body, dry_run=True)
     _print_preview(preview)
 
@@ -166,9 +127,20 @@ def create(
             raise typer.Exit(code=1)
 
     result = _create_or_abort(ac, body, dry_run=False)
-    listener_id = result.get("id", "?")
-    name = result.get("name", "?")
-    typer.secho(f"✓ Created listener {name} ({listener_id})", fg=typer.colors.GREEN)
+    if result.dry_run:
+        # The real create must come back dry_run=False. True means it
+        # didn't persist (a stale dry-run response, a proxy replaying the
+        # GET preview, etc.) - don't claim success.
+        typer.secho(
+            "Unexpected server response: create did not confirm persistence.",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    typer.secho(
+        f"✓ Created listener {result.name} ({result.id or '?'})",
+        fg=typer.colors.GREEN,
+    )
 
 
 # ── List ───────────────────────────────────────────────────────────────
@@ -262,7 +234,7 @@ def _parse_yaml_or_abort(text: str) -> dict[str, Any]:
     return parsed
 
 
-def _create_or_abort(ac: Any, body: dict[str, Any], *, dry_run: bool) -> dict[str, Any]:
+def _create_or_abort(ac: AppContext, body: dict[str, Any], *, dry_run: bool) -> ListenerMutationResponse:
     """Call the create endpoint (dry-run or real), mapping the transport
     failure modes to a clean exit. Shared by the preview pass and the
     real create so both surface identical error messages."""
@@ -287,11 +259,15 @@ def _create_or_abort(ac: Any, body: dict[str, Any], *, dry_run: bool) -> dict[st
         raise typer.Exit(code=1)
 
 
-def _print_preview(p: dict[str, Any]) -> None:
+def _print_preview(p: ListenerMutationResponse) -> None:
     """Render the would-be listener so the user can eyeball it before
-    confirming. Fields are pipe-delimited per repo convention; secrets
-    in the config blob are already redacted server-side."""
-    data = p.get("data") or {}
+    confirming. Top-level fields are pipe-delimited per repo convention;
+    multi-value fields list their items comma-separated. Secrets in the
+    config blob are already redacted server-side.
+
+    `p.data` is walked as a dict on purpose: it's the kind-polymorphic
+    blob the CLI keeps opaque (see api/listener.py)."""
+    data = p.data or {}
     streams = data.get("streams") or []
     notifiers = data.get("notifiers") or []
     engine = data.get("engine") or {}
@@ -304,16 +280,16 @@ def _print_preview(p: dict[str, Any]) -> None:
     notifier_bits = [n.get("kind", "?") for n in notifiers]
 
     typer.secho("Would create this listener:", fg=typer.colors.CYAN)
-    typer.echo(f"  name             | {p.get('name', '?')}")
-    typer.echo(f"  kind             | {p.get('kind', '?')}")
-    typer.echo(f"  delivery         | {p.get('delivery_mode', '?')} | poll {p.get('poll_interval_seconds', '?')}s")
+    typer.echo(f"  name             | {p.name}")
+    typer.echo(f"  kind             | {p.kind}")
+    typer.echo(f"  delivery         | {p.delivery_mode} | poll {p.poll_interval_seconds}s")
     typer.echo(
         f"  engine           | {engine.get('kind', '?')}" + (f" | {engine.get('model')}" if engine.get("model") else "")
     )
-    typer.echo(f"  streams          | {' , '.join(stream_bits) or '(none)'}")
-    typer.echo(f"  notifiers        | {' , '.join(notifier_bits) or '(none)'}")
+    typer.echo(f"  streams          | {', '.join(stream_bits) or '(none)'}")
+    typer.echo(f"  notifiers        | {', '.join(notifier_bits) or '(none)'}")
 
-    instructions = (p.get("instructions") or "").strip().replace("\n", " ")
+    instructions = p.instructions.strip().replace("\n", " ")
     if len(instructions) > 100:
         instructions = instructions[:99] + "…"
     typer.echo(f"  instructions     | {instructions or '(empty)'}")
@@ -332,8 +308,20 @@ def _print_api_error(e: ApiError) -> None:
         for line in _flatten_errors(e.body):
             typer.secho(f"  {line}", fg=typer.colors.RED, err=True)
         return
+    # Non-400. Surface the server's `detail`/`error` string if it sent
+    # one (e.g. a 5xx structured body) so a post-confirm failure reads
+    # legibly instead of a bare status. Only those two known string
+    # fields, never the whole body, which can carry tokens on other
+    # endpoints.
+    detail = ""
+    if isinstance(e.body, dict):
+        for key in ("detail", "error"):
+            val = e.body.get(key)
+            if isinstance(val, str) and val:
+                detail = f" {val}"
+                break
     typer.secho(
-        f"Server returned an error (HTTP {e.status}).",
+        f"Server returned an error (HTTP {e.status}).{detail}",
         fg=typer.colors.RED,
         err=True,
     )

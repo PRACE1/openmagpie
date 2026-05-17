@@ -67,9 +67,10 @@ class BaseConnector:
     is microseconds, negligible next to per-observation LLM judging.
     Override `count` only if your upstream has a cheaper exact-count path.
 
-    `Connector` stays a Protocol so the registry types structurally; this
-    class is the opt-in default, not a required parent. Subclasses still
-    supply `kind`, `observations`, and `poll`.
+    `BaseConnector` itself is NOT a `Connector` (it has no `kind` /
+    `observations`); a concrete subclass that declares those plus `poll`
+    is what structurally satisfies the Protocol. This class only supplies
+    the `count` default, it is opt-in, not a required parent.
     """
 
     def count(

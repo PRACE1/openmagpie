@@ -32,33 +32,68 @@ class ListenerSummary(BaseModel):
     is_active: bool
 
 
+class ListenerListResponse(BaseModel):
+    """Envelope for `GET /v1/listeners` (`{"items": [...]}`).
+
+    Modeled so the client parses the envelope the same typed way it
+    parses each item, instead of ad-hoc `raw.get("items", [])` poking.
+    Unknown top-level keys are ignored by Pydantic default.
+    """
+
+    items: list[ListenerSummary] = []
+
+
+class ListenerMutationResponse(BaseModel):
+    """Typed envelope for create / dry-run (`POST /v1/listeners`).
+
+    The envelope fields are stable and CLI-owned, so they're typed. The
+    kind-polymorphic `data` blob is left as an opaque dict on purpose:
+    typing it would mean mirroring the server's Pydantic registry here
+    and re-versioning on every new listener kind (the drift the
+    server-as-sole-validation-authority design avoids). Extra response
+    fields (last_polled_at, next_poll_at, ...) are ignored.
+
+    `id` is absent on the dry-run preview (the server strips the pre-save
+    placeholder), hence optional. `dry_run` is True for a preview, False
+    for a real create.
+    """
+
+    id: str | None = None
+    name: str
+    kind: str
+    delivery_mode: str
+    instructions: str
+    poll_interval_seconds: int
+    dry_run: bool
+    data: dict[str, Any] = {}
+
+
 class ListenerApi:
     """Resource client for `/v1/listeners`."""
 
     def __init__(self, http: MagpieClient) -> None:
         self._http = http
 
-    def create(self, body: dict[str, Any], *, dry_run: bool = False) -> dict[str, Any]:
-        """POST a listener. Returns the full server response dict so the
-        caller can echo `id`, `name`, or anything else. Server-side
-        validation errors propagate as `ApiError` (status=400) carrying
-        the per-field detail in `e.body`.
+    def create(self, body: dict[str, Any], *, dry_run: bool = False) -> ListenerMutationResponse:
+        """POST a listener. Returns the parsed `ListenerMutationResponse`.
+        Server-side validation errors propagate as `ApiError` (status=400)
+        carrying the per-field detail in `e.body`.
 
         `dry_run=True` adds `?dry_run=true`: the server runs the identical
-        validation and returns the would-be record (with a `dry_run: true`
-        marker) WITHOUT persisting. Used for the preview/confirm step so
-        the user sees exactly what create would store before it happens.
+        validation and returns the validated record (with `dry_run: true`)
+        WITHOUT persisting. Used for the preview/confirm step. It is a
+        validation preview, not a create-success guarantee.
         """
         params = {"dry_run": "true"} if dry_run else None
-        return self._http.post(routes.listeners.collection, json_body=body, params=params)
+        raw = self._http.post(routes.listeners.collection, json_body=body, params=params)
+        return ListenerMutationResponse.model_validate(raw)
 
     def list(self) -> list[ListenerSummary]:
         """List listeners in the caller's account, newest-first.
 
-        Server returns `{"items": [<listener>, ...]}`; we project each
-        item to a `ListenerSummary` so command code doesn't paw through
-        keys it doesn't render.
+        Server returns `{"items": [<listener>, ...]}`; parsed through
+        `ListenerListResponse` so the envelope and each item go through
+        the same typed path (no ad-hoc dict poking).
         """
         raw = self._http.get(routes.listeners.collection)
-        items = raw.get("items", []) if isinstance(raw, dict) else []
-        return [ListenerSummary.model_validate(item) for item in items]
+        return ListenerListResponse.model_validate(raw).items

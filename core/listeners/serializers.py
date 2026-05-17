@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import copy
 from typing import Any
+from urllib.parse import urlsplit
 
 from listeners.models import Listener
 from listeners.registry import get_config_class
@@ -32,7 +33,11 @@ class ListenerCreateSerializer(serializers.Serializer):
     """
 
     name = serializers.CharField(max_length=255, trim_whitespace=True)
-    instructions = serializers.CharField(trim_whitespace=True)
+    # min_length floors out "" / "." / "x": instructions are fed verbatim
+    # to the engine as the relevance criteria, a sub-meaningful value
+    # silently burns LLM tokens producing garbage verdicts every poll.
+    # The floor is deliberately low, it catches junk, not short prose.
+    instructions = serializers.CharField(min_length=8, trim_whitespace=True)
     kind = serializers.CharField(max_length=32)
     delivery_mode = serializers.ChoiceField(
         choices=[m.value for m in Listener.DeliveryMode],
@@ -69,24 +74,34 @@ class ListenerCreateSerializer(serializers.Serializer):
         return attrs
 
 
-def _pydantic_errors_to_drf(exc: PydanticValidationError) -> dict[str, Any]:
-    """Re-shape Pydantic's flat error list into DRF's nested error dict.
+def _loc_to_path(loc: tuple[Any, ...]) -> str:
+    """Render a Pydantic `loc` tuple as a flat field path.
 
-    Pydantic's `loc` is a tuple of path segments (`('streams', 0,
-    'spec', 'kind')`); DRF wants nested dicts mirroring the request
-    shape so the frontend can map errors to form fields by path.
+    `('streams', 0, 'spec', 'kind')` -> `streams[0].spec.kind`. Integer
+    segments are list indices and become `[i]`; named segments are
+    dot-joined. This is the exact shape `cli/AGENTS.md` documents and the
+    CLI error printer expects, one key per leaf, no nested dicts (so
+    sibling errors under the same parent can't collide and array-element
+    paths render as `streams[0]...`, not `streams.0...`).
     """
-    out: dict[str, Any] = {}
+    parts: list[str] = []
+    for seg in loc:
+        if isinstance(seg, int):
+            parts.append(f"[{seg}]")
+        else:
+            parts.append(str(seg) if not parts else f".{seg}")
+    return "".join(parts) or "__root__"
+
+
+def _pydantic_errors_to_drf(exc: PydanticValidationError) -> dict[str, Any]:
+    """Re-shape Pydantic's error list into DRF's `{path: [messages]}` dict.
+
+    Flat, one key per leaf path (see `_loc_to_path`). Multiple messages
+    for the same path accumulate in the list.
+    """
+    out: dict[str, list[str]] = {}
     for err in exc.errors():
-        cursor: Any = out
-        path = list(err["loc"])
-        for segment in path[:-1]:
-            key = str(segment)
-            if key not in cursor or not isinstance(cursor[key], dict):
-                cursor[key] = {}
-            cursor = cursor[key]
-        leaf_key = str(path[-1]) if path else "__root__"
-        cursor.setdefault(leaf_key, []).append(err["msg"])
+        out.setdefault(_loc_to_path(tuple(err["loc"])), []).append(err["msg"])
     return out
 
 
@@ -96,12 +111,14 @@ def _pydantic_errors_to_drf(exc: PydanticValidationError) -> dict[str, Any]:
 class ListenerSerializer(serializers.Serializer):
     """Wire shape for a Listener record. Fed an ORM `Listener` instance.
 
-    Also serves the dry-run preview, which is fed an *unsaved* instance:
-    `id` and `created_at` are null until `.save()`, so both allow null
-    here. On the real create/list path they are always populated.
+    Also serves the dry-run preview, which is fed an *unsaved* instance.
+    `created_at` is `None` until `.save()` (auto_now_add), hence
+    `allow_null`. `id` is an empty string (not null) pre-save, since
+    `ULIDField` generates in `pre_save`; the dry-run view strips that
+    placeholder so a client never reads a meaningless id.
     """
 
-    id = serializers.CharField(allow_null=True)
+    id = serializers.CharField()
     name = serializers.CharField()
     instructions = serializers.CharField()
     kind = serializers.CharField()
@@ -122,16 +139,48 @@ class ListenerSerializer(serializers.Serializer):
     _REDACTED = "***"
 
     def get_data(self, obj: Listener) -> dict[str, Any]:
-        """Return the config blob with notifier header values redacted.
+        """Return the config blob with webhook secrets redacted.
 
-        Webhook notifiers can carry Authorization/Cookie style secrets in
-        `headers` (see configs.WebhookNotifierSpec). Those must never be
-        echoed back on create (201) or list (GET). Header *names* are kept
-        so an operator can confirm which headers are set without exposing
-        the secret value.
+        Webhook notifiers carry secrets two ways and BOTH must be scrubbed
+        before this blob is echoed on create (201), list (GET), or the
+        dry-run (200) response:
+
+          - `headers`: Authorization/Cookie style values. Names are kept
+            (so an operator can see which headers are set) but every value
+            is masked.
+          - `url`: Slack/Discord/HMAC webhooks embed the token in the URL
+            path or query (`hooks.slack.com/services/T../B../XXXXSECRET`).
+            We keep only `scheme://host[:port]` so the destination is still
+            recognizable, and replace path/query/userinfo with `/***`.
         """
         data = copy.deepcopy(obj.data or {})
         for notifier in data.get("notifiers", []):
-            if isinstance(notifier, dict) and isinstance(notifier.get("headers"), dict):
+            if not isinstance(notifier, dict):
+                continue
+            if isinstance(notifier.get("headers"), dict):
                 notifier["headers"] = dict.fromkeys(notifier["headers"], self._REDACTED)
+            if notifier.get("kind") == "webhook" and isinstance(
+                notifier.get("url"), str
+            ):
+                notifier["url"] = _redact_webhook_url(notifier["url"])
         return data
+
+
+def _redact_webhook_url(url: str) -> str:
+    """Strip the secret-bearing parts of a webhook URL, keep the host.
+
+    Slack/Discord put the token in the path, so dropping only the query
+    would still leak. We keep `scheme://host[:port]` for recognition and
+    collapse everything after the authority to `/***`. A URL that won't
+    parse is replaced wholesale rather than risking a partial leak.
+    """
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return ListenerSerializer._REDACTED
+    if not parts.scheme or not parts.hostname:
+        return ListenerSerializer._REDACTED
+    netloc = parts.hostname
+    if parts.port:
+        netloc = f"{netloc}:{parts.port}"
+    return f"{parts.scheme}://{netloc}/***"

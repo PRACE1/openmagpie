@@ -74,10 +74,14 @@ class PollResult:
 class StreamStarted:
     """Fired once at the top of each stream's poll loop.
 
-    `expected_max` is the count this poll cycle will judge: 0 on cold
-    start (forward-looking snapshot), otherwise the connector's exact
-    pending count for warm starts (`Connector.count(...)`). The
-    progress UI renders `N/expected_max`, percent, and ETA from this.
+    `expected_max` is the count this poll cycle expects to judge: 0 on
+    cold start (forward-looking snapshot), otherwise the connector's
+    best-effort pre-count for warm starts (`Connector.count(...)`). It
+    is best-effort, not exact: `count` and `poll` are separate upstream
+    walks, so a high-churn source (Reddit /new) can grow between them
+    and the actual judged count can exceed `expected_max`. The progress
+    UI renders `N/expected_max`, percent, and ETA from this and clamps
+    gracefully when the estimate is overrun.
     """
 
     listener: Listener

@@ -174,7 +174,16 @@ class _ProgressPrinter:
             self._last_print_at = time.monotonic()
 
     def _format_n(self) -> str:
-        return f"{self._judged:>4}/{self._expected_max}"
+        # `expected_max` is a best-effort pre-count (count and poll are
+        # separate upstream walks; a high-churn feed can grow between
+        # them). Mark the denominator `~` once judged overruns it so the
+        # display reads as an estimate, not a broken `12/8`.
+        denom = (
+            f"~{self._expected_max}"
+            if self._judged > self._expected_max
+            else f"{self._expected_max}"
+        )
+        return f"{self._judged:>4}/{denom}"
 
     def _stats_summary(self) -> str:
         """Heartbeat body: percent + counts + throughput + ETA."""
@@ -182,7 +191,13 @@ class _ProgressPrinter:
         avg = elapsed / self._judged if self._judged else 0.0
         remaining = max(self._expected_max - self._judged, 0)
         eta = remaining * avg
-        pct = 100.0 * self._judged / self._expected_max if self._expected_max else 0.0
+        # Clamp at 100: a best-effort pre-count overrun must not print
+        # 137% (see _format_n).
+        pct = (
+            min(100.0, 100.0 * self._judged / self._expected_max)
+            if self._expected_max
+            else 0.0
+        )
         return (
             f"{pct:.0f}%, "
             f"{self._hits} hit, {self._errors} err, "
