@@ -61,6 +61,35 @@ ac.sign_out()                    # returns bool: server-side revoke success
 - **Refresh failure: only 401 clears local creds.** Other non-2xx raise `ApiError` without clearing; a network blip or 5xx shouldn't sign the user out.
 - **`ApiError.__str__` deliberately OMITS the body.** Response bodies can carry tokens (the refresh-rotation path echoes them on success, a misbehaving server might echo them on failure too). Callers that want body info access `e.body` and own the print/redact decision.
 
+## Typed boundaries (where `Any` / raw `dict` is allowed)
+
+Resource clients in `api/` **return parsed Pydantic models, never raw
+`dict`**. A method that does `return self._http.get(...)` straight to the
+caller is a bug: parse the `raw` through a model first (see
+`api/auth.py`, and `ListenerListResponse` / `ListenerMutationResponse`
+in `api/listener.py`). The point is that a command author reads response
+shapes from the CLI's own models, never by diving into the server.
+
+`Any` / `dict[str, Any]` is allowed in exactly three places, and only
+these:
+
+1. **The `http.py` transport seam.** `get` / `post` / `_handle` return
+   `Any` because the raw layer genuinely can't know the shape. Typing
+   happens one layer up, in the `api/` client. Don't fake a type here.
+2. **The opaque request body.** User-authored config (YAML → `dict`) is
+   posted to the server-as-sole-validator. Typing it CLI-side would mean
+   mirroring the server's Pydantic registry and re-versioning on every
+   new listener kind, the drift the dry-run design exists to avoid. The
+   honest type for "arbitrary config we deliberately don't validate
+   here" is `dict[str, Any]`.
+3. **Polymorphic error bodies.** `ApiError.body` / `_flatten_errors` walk
+   a genuinely variable structure (DRF nested dict, structured error, or
+   plain text).
+
+Everything else, command args, helper params, AppContext, gets a real
+type. A new `Any` outside the three cases above needs a one-line comment
+justifying why the shape is genuinely unknowable, or it's wrong.
+
 ## Structured CLI identity (not User-Agent parsing)
 
 The CLI sends a structured `client_info()` payload on the device-flow `/create` body. The authorize page renders those fields directly. **Do not parse User-Agent strings server-side for product behavior.** UA exists for log visibility only.
