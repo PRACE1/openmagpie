@@ -106,6 +106,15 @@ def create(
     # is persisted, and returns the normalized record. This is a
     # validation preview, not a create-success guarantee.
     preview = _create_or_abort(ac, body, dry_run=True)
+    if not preview.dry_run or preview.id:
+        # We asked for validate-only but the server returned a
+        # create-shaped response (and maybe an id). It may have actually
+        # persisted - tell the user with the id so they can check, and
+        # stop (continuing to the confirm/create would risk a duplicate).
+        raise _abort_unexpected(
+            "asked for a dry run but the server reported a persisted listener",
+            preview.id,
+        )
     _print_preview(preview)
 
     if dry_run:
@@ -130,15 +139,11 @@ def create(
     if result.dry_run or not result.id:
         # A real create must come back dry_run=False AND with a persisted
         # id - that's one invariant, not two. dry_run=True, or a missing
-        # id on a dry_run=False response, both mean it didn't persist (a
-        # stale/replayed dry-run response, a proxy serving the GET
-        # preview, etc.). Don't claim success.
-        typer.secho(
-            "Unexpected server response: create did not confirm persistence.",
-            fg=typer.colors.RED,
-            err=True,
-        )
-        raise typer.Exit(code=1)
+        # id on a dry_run=False response, both mean it didn't confirm
+        # persistence (a stale/replayed dry-run response, a proxy serving
+        # the GET preview, etc.). If an id came back anyway, surface it:
+        # a listener may exist and the user needs to know to check.
+        raise _abort_unexpected("create did not confirm persistence", result.id)
     typer.secho(
         f"✓ Created listener {result.name} ({result.id})",
         fg=typer.colors.GREEN,
@@ -189,6 +194,18 @@ def list_() -> None:
 
 
 # ── Helpers ────────────────────────────────────────────────────────────
+
+
+def _abort_unexpected(what: str, maybe_id: str | None) -> typer.Exit:
+    """Build the exit for an inconsistent server response. If an id came
+    back, a listener may actually exist despite the inconsistency, so
+    name it: the user needs to know to go check / clean up. Returned (not
+    raised) so the call site reads `raise _abort_unexpected(...)`."""
+    msg = f"Unexpected server response: {what}."
+    if maybe_id:
+        msg += f" A listener may have been created - check id {maybe_id}"
+    typer.secho(msg, fg=typer.colors.RED, err=True)
+    return typer.Exit(code=1)
 
 
 def _read_file_or_abort(path: str) -> str:
