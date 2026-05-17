@@ -81,6 +81,30 @@ class ListenerMutationResponse(BaseModel):
     summary: ListenerConfigSummary = ListenerConfigSummary()
 
 
+class ListenerDetail(BaseModel):
+    """`GET /v1/listeners/<id>` - the read view, and the round-trip
+    payload for edit.
+
+    `data` is the server's REDACTED config blob. It is opaque to the
+    CLI: never parsed (no shadow schema), only dumped back into $EDITOR
+    for `edit`, where the server re-validates and restores `***` secrets
+    + watermarks. Display uses the typed `summary`, never `data`.
+    """
+
+    id: str
+    name: str
+    kind: str
+    delivery_mode: str
+    instructions: str
+    poll_interval_seconds: int
+    is_active: bool
+    created_at: str | None = None
+    last_polled_at: str | None = None
+    next_poll_at: str | None = None
+    summary: ListenerConfigSummary = ListenerConfigSummary()
+    data: dict[str, Any] = {}
+
+
 class ListenerApi:
     """Resource client for `/v1/listeners`."""
 
@@ -112,3 +136,21 @@ class ListenerApi:
         """
         raw = self._http.get(routes.listeners.collection)
         return ListenerListResponse.model_validate(raw).items
+
+    def get(self, listener_id: str) -> ListenerDetail:
+        """GET one listener (account-scoped). 404 -> ApiError(status=404)."""
+        raw = self._http.get(routes.listeners.detail(listener_id))
+        return ListenerDetail.model_validate(raw)
+
+    def update(self, listener_id: str, body: dict[str, Any], *, dry_run: bool = False) -> ListenerMutationResponse:
+        """PUT a full-replace edit. Same contract as `create` (envelope
+        validation, `?dry_run=true` preview, same response shape). The
+        server keeps `kind` immutable, and preserves watermarks + `***`
+        secrets the operator left masked."""
+        params = {"dry_run": "true"} if dry_run else None
+        raw = self._http.put(routes.listeners.detail(listener_id), json_body=body, params=params)
+        return ListenerMutationResponse.model_validate(raw)
+
+    def delete(self, listener_id: str) -> None:
+        """DELETE one listener. 204 on success; 404 -> ApiError."""
+        self._http.delete(routes.listeners.detail(listener_id))

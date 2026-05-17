@@ -8,4 +8,9 @@ urlpatterns = [
         views.ListenerListCreateView.as_view(),
         name="listener_list_create",
     ),
+    api_path(
+        "<str:listener_id>",
+        views.ListenerDetailView.as_view(),
+        name="listener_detail",
+    ),
 ]

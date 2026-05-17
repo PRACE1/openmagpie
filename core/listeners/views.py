@@ -12,15 +12,16 @@ Listener-kind-specific validation lives in the Pydantic registry
 from __future__ import annotations
 
 import logging
-from typing import Any, cast
+from typing import Any
 
 from accounts.services import AccountService
 from rest_framework import permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from .models import Listener
 from .registry import get_config_class
-from .serializers import ListenerCreateSerializer, ListenerSerializer
+from .serializers import ListenerCreateSerializer, listener_wire
 from .services.listeners import ListenerService
 
 logger = logging.getLogger("listeners")
@@ -53,27 +54,25 @@ def _no_primary_account_response(user_id: str) -> Response:
     )
 
 
-def _serialize(listener) -> dict[str, Any]:
-    """Serialize a Listener to its wire dict.
-
-    The `cast` is load-bearing: `ListenerSerializer` has an output field
-    literally named `data`, which makes the type checker read `.data` as
-    that field rather than `BaseSerializer.data`. Centralized here so the
-    rationale lives in one place, not at every call site.
-    """
-    return cast("dict[str, Any]", ListenerSerializer(listener).data)
+_EMPTY_SUMMARY = {"streams": [], "notifiers": [], "engine": ""}
 
 
 def _summary(listener) -> dict[str, Any]:
-    """Display projection for the create/dry-run preview, built from the
-    typed config (the only schema owner) so the CLI never parses `data`.
+    """Display projection built from the typed config (the only schema
+    owner) so the CLI never parses `data`.
 
-    No fail-safe needed here (unlike the list path): this runs only on
-    create/dry-run, where `listener.data` was just validated by
-    `ListenerService.build()` in this same request, so it's canonical.
-    """
-    config = get_config_class(str(listener.kind)).model_validate(listener.data or {})
-    return config.summary().model_dump(mode="json")
+    Same per-row fail-safe as `_redacted_data`: on create/dry-run/edit
+    the config was just validated in-request, but GET-detail reads
+    stored data that could be corrupt - one bad listener must degrade to
+    an empty summary, not 500. Logged via `_redacted_data` already on
+    the same request, so just swallow + default here."""
+    try:
+        config = get_config_class(str(listener.kind)).model_validate(
+            listener.data or {}
+        )
+        return config.summary().model_dump(mode="json")
+    except Exception:
+        return dict(_EMPTY_SUMMARY)
 
 
 class ListenerListCreateView(APIView):
@@ -112,7 +111,7 @@ class ListenerListCreateView(APIView):
                 poll_interval_seconds=d["poll_interval_seconds"],
                 data=d["data"],
             )
-            preview_data = _serialize(preview)
+            preview_data = listener_wire(preview)
             # `id` is an empty-string placeholder pre-save; drop it so a
             # client never reads a meaningless id from the preview.
             preview_data.pop("id", None)
@@ -139,7 +138,7 @@ class ListenerListCreateView(APIView):
         # just makes the contract explicit on both responses).
         return Response(
             {
-                **_serialize(listener),
+                **listener_wire(listener),
                 "summary": _summary(listener),
                 "dry_run": False,
             },
@@ -153,4 +152,116 @@ class ListenerListCreateView(APIView):
         if account_id is None:
             return _no_primary_account_response(str(request.user.id))
         listeners = ListenerService(account_id=account_id).list()
-        return Response({"items": ListenerSerializer(listeners, many=True).data})
+        return Response({"items": [listener_wire(o) for o in listeners]})
+
+
+def _not_found_response(listener_id: str) -> Response:
+    """404 for a listener absent from the caller's account. Same body
+    whether it never existed or belongs to another account - not
+    distinguishing IS the account-scoping guarantee."""
+    return Response(
+        {"error": "not_found", "detail": f"no listener {listener_id}"},
+        status=status.HTTP_404_NOT_FOUND,
+    )
+
+
+class ListenerDetailView(APIView):
+    """GET / PUT / DELETE /v1/listeners/<id>, all account-scoped.
+
+    PUT is full-replace edit and mirrors create's contract: same
+    envelope validation, same `?dry_run=true` preview, same body shape
+    (+ `summary`, `dry_run`). `kind` is immutable. Watermarks and `***`
+    secrets carry forward (ListenerService.build_update); id / created_at
+    / user_id / poll-state columns never change.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def _resolve(self, request, listener_id: str):
+        """`(svc, listener)` or an error `Response`. Centralizes the
+        account-scope + existence checks all three verbs share."""
+        account_id = AccountService.Global.primary_account_id_for(
+            user_id=str(request.user.id)
+        )
+        if account_id is None:
+            return _no_primary_account_response(str(request.user.id))
+        svc = ListenerService(account_id=account_id)
+        try:
+            return svc, svc.get(listener_id)
+        except Listener.DoesNotExist:
+            return _not_found_response(listener_id)
+
+    def get(self, request, listener_id: str):
+        resolved = self._resolve(request, listener_id)
+        if isinstance(resolved, Response):
+            return resolved
+        _, listener = resolved
+        return Response(
+            {**listener_wire(listener), "summary": _summary(listener)},
+            status=status.HTTP_200_OK,
+        )
+
+    def put(self, request, listener_id: str):
+        resolved = self._resolve(request, listener_id)
+        if isinstance(resolved, Response):
+            return resolved
+        svc, listener = resolved
+
+        serializer = ListenerCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        d = serializer.validated_data
+
+        if d["kind"] != listener.kind:
+            # Immutable: a kind change swaps the config schema, making
+            # watermark/secret preservation ill-defined. delete+recreate
+            # is the path for switching kind.
+            return Response(
+                {
+                    "error": "kind_immutable",
+                    "detail": (
+                        f"listener kind is {listener.kind!r} and cannot be "
+                        f"changed (requested {d['kind']!r})"
+                    ),
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        edit_kwargs = dict(
+            name=d["name"],
+            instructions=d["instructions"],
+            delivery_mode=d["delivery_mode"],
+            poll_interval_seconds=d["poll_interval_seconds"],
+            data=d["data"],
+        )
+
+        if _is_truthy(request.query_params.get("dry_run")):
+            # Same validate-only contract as create's dry-run, but id /
+            # created_at are real (existing row), so unlike create we do
+            # NOT strip id - the preview shows the actual listener.
+            preview = svc.build_update(listener, **edit_kwargs)
+            return Response(
+                {
+                    **listener_wire(preview),
+                    "summary": _summary(preview),
+                    "dry_run": True,
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        updated = svc.update(listener, **edit_kwargs)
+        return Response(
+            {
+                **listener_wire(updated),
+                "summary": _summary(updated),
+                "dry_run": False,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    def delete(self, request, listener_id: str):
+        resolved = self._resolve(request, listener_id)
+        if isinstance(resolved, Response):
+            return resolved
+        svc, listener = resolved
+        svc.delete(listener)
+        return Response(status=status.HTTP_204_NO_CONTENT)
