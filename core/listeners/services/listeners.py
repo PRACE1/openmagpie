@@ -64,6 +64,45 @@ class ListenerService:
             .iterator(chunk_size=chunk_size)
         )
 
+    def build(
+        self,
+        *,
+        user_id: str,
+        name: str,
+        instructions: str,
+        kind: str,
+        delivery_mode: str,
+        poll_interval_seconds: int,
+        data: dict[str, Any],
+    ) -> Listener:
+        """Validate the inputs and return an UNSAVED Listener instance.
+
+        Runs the full validation `create` does (DeliveryMode enum + the
+        kind's Pydantic config, which includes the engine-kind registry
+        check) and normalizes `data` to the canonical Pydantic JSON
+        dump, but never touches the DB. The dry-run path serializes the
+        instance this returns so the preview is byte-for-byte what
+        `create` would persist, no second validation path to drift.
+        """
+        self.validate_delivery_mode(delivery_mode)
+        # Re-validate `data` even though the view layer already did. The
+        # service is the seam where wrong shape becomes impossible, so
+        # any caller (mgmt command, future internal flow) gets the same
+        # safety net the HTTP path does.
+        config_class = get_config_class(kind)
+        validated = config_class.model_validate(data)
+        normalized_data = validated.model_dump(mode="json")
+        return Listener(
+            user_id=user_id,
+            account_id=self.account_id,
+            kind=kind,
+            name=name,
+            instructions=instructions,
+            delivery_mode=delivery_mode,
+            poll_interval_seconds=poll_interval_seconds,
+            data=normalized_data,
+        )
+
     def create(
         self,
         *,
@@ -75,29 +114,21 @@ class ListenerService:
         poll_interval_seconds: int,
         data: dict[str, Any],
     ) -> Listener:
-        """Validate the inputs against the kind's Pydantic config + the
-        DeliveryMode enum, then persist. `data` is stored as the
+        """Validate (via `build`) then persist. `data` is stored as the
         canonical Pydantic JSON dump so downstream readers always see a
         normalized blob regardless of input ordering / omitted defaults.
         """
-        self.validate_delivery_mode(delivery_mode)
-        # Re-validate `data` even though the view layer already did. The
-        # service is the seam where wrong shape becomes impossible, so
-        # any caller (mgmt command, future internal flow) gets the same
-        # safety net the HTTP path does.
-        config_class = get_config_class(kind)
-        validated = config_class.model_validate(data)
-        normalized_data = validated.model_dump(mode="json")
-        return Listener.objects.create(
+        listener = self.build(
             user_id=user_id,
-            account_id=self.account_id,
-            kind=kind,
             name=name,
             instructions=instructions,
+            kind=kind,
             delivery_mode=delivery_mode,
             poll_interval_seconds=poll_interval_seconds,
-            data=normalized_data,
+            data=data,
         )
+        listener.save()
+        return listener
 
     def update_poll_state(
         self,

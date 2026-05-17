@@ -179,6 +179,7 @@ class MagpieClient:
         path: str,
         *,
         json_body: dict[str, Any] | None = None,
+        params: dict[str, Any] | None = None,
         with_auth: bool = True,
         headers: dict[str, str] | None = None,
     ) -> Any:
@@ -187,9 +188,9 @@ class MagpieClient:
             # No token to refresh = no retry. Used by /tokens/refresh
             # itself (would loop) and pre-login endpoints.
             merged = dict(headers) if headers else {}
-            resp = self._client.post(path, headers=merged, json=body)
+            resp = self._client.post(path, headers=merged, json=body, params=params)
             return _handle(resp)
-        return self._authed_request("POST", path, json_body=body, headers=headers)
+        return self._authed_request("POST", path, json_body=body, params=params, headers=headers)
 
     def _authed_request(
         self,

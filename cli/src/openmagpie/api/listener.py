@@ -38,12 +38,19 @@ class ListenerApi:
     def __init__(self, http: MagpieClient) -> None:
         self._http = http
 
-    def create(self, body: dict[str, Any]) -> dict[str, Any]:
+    def create(self, body: dict[str, Any], *, dry_run: bool = False) -> dict[str, Any]:
         """POST a listener. Returns the full server response dict so the
         caller can echo `id`, `name`, or anything else. Server-side
         validation errors propagate as `ApiError` (status=400) carrying
-        the per-field detail in `e.body`."""
-        return self._http.post(routes.listeners.collection, json_body=body)
+        the per-field detail in `e.body`.
+
+        `dry_run=True` adds `?dry_run=true`: the server runs the identical
+        validation and returns the would-be record (with a `dry_run: true`
+        marker) WITHOUT persisting. Used for the preview/confirm step so
+        the user sees exactly what create would store before it happens.
+        """
+        params = {"dry_run": "true"} if dry_run else None
+        return self._http.post(routes.listeners.collection, json_body=body, params=params)
 
     def list(self) -> list[ListenerSummary]:
         """List listeners in the caller's account, newest-first.

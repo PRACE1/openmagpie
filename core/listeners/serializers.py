@@ -94,9 +94,14 @@ def _pydantic_errors_to_drf(exc: PydanticValidationError) -> dict[str, Any]:
 
 
 class ListenerSerializer(serializers.Serializer):
-    """Wire shape for a Listener record. Fed an ORM `Listener` instance."""
+    """Wire shape for a Listener record. Fed an ORM `Listener` instance.
 
-    id = serializers.CharField()
+    Also serves the dry-run preview, which is fed an *unsaved* instance:
+    `id` and `created_at` are null until `.save()`, so both allow null
+    here. On the real create/list path they are always populated.
+    """
+
+    id = serializers.CharField(allow_null=True)
     name = serializers.CharField()
     instructions = serializers.CharField()
     kind = serializers.CharField()
@@ -112,7 +117,7 @@ class ListenerSerializer(serializers.Serializer):
     # created the listener, it is not an ownership filter. See ListenerService.
     user_id = serializers.CharField()
     data = serializers.SerializerMethodField()
-    created_at = serializers.DateTimeField()
+    created_at = serializers.DateTimeField(allow_null=True)
 
     _REDACTED = "***"
 
