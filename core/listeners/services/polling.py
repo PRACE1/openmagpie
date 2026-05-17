@@ -274,7 +274,9 @@ class PollListenerOperation:
             observed += 1
             # Advance the watermark BEFORE per-obs processing so a failure here
             # doesn't trap us re-processing the same observation forever.
-            if watch.last_event_at is None or obs.occurred_at > watch.last_event_at:
+            # (last_event_at is non-None here: the None case returned early
+            # at the top of _poll_stream, the cold-start branch.)
+            if obs.occurred_at > watch.last_event_at:
                 watch.last_event_at = obs.occurred_at
 
             try:

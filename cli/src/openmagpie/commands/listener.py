@@ -291,11 +291,15 @@ def _print_preview(p: ListenerMutationResponse) -> None:
     notifiers = data.get("notifiers") or []
     engine = data.get("engine") or {}
 
-    stream_bits = [
-        (s.get("spec") or {}).get("kind", "?")
-        + (f":{(s.get('spec') or {}).get('subreddit')}" if (s.get("spec") or {}).get("subreddit") else "")
-        for s in streams
-    ]
+    # Render the spec generically: kind + its identity fields. Don't
+    # hardcode any connector's key (subreddit/repo/feed_url/...) - the
+    # CLI is kind-agnostic; that knowledge lives server-side.
+    stream_bits = []
+    for s in streams:
+        spec = s.get("spec") or {}
+        kind = spec.get("kind", "?")
+        ident = ":".join(str(v) for k, v in spec.items() if k != "kind")
+        stream_bits.append(f"{kind}:{ident}" if ident else kind)
     notifier_bits = [n.get("kind", "?") for n in notifiers]
 
     typer.secho("Would create this listener:", fg=typer.colors.CYAN)

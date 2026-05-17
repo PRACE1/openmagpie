@@ -39,7 +39,3 @@ class listeners:
     """`/v1/listeners/*` routes the CLI consumes."""
 
     collection = _LISTENERS
-
-    @staticmethod
-    def detail(listener_id: str) -> str:
-        return f"{_LISTENERS}/{listener_id}"

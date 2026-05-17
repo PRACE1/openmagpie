@@ -17,15 +17,20 @@ from typing import Any
 
 from django.urls import include, re_path
 
-# `path()`-style converters Django ships out of the box. Any path()
-# pattern using a converter outside this set will need its regex added
-# here.
+# `path()`-style converters. Any pattern using a converter outside this
+# set raises a clear error in `_convert_to_regex` (add it here).
+#
+# No `path` (`.+`) converter on purpose: `.+` is greedy, so the
+# trailing `/?$` this helper appends would capture the slash INTO the
+# value instead of making it optional, silently defeating the helper.
+# The converters below all exclude `/`, so the optional-slash logic is
+# correct for them. No route needs `<path:>`; if one ever does, add it
+# with slash-correct handling and a test, not a bare `.+`.
 _CONVERTER_REGEX: dict[str, str] = {
     "str": r"[^/]+",
     "int": r"\d+",
     "slug": r"[-a-zA-Z0-9_]+",
     "uuid": r"[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}",
-    "path": r".+",
 }
 
 _CONVERTER_RE = re.compile(r"<(?:(\w+):)?(\w+)>")
