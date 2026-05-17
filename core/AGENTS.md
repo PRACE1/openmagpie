@@ -34,6 +34,7 @@ Apps are created with `python manage.py startapp <name>` inside the container (`
 ## Models & data access
 
 - **Every model inherits `common.models.BaseModel`** → ULID primary key + `created_at` + `updated_at`.
+- **Order by the ULID PK, never `created_at`.** ULIDs are lexicographically sortable by creation time (the timestamp is the high bits), so `order_by("-id")` is newest-first using the indexed primary key. `created_at` is a redundant sort key with worse properties (timestamp ties, clock skew, an extra index). Use `id` for chronological ordering; `created_at`/`updated_at` are for display/audit, not sorting.
 - **No `ForeignKey`. Char pointers only.** Cross-model references are `CharField(max_length=26)` named `<thing>_id`. Stale data is OK; no cascades; no auto-indexes. Add `db_index=True` only when a specific lookup needs it.
 - **No direct `Model.objects.*` outside the model's owning service module.** All access goes through `<app>/services/<resource>.py`.
 - **Services are classes, not loose module functions.** One class per primary entity (e.g. `ListenerService`, `EventService`, `DeliveryService`). Instance methods for account-scoped operations; a nested `class Global:` (with `@staticmethod` methods) for cross-tenant operations.

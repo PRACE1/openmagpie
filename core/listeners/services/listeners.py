@@ -6,6 +6,7 @@ Cross-tenant operations live under `ListenerService.Global`, body in
 call shape (`ListenerService.Global.<op>`) is stable regardless of layout.
 """
 
+import logging
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -13,6 +14,14 @@ from listeners.models import Listener
 from listeners.registry import get_config_class
 
 from ._listeners_global import ListenerGlobal
+
+logger = logging.getLogger("listeners")
+
+# Soft, advisory only. Not a cap (nothing is dropped) - just the point
+# where an un-paginated account-scoped list is large enough that someone
+# should think about real pagination. Crossing it logs a warning; it
+# never changes the result.
+_LARGE_LIST_WARN_AT = 200
 
 
 class ListenerService:
@@ -65,12 +74,28 @@ class ListenerService:
         unbounded, add real pagination (cursor or limit/offset) here and
         at the endpoint, not a magic truncation.
 
+        Ordered by the ULID PK (`-id`), not `created_at`: ULIDs sort
+        lexicographically by creation time, so this is newest-first on
+        the indexed primary key. See core/AGENTS.md.
+
         Materialized list, not a streaming iterator: the only caller
         serializes `many=True` which materializes anyway, so a chunked
         cursor bought nothing."""
-        return list(
-            Listener.objects.filter(account_id=self.account_id).order_by("-created_at")
+        listeners = list(
+            Listener.objects.filter(account_id=self.account_id).order_by("-id")
         )
+        if len(listeners) >= _LARGE_LIST_WARN_AT:
+            # Advisory only - nothing is truncated. Flags that this
+            # account's list is large enough to warrant real pagination
+            # before it becomes a problem.
+            logger.warning(
+                "listener list for account %s returned %d rows "
+                "(>= %d); consider adding pagination",
+                self.account_id,
+                len(listeners),
+                _LARGE_LIST_WARN_AT,
+            )
+        return listeners
 
     def build(
         self,
