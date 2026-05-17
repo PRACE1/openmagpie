@@ -97,6 +97,12 @@ def create(
     else:
         body_text = _read_file_or_abort(file)
 
+    # Guard ALL input modes, not just the editor: piping the raw
+    # template (`template | create -f -`) must fail here with useful
+    # guidance, not sail through to a server validate + preview + an
+    # unrelated "--yes" wall.
+    _reject_if_unmodified_template(body_text)
+
     body = _parse_yaml_or_abort(body_text)
 
     ac = app_ctx()
@@ -125,8 +131,11 @@ def create(
         if not sys.stdin.isatty():
             # Piped / non-interactive: no TTY to prompt on. Refuse rather
             # than silently create, that's the exact accident this guards.
+            # Point at the interactive build mode too, not just --yes.
             typer.secho(
-                "Non-interactive input: re-run with --yes to create, or --dry-run to validate only.",
+                "Piped input: can't prompt for confirmation. Re-run with "
+                "--yes to create, --dry-run to validate only, or "
+                "`magpie listener create` (no -f) to build it interactively.",
                 fg=typer.colors.YELLOW,
                 err=True,
             )
@@ -220,21 +229,33 @@ def _edit_template_or_abort() -> str:
     """Open $EDITOR on the template; return the saved text.
 
     Aborts (exit 1) if the editor returns nothing (user quit without
-    saving) or if the text is unchanged from the template (no fields
-    filled in).
+    saving). The "unchanged from template" check is centralized in
+    `_reject_if_unmodified_template` so it covers every input mode.
     """
     edited = typer.edit(TEMPLATE_YAML, extension=".yaml")
     if edited is None:
         typer.secho("Edit cancelled.", fg=typer.colors.YELLOW, err=True)
-        raise typer.Exit(code=1)
-    if edited.strip() == TEMPLATE_YAML.strip():
+        raise typer.Exit(code=1) from None
+    return edited
+
+
+def _reject_if_unmodified_template(body_text: str) -> None:
+    """Abort if the config is the shipped template with nothing filled
+    in - whatever the input mode (editor, -f file, or piped -f -).
+
+    Without this, `magpie listener template | magpie listener create
+    -f -` would server-validate the placeholder, print a preview, and
+    only then hit the --yes wall: the actual mistake (you didn't fill
+    anything in) never surfaces. Fail here, with the next step."""
+    if body_text.strip() == TEMPLATE_YAML.strip():
         typer.secho(
-            "Template unchanged. Fill in the fields and re-run.",
+            "This is the unmodified template (nothing filled in). Edit "
+            "it and pass it with -f, or run `magpie listener create` "
+            "(no -f) to fill it in interactively.",
             fg=typer.colors.YELLOW,
             err=True,
         )
         raise typer.Exit(code=1)
-    return edited
 
 
 def _parse_yaml_or_abort(text: str) -> dict[str, Any]:
