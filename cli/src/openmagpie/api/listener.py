@@ -57,12 +57,12 @@ class ListenerConfigSummary(BaseModel):
 class ListenerMutationResponse(BaseModel):
     """Typed envelope for create / dry-run (`POST /v1/listeners`).
 
-    The envelope fields are stable and CLI-owned, so they're typed. The
-    kind-polymorphic `data` blob is left as an opaque dict on purpose:
-    typing it would mean mirroring the server's Pydantic registry here
-    and re-versioning on every new listener kind (the drift the
-    server-as-sole-validation-authority design avoids). Extra response
-    fields (last_polled_at, next_poll_at, ...) are ignored.
+    Only the fields the CLI actually consumes are modeled; everything
+    else the server sends (the raw `data` blob, last_polled_at, ...) is
+    ignored by Pydantic default. The CLI never parses the config blob:
+    the server emits a typed `summary` projection (schema knowledge
+    lives only on the server), so there's nothing here to mirror and
+    nothing to drift.
 
     `id` is absent on the dry-run preview (the server strips the pre-save
     placeholder), hence optional. `dry_run` is True for a preview, False
@@ -76,11 +76,9 @@ class ListenerMutationResponse(BaseModel):
     instructions: str
     poll_interval_seconds: int
     dry_run: bool
-    # Display projection built server-side from the typed config. The CLI
-    # renders this; it does NOT parse `data` (which stays opaque, see
-    # above) - schema knowledge lives only on the server.
+    # Display projection built server-side from the typed config; the
+    # CLI renders it as-is.
     summary: ListenerConfigSummary = ListenerConfigSummary()
-    data: dict[str, Any] = {}
 
 
 class ListenerApi:

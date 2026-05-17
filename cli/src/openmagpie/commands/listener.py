@@ -282,9 +282,9 @@ def _print_preview(p: ListenerMutationResponse) -> None:
     """Render the would-be listener so the user can eyeball it before
     confirming. Pure presentation: every value is a typed field on the
     response (`p.summary` is the server-built display projection). The
-    CLI does NOT parse `p.data` - schema knowledge lives only on the
-    server. Top-level fields pipe-delimited per repo convention;
-    multi-value fields comma-separated."""
+    CLI has no access to the raw config blob at all - schema knowledge
+    lives only on the server. Top-level fields pipe-delimited per repo
+    convention; multi-value fields comma-separated."""
     s = p.summary
 
     typer.secho("Would create this listener:", fg=typer.colors.CYAN)
