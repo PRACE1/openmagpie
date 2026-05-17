@@ -22,6 +22,3 @@ class DeviceSessionStatus(StrEnum):
 # HTTP transport constants.
 AUTHORIZATION_HEADER = "Authorization"
 BEARER_SCHEME = "Bearer"
-
-# OAuth2 token_type value as emitted by the server (RFC 6750).
-BEARER_TOKEN_TYPE = "Bearer"

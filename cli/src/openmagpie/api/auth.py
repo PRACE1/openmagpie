@@ -16,7 +16,7 @@ from typing import Literal
 from pydantic import BaseModel
 
 from .. import routes
-from ..constants import BEARER_TOKEN_TYPE, DeviceSessionStatus
+from ..constants import DeviceSessionStatus
 from ..http import MagpieClient, client_info
 
 
@@ -31,7 +31,7 @@ class TokenPair(BaseModel):
     access_token: str
     refresh_token: str
     expires_in: int
-    token_type: Literal[BEARER_TOKEN_TYPE]
+    token_type: Literal["Bearer"]  # OAuth2 token_type per RFC 6750
     user: AuthUser
 
 
@@ -98,9 +98,7 @@ class AuthApi:
         )
         return DeviceSessionCreated.model_validate(raw)
 
-    def poll_device_session(
-        self, session_id: str, *, device_secret: str
-    ) -> DeviceSessionPoll:
+    def poll_device_session(self, session_id: str, *, device_secret: str) -> DeviceSessionPoll:
         raw = self._http.get(
             routes.auth.device_session(session_id),
             headers={"X-Device-Secret": device_secret},
@@ -117,9 +115,7 @@ class AuthApi:
                 # An unknown status means the server contract changed
                 # out from under us. Failing loud beats quietly treating
                 # it as pending and looping forever.
-                raise RuntimeError(
-                    f"unknown device-session status from server: {status!r}"
-                )
+                raise RuntimeError(f"unknown device-session status from server: {status!r}")
 
     def me(self) -> AuthUser:
         raw = self._http.get(routes.auth.me)

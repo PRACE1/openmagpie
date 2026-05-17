@@ -13,7 +13,7 @@ class Listener(BaseModel):
     """A single thing the user is listening for. The unit of attention in OpenMagpie.
 
     Common queryable fields live at the top level. Listener-kind-specific config
-    (streams, engine, refined description, notifiers, etc.) lives inside `data`,
+    (streams, engine, refined instructions, notifiers, etc.) lives inside `data`,
     validated by the Pydantic class registered for this `kind` in `listeners.registry`.
     """
 
@@ -32,9 +32,13 @@ class Listener(BaseModel):
         ),
     )
     name = models.CharField(_("name"), max_length=255, help_text=_("Short label"))
-    description = models.TextField(
-        _("description"),
-        help_text=_("Plain-English prompt the engine reads verbatim"),
+    instructions = models.TextField(
+        _("instructions"),
+        help_text=_(
+            "What the engine should match against. Format depends on engine "
+            "kind: natural-language prompt for semantic, comma-separated "
+            "terms for a future keyword engine, etc."
+        ),
     )
     is_active = models.BooleanField(_("is active"), default=True)
 

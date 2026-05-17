@@ -5,7 +5,8 @@ lazily via `@cached_property`. Call sites read like an SDK:
 
     ac.api.auth.me()
     ac.api.auth.create_device_session()
-    ac.api.listeners.list()   # when listeners ships
+    ac.api.listener.list()
+    ac.api.listener.create({...})
 
 Adding a resource = one new file in `api/`, one cached_property here.
 """
@@ -16,6 +17,7 @@ from functools import cached_property
 
 from ..http import MagpieClient
 from .auth import AuthApi
+from .listener import ListenerApi
 
 
 class Api:
@@ -26,5 +28,9 @@ class Api:
     def auth(self) -> AuthApi:
         return AuthApi(self._http)
 
+    @cached_property
+    def listener(self) -> ListenerApi:
+        return ListenerApi(self._http)
 
-__all__ = ["Api", "AuthApi"]
+
+__all__ = ["Api", "AuthApi", "ListenerApi"]

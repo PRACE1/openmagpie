@@ -10,17 +10,24 @@ SECRET_KEY = os.environ["DJANGO_SECRET_KEY"]
 DJANGO_ENV = os.environ.get("DJANGO_ENV", "local")
 IS_PRODUCTION = DJANGO_ENV == "prod"
 
-INSTALLED_APPS = [
+DJANGO_APPS = [
     "django.contrib.auth",
     "django.contrib.contenttypes",
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
-    # Third-party
+]
+
+THIRD_PARTY_APPS = [
     "corsheaders",
     "oauth2_provider",
     "rest_framework",
-    # Local apps
+]
+
+# Single source of truth for our apps: drives INSTALLED_APPS *and*
+# `_APP_LOGGERS` below. Add an app here once and it gets a logger config
+# automatically, no second list to keep in sync.
+LOCAL_APPS = [
     "common",
     "accounts",
     "auth_api",
@@ -30,6 +37,8 @@ INSTALLED_APPS = [
     "engine",
     "notifications",
 ]
+
+INSTALLED_APPS = DJANGO_APPS + THIRD_PARTY_APPS + LOCAL_APPS
 
 AUTH_USER_MODEL = "accounts.User"
 
@@ -205,3 +214,58 @@ OLLAMA_MODEL = os.environ["OLLAMA_MODEL"]
 # stricter values via env for multi-tenant / public deployments.
 WEBHOOK_REQUIRE_HTTPS = env_bool("WEBHOOK_REQUIRE_HTTPS", "false")
 WEBHOOK_BLOCK_PRIVATE_IPS = env_bool("WEBHOOK_BLOCK_PRIVATE_IPS", "false")
+
+# ── Logging ────────────────────────────────────────────────────────────
+#
+# App loggers are configured explicitly so the warnings the polling /
+# delivery / engine code emits surface predictably regardless of
+# Python's default lastResort handler quirks. App level is INFO by
+# default; per-logger override via the `LOG_LEVEL_<APP>` env so an
+# operator can crank `LOG_LEVEL_LISTENERS=DEBUG` without editing code.
+#
+# Django's own loggers are left at framework defaults via
+# `disable_existing_loggers=False`.
+
+LOG_LEVEL_APP = os.environ.get("LOG_LEVEL_APP", "INFO").upper()
+
+
+def _app_log_level(app: str) -> str:
+    key = f"LOG_LEVEL_{app.upper()}"
+    return os.environ.get(key, LOG_LEVEL_APP).upper()
+
+
+# Derived from LOCAL_APPS so a new app can't ship without its logger
+# config (the drift this avoids).
+_APP_LOGGERS = tuple(LOCAL_APPS)
+
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "concise": {
+            "format": "{asctime} {levelname:<7} {name}: {message}",
+            "style": "{",
+            "datefmt": "%H:%M:%S",
+        },
+    },
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+            "formatter": "concise",
+            # stdout so application logs interleave cleanly with
+            # management-command output and `docker compose logs` (and
+            # `tee` capture). Operational errors still get emitted via
+            # logger.warning/.error (same handler, same stdout); we
+            # don't split INFO/ERROR across streams in v0.
+            "stream": "ext://sys.stdout",
+        },
+    },
+    "loggers": {
+        app: {
+            "handlers": ["console"],
+            "level": _app_log_level(app),
+            "propagate": False,
+        }
+        for app in _APP_LOGGERS
+    },
+}

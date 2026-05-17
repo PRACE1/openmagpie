@@ -34,6 +34,7 @@ Apps are created with `python manage.py startapp <name>` inside the container (`
 ## Models & data access
 
 - **Every model inherits `common.models.BaseModel`** → ULID primary key + `created_at` + `updated_at`.
+- **Order by the ULID PK, never `created_at`.** ULIDs are lexicographically sortable by creation time (the timestamp is the high bits), so `order_by("-id")` is newest-first using the indexed primary key. `created_at` is a redundant sort key with worse properties (timestamp ties, clock skew, an extra index). Use `id` for chronological ordering; `created_at`/`updated_at` are for display/audit, not sorting.
 - **No `ForeignKey`. Char pointers only.** Cross-model references are `CharField(max_length=26)` named `<thing>_id`. Stale data is OK; no cascades; no auto-indexes. Add `db_index=True` only when a specific lookup needs it.
 - **No direct `Model.objects.*` outside the model's owning service module.** All access goes through `<app>/services/<resource>.py`.
 - **Services are classes, not loose module functions.** One class per primary entity (e.g. `ListenerService`, `EventService`, `DeliveryService`). Instance methods for account-scoped operations; a nested `class Global:` (with `@staticmethod` methods) for cross-tenant operations.
@@ -105,9 +106,11 @@ poll_due_listeners
   ↓ one save per cycle: listener.data (config dump) + poll state
 ```
 
-Forward-looking by default. Bootstrap recent history by setting `StreamWatch.last_event_at = now - timedelta(days=N)`. No "scan all history" mode.
+Forward-looking by default. A StreamWatch created with `last_event_at=None` (the default for a fresh listener) is treated as "snapshot now"; the polling op sets `last_event_at = timezone.now()` on the first cycle and yields zero observations. The next poll cadence catches whatever's accumulated since that snapshot.
 
-**Live-only polling contract.** Cold start (StreamWatch with `last_event_at=None`) yields whatever a single poll cycle returns from the connector. For Reddit /new that's bounded by `MAX_PAGES × PAGE_SIZE` *and* by Reddit's own ~1000-item ceiling. Once the watermark is set to the newest item seen, every subsequent cycle is pure live mode: only items newer than `last_event_at` are yielded. **There is no historical backfill.** Posts older than the moment we cold-started are out of scope. If a future Listener needs deep history, build it as a separate feature with its own state model (cursor + horizon + completion flag); don't smuggle it into the watermark.
+Operators who want backfill set `last_event_at = now - timedelta(days=N)` explicitly at listener-create time. There is no implicit "scan all history" mode; if you want history, you ask for it by date.
+
+**No surprise multi-hour cold-starts.** This rule exists so creating a listener never accidentally enqueues an hours-long LLM run on day one. If a future Listener needs deep history, build it as a separate feature with its own state model (cursor + horizon + completion flag); don't smuggle it into the watermark.
 
 ## Notifications & delivery state
 
@@ -139,6 +142,14 @@ app/
 - `djangorestframework` is in. All endpoints are DRF `APIView` CBVs.
 - New API surfaces use the same pattern (CBV + serializer for input + serializer for output).
 - Keep `API_VERSION_PREFIX` in `core/conf/settings/base.py` in lockstep with `NEXT_PUBLIC_API_VERSION` in the web app.
+- **Every `/v1/` route is trailing-slash-optional.** Two helpers in `common/urls.py` make this work at every level of nesting:
+  - **`api_include(prefix, module)`** for every mount of an app's urlconf into a parent (root-level and nested). Makes the trailing slash on the prefix optional.
+  - **`api_path(route, view, name=...)`** for every leaf route inside a urlconf. Makes the trailing slash on the leaf optional.
+  Use these instead of `path(..., include(...))` / `path(..., view)`. Django's `APPEND_SLASH` only fixes GETs (POST/PUT/etc. don't follow the 301), so matching both forms in URL resolution is the proper fix.
+
+### Discriminated-config endpoints
+
+For resources whose schema varies by `kind` (e.g. `Listener` with `kind=semantic`, future `kind=keyword`), the endpoint accepts an envelope containing a kind-specific `data` blob. Validate `data` via the Pydantic registry that already owns the typed-blob schema (`listeners.registry.get_config_class(kind).model_validate(...)`); don't duplicate the schema in a DRF serializer. Translate Pydantic `ValidationError` into DRF's nested 400 shape so a `data.streams[0].spec.kind` failure surfaces at the right path. Example: `listeners/serializers.py:ListenerCreateSerializer`.
 
 ## Cache-backed state pattern
 
@@ -179,6 +190,9 @@ When persisting structured state in `django.core.cache`:
 /v1/auth/device-sessions/{id}/info       GET    browser  audit metadata (IsAuthenticated)
 /v1/auth/device-sessions/{id}/deny       POST   browser  decline (IsAuthenticated)
 /v1/auth/device-sessions/{id}/complete   POST   browser  authorize (IsAuthenticated)
+
+/v1/listeners                            POST   either   create listener (IsAuthenticated)
+/v1/listeners                            GET    either   list listeners in account (IsAuthenticated)
 
 /healthz                                 GET    public   DB + cache pings
 ```

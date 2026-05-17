@@ -14,6 +14,7 @@ from __future__ import annotations
 
 API_VERSION = "v1"
 _AUTH = f"/{API_VERSION}/auth"
+_LISTENERS = f"/{API_VERSION}/listeners"
 
 
 class auth:
@@ -32,3 +33,9 @@ class auth:
 
         refresh = f"{_AUTH}/tokens/refresh"
         revoke = f"{_AUTH}/tokens/revoke"
+
+
+class listeners:
+    """`/v1/listeners/*` routes the CLI consumes."""
+
+    collection = _LISTENERS

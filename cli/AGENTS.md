@@ -4,7 +4,7 @@ Conventions for the `magpie` CLI. Cross-cutting rules live in [../AGENTS.md](../
 
 ## Stack
 
-Typer + httpx + Pydantic. Binary name: `magpie`. Config: `~/.magpie/config.json` (mode `0600`, Pydantic-validated).
+Typer + httpx + Pydantic + PyYAML. Binary name: `magpie`. Config: `~/.magpie/config.json` (mode `0600`, Pydantic-validated). YAML is the on-disk format for config blobs the CLI feeds the server (e.g. listener configs); the server only speaks JSON. Convert with `yaml.safe_load` at the CLI boundary.
 
 ## Config shape
 
@@ -61,6 +61,35 @@ ac.sign_out()                    # returns bool: server-side revoke success
 - **Refresh failure: only 401 clears local creds.** Other non-2xx raise `ApiError` without clearing; a network blip or 5xx shouldn't sign the user out.
 - **`ApiError.__str__` deliberately OMITS the body.** Response bodies can carry tokens (the refresh-rotation path echoes them on success, a misbehaving server might echo them on failure too). Callers that want body info access `e.body` and own the print/redact decision.
 
+## Typed boundaries (where `Any` / raw `dict` is allowed)
+
+Resource clients in `api/` **return parsed Pydantic models, never raw
+`dict`**. A method that does `return self._http.get(...)` straight to the
+caller is a bug: parse the `raw` through a model first (see
+`api/auth.py`, and `ListenerListResponse` / `ListenerMutationResponse`
+in `api/listener.py`). The point is that a command author reads response
+shapes from the CLI's own models, never by diving into the server.
+
+`Any` / `dict[str, Any]` is allowed in exactly three places, and only
+these:
+
+1. **The `http.py` transport seam.** `get` / `post` / `_handle` return
+   `Any` because the raw layer genuinely can't know the shape. Typing
+   happens one layer up, in the `api/` client. Don't fake a type here.
+2. **The opaque request body.** User-authored config (YAML → `dict`) is
+   posted to the server-as-sole-validator. Typing it CLI-side would mean
+   mirroring the server's Pydantic registry and re-versioning on every
+   new listener kind, the drift the dry-run design exists to avoid. The
+   honest type for "arbitrary config we deliberately don't validate
+   here" is `dict[str, Any]`.
+3. **Polymorphic error bodies.** `ApiError.body` / `_flatten_errors` walk
+   a genuinely variable structure (DRF nested dict, structured error, or
+   plain text).
+
+Everything else, command args, helper params, AppContext, gets a real
+type. A new `Any` outside the three cases above needs a one-line comment
+justifying why the shape is genuinely unknowable, or it's wrong.
+
 ## Structured CLI identity (not User-Agent parsing)
 
 The CLI sends a structured `client_info()` payload on the device-flow `/create` body. The authorize page renders those fields directly. **Do not parse User-Agent strings server-side for product behavior.** UA exists for log visibility only.
@@ -91,3 +120,16 @@ All RED/YELLOW `typer.secho` writes go to stderr (`err=True`) so command output 
 ## Server-supplied URL safety
 
 The CLI never opens a server-supplied URL blindly. `_safe_authorize_url` requires `scheme in ("http", "https")` and `hostname == configured server hostname` before `webbrowser.open(...)` is allowed to touch it.
+
+## File-driven config commands
+
+Commands that create server-side resources from operator-authored config (currently just `magpie listener create`) accept YAML on disk or stdin, plus a no-argument variant that opens `$EDITOR` on a template:
+
+- `magpie listener create -f listener.yaml`
+- `magpie listener create -f -` (stdin)
+- `magpie listener create` (opens `$EDITOR` on the template via `typer.edit`)
+- `magpie listener template` emits the skeleton to stdout for piping or redirecting
+
+A creating command validates server-side before it mutates: it POSTs once with `?dry_run=true` (server runs the identical serializer/service validation and returns the would-be record without persisting), prints a preview, then prompts to confirm. `--dry-run` stops after the preview; `--yes` skips the prompt and is required when stdin is not a TTY so a pipe can't silently create. Dry-run is a parameter on the real endpoint, not a separate validate route, so the preview's *validation* cannot drift from the create path. It is a validation preview, not a create-success guarantee (persistence can still fail).
+
+YAML round-trips via `yaml.safe_load` into a `dict` and posts straight at the server's JSON endpoint. The server is the single source of validation truth; the CLI's job is to surface DRF's nested 400 error dict (`{"data": {"streams[0].spec.kind": ["..."]}}`) as one line per leaf path. New file-driven commands should follow the same modes + template emitter + dry-run/confirm convention.

@@ -40,3 +40,51 @@ class Connector(Protocol):
     ) -> Iterator[Observation]:
         """Yield typed Observations for one stream, newer than `since`."""
         ...
+
+    def count(
+        self,
+        spec: StreamSpec,
+        listener: Listener,
+        since: datetime | None,
+    ) -> int:
+        """Exact count of observations newer than `since`. Used by the
+        polling op's warm path to give progress UIs an `N/total` and
+        an ETA.
+
+        This is a structural signature only. There is no free default
+        from this Protocol; inherit `BaseConnector` to get the universal
+        poll-walk implementation, or implement `count` yourself.
+        """
+        ...
+
+
+class BaseConnector:
+    """Concrete base supplying the universal `count` implementation.
+
+    Inherit this and a new connector gets a correct `count` for free:
+    it re-walks `poll` and discards each Observation. That doubles the
+    upstream bandwidth for a warm cycle, but the Observation construction
+    is microseconds, negligible next to per-observation LLM judging.
+    Override `count` only if your upstream has a cheaper exact-count path.
+
+    `BaseConnector` itself is NOT a `Connector` (it has no `kind` /
+    `observations`); a concrete subclass that declares those plus `poll`
+    is what structurally satisfies the Protocol. This class only supplies
+    the `count` default, it is opt-in, not a required parent.
+    """
+
+    def count(
+        self,
+        spec: StreamSpec,
+        listener: Listener,
+        since: datetime | None,
+    ) -> int:
+        return sum(1 for _ in self.poll(spec, listener, since=since))
+
+    def poll(
+        self,
+        spec: StreamSpec,
+        listener: Listener,
+        since: datetime | None,
+    ) -> Iterator[Observation]:  # pragma: no cover - subclass responsibility
+        raise NotImplementedError

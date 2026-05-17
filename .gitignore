@@ -45,6 +45,7 @@ celerybeat.pid
 # IDE
 .idea/
 .vscode/
+.claude/
 
 # Caches
 .ruff_cache/

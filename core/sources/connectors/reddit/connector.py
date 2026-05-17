@@ -1,4 +1,5 @@
 import json
+import logging
 from collections.abc import Iterator
 from datetime import datetime
 
@@ -9,9 +10,11 @@ from listeners.configs import RedditSubredditStreamSpec
 from listeners.models import Listener
 from pydantic import ValidationError
 
-from ..base import ConnectorParseError
+from ..base import BaseConnector, ConnectorParseError
 from .observations import NewRedditPostObservation
 from .payloads import RedditListing
+
+logger = logging.getLogger("sources")
 
 # Reddit's anonymous JSON endpoint (`<any-web-url>.json`) is the website's
 # "render this page as JSON" side-effect, not the documented API. Filters out
@@ -31,7 +34,7 @@ PAGE_SIZE = 100
 MAX_PAGES = 10
 
 
-class RedditSubRedditConnector:
+class RedditSubRedditConnector(BaseConnector):
     """Polls a single subreddit's `/r/<slug>/new/.json` feed.
 
     Cold-start semantics: the *first* poll for a brand-new Listener (StreamWatch
@@ -52,6 +55,11 @@ class RedditSubRedditConnector:
 
     kind = "reddit_subreddit"
     observations: list[type[Observation]] = [NewRedditPostObservation]
+
+    # `count` is the universal poll-walk default from BaseConnector: it
+    # re-walks the page fetch (~10 GETs to /new.json) discarding each
+    # observation. Reddit has no cheaper exact-count path, so we don't
+    # override it.
 
     def poll(
         self,

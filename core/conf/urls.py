@@ -1,6 +1,7 @@
+from common.urls import api_include
 from common.views import healthz
 from django.conf import settings
-from django.urls import include, path
+from django.urls import path
 
 # NOTE: we intentionally do NOT mount `oauth2_provider.urls`. The Toolkit
 # models (AccessToken / RefreshToken / Application) are useful storage
@@ -8,7 +9,15 @@ from django.urls import include, path
 # no need for Toolkit's HTTP surface (which would expose /oauth/token's
 # password / client_credentials grants and bypass our login/audit
 # pipeline). Reinstate only if you build a real OAuth-provider flow.
+#
+# `api_include` makes the trailing slash on the prefix optional;
+# `api_path` (inside each app's urlconf) makes the trailing slash on
+# each leaf route optional. Together they let every /v1/<app>[/<leaf>]
+# route work with or without a final slash.
+_V1 = settings.API_VERSION_PREFIX
+
 urlpatterns = [
     path("healthz", healthz, name="healthz"),
-    path(f"{settings.API_VERSION_PREFIX}/auth/", include("auth_api.urls")),
+    api_include(f"{_V1}/auth", "auth_api.urls"),
+    api_include(f"{_V1}/listeners", "listeners.urls"),
 ]

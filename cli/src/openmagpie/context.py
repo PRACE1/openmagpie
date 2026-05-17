@@ -106,9 +106,7 @@ def app_ctx() -> AppContext:
     try:
         return _current.get()
     except LookupError as e:
-        raise RuntimeError(
-            "AppContext is not bound. Did the root Typer callback run?"
-        ) from e
+        raise RuntimeError("AppContext is not bound. Did the root Typer callback run?") from e
 
 
 def app_api() -> Api:

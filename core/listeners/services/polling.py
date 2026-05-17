@@ -26,6 +26,7 @@ function is a thin wrapper kept for callers that just want the function shape.
 """
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from functools import cached_property
 
@@ -69,6 +70,51 @@ class PollResult:
     hits: int
 
 
+@dataclass(frozen=True)
+class StreamStarted:
+    """Fired once at the top of each stream's poll loop.
+
+    `expected_max` is the count this poll cycle expects to judge: 0 on
+    cold start (forward-looking snapshot), otherwise the connector's
+    best-effort pre-count for warm starts (`Connector.count(...)`). It
+    is best-effort, not exact: `count` and `poll` are separate upstream
+    walks, so a high-churn source (Reddit /new) can grow between them
+    and the actual judged count can exceed `expected_max`. The progress
+    UI renders `N/expected_max`, percent, and ETA from this and clamps
+    gracefully when the estimate is overrun.
+    """
+
+    listener: Listener
+    stream_kind: str
+    stream_display: str
+    expected_max: int
+
+
+@dataclass(frozen=True)
+class JudgeProgress:
+    """Per-observation progress signal emitted by the polling loop.
+
+    The engine is the slow leg (multi-second LLM call per observation),
+    and a cold-start run can churn through hundreds of items, so callers
+    that want live feedback (management commands, CLI) wire an
+    `on_progress` callback to render one of these per judgment.
+
+    `score` and `hit` are None when `error` is set, the judge call
+    raised before producing a verdict, so there's nothing to report
+    beyond which observation failed.
+    """
+
+    listener: Listener
+    obs: Observation
+    score: float | None = None
+    hit: bool = False
+    error: str | None = None
+
+
+PollEvent = StreamStarted | JudgeProgress
+PollProgressCallback = Callable[[PollEvent], None]
+
+
 class PollListenerOperation:
     """One-shot operation: poll a single Listener, judge, persist, deliver.
 
@@ -77,7 +123,12 @@ class PollListenerOperation:
     mutated config) is tied to a single cycle.
     """
 
-    def __init__(self, listener: Listener) -> None:
+    def __init__(
+        self,
+        listener: Listener,
+        *,
+        on_progress: PollProgressCallback | None = None,
+    ) -> None:
         config = listeners_registry.load_config(listener)
         if not isinstance(config, SemanticListenerConfig):
             raise NotImplementedError(f"Unsupported listener kind: {listener.kind}")
@@ -86,6 +137,13 @@ class PollListenerOperation:
         self.config = config
         self.account_id = str(listener.account_id)
         self.is_instant = listener.delivery_mode == Listener.DeliveryMode.INSTANT
+        # No-op default so the per-obs callsite stays unconditional.
+        self.on_progress: PollProgressCallback = on_progress or (lambda _: None)
+        # Whether anyone actually consumes progress. The scheduler path
+        # (poll_listener with no callback) does not, so it must skip the
+        # warm-path pre-count (a full second upstream walk) that only
+        # exists to feed a progress UI.
+        self._progress_active = on_progress is not None
 
     @cached_property
     def listener_svc(self) -> ListenerService:
@@ -157,13 +215,68 @@ class PollListenerOperation:
     def _poll_stream(self, watch: StreamWatch) -> tuple[int, int]:
         """Poll one stream attached to this Listener. Returns (observed, hits)."""
         connector = source_registry.get(watch.spec.kind)
+
+        if watch.last_event_at is None:
+            # Forward-looking default: snapshot the watermark to "now"
+            # and yield nothing. Operators who want backfill set
+            # `last_event_at = now - timedelta(days=N)` at listener-
+            # create time so this branch doesn't fire for them. Keeps
+            # cold-starts free of surprise multi-hour LLM bills.
+            watch.last_event_at = timezone.now()
+            # Log the cold-start: this is a one-time, irreversible
+            # watermark init - everything before `last_event_at` is
+            # permanently out of scope (no backfill). The on_progress
+            # event below only surfaces in the management command (its
+            # callback is a no-op elsewhere), so without this the most
+            # common operator surprise ("my new listener missed a recent
+            # post") has no trace via poll_listener / future schedulers.
+            logger.info(
+                "cold-start: listener=%s stream=%s watermark set to %s; "
+                "items before this are out of scope (no backfill)",
+                self.listener.id,
+                watch.spec.display(),
+                watch.last_event_at.isoformat(),
+            )
+            self.on_progress(
+                StreamStarted(
+                    listener=self.listener,
+                    stream_kind=str(watch.spec.kind),
+                    stream_display=watch.spec.display(),
+                    expected_max=0,
+                )
+            )
+            return 0, 0
+
+        # Warm path. The pre-count is a full second upstream walk (same
+        # pages as `poll`, minus Observation construction) whose ONLY
+        # purpose is feeding `expected_max` to a progress UI. Skip it
+        # entirely when no progress consumer is attached (the scheduler
+        # path): there it would double the upstream request volume - and
+        # halve the Reddit anon rate-limit headroom - for a number that
+        # goes straight to a no-op.
+        if self._progress_active:
+            expected_max = connector.count(
+                watch.spec, self.listener, since=watch.last_event_at
+            )
+        else:
+            expected_max = 0
+        self.on_progress(
+            StreamStarted(
+                listener=self.listener,
+                stream_kind=str(watch.spec.kind),
+                stream_display=watch.spec.display(),
+                expected_max=expected_max,
+            )
+        )
         observed = 0
         hits = 0
         for obs in connector.poll(watch.spec, self.listener, since=watch.last_event_at):
             observed += 1
             # Advance the watermark BEFORE per-obs processing so a failure here
             # doesn't trap us re-processing the same observation forever.
-            if watch.last_event_at is None or obs.occurred_at > watch.last_event_at:
+            # (last_event_at is non-None here: the None case returned early
+            # at the top of _poll_stream, the cold-start branch.)
+            if obs.occurred_at > watch.last_event_at:
                 watch.last_event_at = obs.occurred_at
 
             try:
@@ -178,13 +291,32 @@ class PollListenerOperation:
                     type(exc).__name__,
                     exc,
                 )
+                self.on_progress(
+                    JudgeProgress(
+                        listener=self.listener,
+                        obs=obs,
+                        error=f"{type(exc).__name__}: {exc}",
+                    )
+                )
         return observed, hits
 
     def _process_observation(self, obs: Observation) -> bool:
         """Judge, persist, and (if instant) deliver one observation.
         Returns True if a new Event was persisted (counts as a hit)."""
         result = self.engine.judge(obs, self.listener)
-        if result.score < self.config.hit_threshold:
+        is_hit = result.score >= self.config.hit_threshold
+        # Emit progress before persistence so the caller's printer can
+        # render the slow leg's outcome immediately, regardless of
+        # whether persist_hit dedups or instant delivery succeeds.
+        self.on_progress(
+            JudgeProgress(
+                listener=self.listener,
+                obs=obs,
+                score=result.score,
+                hit=is_hit,
+            )
+        )
+        if not is_hit:
             return False
         event = self.event_svc.persist_hit(obs, self.listener)
         if event is None:
@@ -195,12 +327,20 @@ class PollListenerOperation:
         return True
 
 
-def poll_listener(listener: Listener) -> PollResult | None:
+def poll_listener(
+    listener: Listener,
+    *,
+    on_progress: PollProgressCallback | None = None,
+) -> PollResult | None:
     """Locked entry point for a single Listener's poll cycle.
 
     Acquires `poll_lock(listener.id)`; if another process already holds it,
     returns None so callers can record a skip. On success returns the
     `PollResult` from `PollListenerOperation(listener).run()`.
+
+    `on_progress`, if given, is invoked once per observation with a
+    `JudgeProgress` carrying the listener, observation, score, and
+    hit flag. Use it to render live progress in a command / CLI.
 
     Tests and ad-hoc debug paths that *want* to bypass the lock should call
     `PollListenerOperation(listener).run()` directly.
@@ -208,4 +348,4 @@ def poll_listener(listener: Listener) -> PollResult | None:
     with poll_lock(str(listener.id)) as acquired:
         if not acquired:
             return None
-        return PollListenerOperation(listener).run()
+        return PollListenerOperation(listener, on_progress=on_progress).run()

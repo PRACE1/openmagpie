@@ -6,15 +6,33 @@ Cross-tenant operations live under `ListenerService.Global`, body in
 call shape (`ListenerService.Global.<op>`) is stable regardless of layout.
 """
 
+import logging
 from datetime import datetime, timedelta
+from typing import Any
 
 from listeners.models import Listener
+from listeners.registry import get_config_class
 
 from ._listeners_global import ListenerGlobal
 
+logger = logging.getLogger("listeners")
+
+# Soft, advisory only. Not a cap (nothing is dropped) - just the point
+# where an un-paginated account-scoped list is large enough that someone
+# should think about real pagination. Crossing it logs a warning; it
+# never changes the result.
+_LARGE_LIST_WARN_AT = 200
+
 
 class ListenerService:
-    """Account-scoped service for Listener reads and writes."""
+    """Account-scoped service for Listener reads and writes.
+
+    Ownership model: listeners are owned by the *account*, not the
+    individual user. Any user in the account can read and manage every
+    listener in it; `Listener.user_id` records who created it, for audit
+    and display only, it is deliberately not a read/write filter. Reads
+    here scope by `account_id` alone by design.
+    """
 
     Global = ListenerGlobal
 
@@ -45,6 +63,108 @@ class ListenerService:
     def get(self, id: str) -> Listener:
         """Raises Listener.DoesNotExist if missing (or if owned by another account)."""
         return Listener.objects.get(id=id, account_id=self.account_id)
+
+    def list(self) -> list[Listener]:
+        """This account's listeners, newest first.
+
+        No pagination and no cap: listeners are account-scoped config
+        objects created one at a time (realistically 1-50 per account),
+        not an unbounded feed, so there's nothing to bound in v0 and a
+        silent cap would only hide data. If listeners ever become
+        unbounded, add real pagination (cursor or limit/offset) here and
+        at the endpoint, not a magic truncation.
+
+        Ordered by the ULID PK (`-id`), not `created_at`: ULIDs sort
+        lexicographically by creation time, so this is newest-first on
+        the indexed primary key. See core/AGENTS.md.
+
+        Materialized list, not a streaming iterator: the only caller
+        serializes `many=True` which materializes anyway, so a chunked
+        cursor bought nothing."""
+        listeners = list(
+            Listener.objects.filter(account_id=self.account_id).order_by("-id")
+        )
+        if len(listeners) >= _LARGE_LIST_WARN_AT:
+            # Advisory only - nothing is truncated. Flags that this
+            # account's list is large enough to warrant real pagination
+            # before it becomes a problem.
+            logger.warning(
+                "listener list for account %s returned %d rows "
+                "(>= %d); consider adding pagination",
+                self.account_id,
+                len(listeners),
+                _LARGE_LIST_WARN_AT,
+            )
+        return listeners
+
+    def build(
+        self,
+        *,
+        user_id: str,
+        name: str,
+        instructions: str,
+        kind: str,
+        delivery_mode: str,
+        poll_interval_seconds: int,
+        data: dict[str, Any],
+    ) -> Listener:
+        """Validate the inputs and return an UNSAVED Listener instance.
+
+        Runs the full validation `create` does (DeliveryMode enum + the
+        kind's Pydantic config, which includes the engine-kind registry
+        check) and normalizes `data` to the canonical Pydantic JSON
+        dump, but never touches the DB. The dry-run path serializes the
+        instance this returns so the preview is byte-for-byte what
+        `create` would persist, no second validation path to drift.
+        """
+        self.validate_delivery_mode(delivery_mode)
+        # Re-validate `data` even though the view layer already did. The
+        # service is the seam where wrong shape becomes impossible, so
+        # any caller (mgmt command, future internal flow) gets the same
+        # safety net the HTTP path does.
+        config_class = get_config_class(kind)
+        validated = config_class.model_validate(data)
+        normalized_data = validated.model_dump(mode="json")
+        # Scope is enforced by construction here (account_id is bound to
+        # this service instance), so `_assert_scope` isn't needed on the
+        # write path the way it is for update_poll_state/update_digest.
+        return Listener(
+            user_id=user_id,
+            account_id=self.account_id,
+            kind=kind,
+            name=name,
+            instructions=instructions,
+            delivery_mode=delivery_mode,
+            poll_interval_seconds=poll_interval_seconds,
+            data=normalized_data,
+        )
+
+    def create(
+        self,
+        *,
+        user_id: str,
+        name: str,
+        instructions: str,
+        kind: str,
+        delivery_mode: str,
+        poll_interval_seconds: int,
+        data: dict[str, Any],
+    ) -> Listener:
+        """Validate (via `build`) then persist. `data` is stored as the
+        canonical Pydantic JSON dump so downstream readers always see a
+        normalized blob regardless of input ordering / omitted defaults.
+        """
+        listener = self.build(
+            user_id=user_id,
+            name=name,
+            instructions=instructions,
+            kind=kind,
+            delivery_mode=delivery_mode,
+            poll_interval_seconds=poll_interval_seconds,
+            data=data,
+        )
+        listener.save()
+        return listener
 
     def update_poll_state(
         self,

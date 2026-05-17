@@ -4,20 +4,18 @@
 registry maps the kind string to its Pydantic config class for validation.
 """
 
-from pydantic import BaseModel
-
-from listeners.configs import SemanticListenerConfig
+from listeners.configs import ListenerConfig, SemanticListenerConfig
 from listeners.models import Listener
 
-_REGISTRY: dict[str, type[BaseModel]] = {
+_REGISTRY: dict[str, type[ListenerConfig]] = {
     SemanticListenerConfig.LISTENER_KIND: SemanticListenerConfig,
 }
 
 
-def get_config_class(kind: str) -> type[BaseModel]:
+def get_config_class(kind: str) -> type[ListenerConfig]:
     return _REGISTRY[kind]
 
 
-def load_config(listener: Listener) -> BaseModel:
+def load_config(listener: Listener) -> ListenerConfig:
     """Validate listener.data against the kind's Pydantic config class."""
     return get_config_class(str(listener.kind)).model_validate(listener.data)

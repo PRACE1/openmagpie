@@ -1,0 +1,40 @@
+# Magpie listener config.
+#
+# Save and run:
+#   magpie listener create -f listener.yaml
+#
+# Or pipe through stdin (--yes required, no TTY to confirm on):
+#   magpie listener template | magpie listener create -f - --yes
+
+name: my-listener
+instructions: |
+  What should the engine consider a hit? Plain-English criteria
+  the LLM reads verbatim. Be specific about what counts AND what
+  doesn't, e.g. "Posts about X, but skip jokes and ads."
+
+kind: semantic
+delivery_mode: digest      # 'instant' = fire per hit; 'digest' = batch
+poll_interval_seconds: 300
+
+data:
+  engine:
+    kind: ollama
+    model: qwen2.5:7b
+
+  streams:
+    - spec:
+        kind: reddit_subreddit
+        subreddit: MachineLearning
+      # last_event_at: 2026-04-14T00:00:00Z   # optional; default = "from now forward"
+
+  notifiers:
+    - kind: log
+      prefix: "[my-listener]"
+      include_fields: []
+    # - kind: webhook
+    #   url: https://example.com/hook
+    #   headers: {}
+    #   include_fields: []
+
+  hit_threshold: 0.7            # engine score >= this counts as a hit
+  digest_interval_seconds: 3600 # only consulted when delivery_mode = digest

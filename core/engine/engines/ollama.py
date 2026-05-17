@@ -34,7 +34,7 @@ Respond with a JSON object matching this schema:
 - reason: short string under 200 characters explaining the score"""
 
 USER_PROMPT_TEMPLATE = """User interest:
-{listener_description}
+{listener_instructions}
 
 Event:
   Source: {source}
@@ -57,7 +57,7 @@ class OllamaEngine:
 
     def judge(self, observation: Observation, listener: Listener) -> JudgmentResult:
         user_prompt = USER_PROMPT_TEMPLATE.format(
-            listener_description=str(listener.description),
+            listener_instructions=str(listener.instructions),
             source=observation.source,
             title=observation.title,
             content=observation.content[:CONTENT_TRUNCATE],

@@ -17,5 +17,11 @@ def get(kind: str) -> Engine:
     return _REGISTRY[kind]
 
 
+def kinds() -> list[str]:
+    """All registered engine kinds, sorted. Used by config validation to
+    reject a bad `engine.kind` at create time rather than mid-poll."""
+    return sorted(_REGISTRY)
+
+
 def register(engine: Engine) -> None:
     _REGISTRY[engine.kind] = engine

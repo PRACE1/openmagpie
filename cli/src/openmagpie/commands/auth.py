@@ -74,7 +74,7 @@ def login(
             fg=typer.colors.RED,
             err=True,
         )
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from None
 
     if not _safe_authorize_url(created.authorize_url, ac.config.server_url):
         typer.secho(
@@ -93,9 +93,7 @@ def login(
         fg=typer.colors.CYAN,
         bold=True,
     )
-    typer.echo(
-        "Enter this code on the authorize page to confirm it's your CLI."
-    )
+    typer.echo("Enter this code on the authorize page to confirm it's your CLI.")
     if not no_browser:
         opened = False
         try:
@@ -127,9 +125,7 @@ def login(
         while time.monotonic() < deadline:
             time.sleep(POLL_INTERVAL_SECONDS)
             try:
-                poll = ac.api.auth.poll_device_session(
-                    created.session_id, device_secret=created.device_secret
-                )
+                poll = ac.api.auth.poll_device_session(created.session_id, device_secret=created.device_secret)
             except ApiError as e:
                 if e.status == 404:
                     typer.secho(
@@ -137,7 +133,7 @@ def login(
                         fg=typer.colors.RED,
                         err=True,
                     )
-                    raise typer.Exit(code=1)
+                    raise typer.Exit(code=1) from None
                 # Non-404 ApiError: server is reachable but unhappy. No
                 # value in retrying; surface the status and exit.
                 # `e.body` deliberately not printed, bodies can carry
@@ -147,7 +143,7 @@ def login(
                     fg=typer.colors.RED,
                     err=True,
                 )
-                raise typer.Exit(code=1)
+                raise typer.Exit(code=1) from None
             except httpx.HTTPError as e:
                 # Transport-level error (connect refused, timeout, DNS,
                 # protocol). Treat as transient and keep polling. Warn
@@ -155,8 +151,7 @@ def login(
                 # retries stay quiet to avoid flooding the terminal.
                 if not transport_warned:
                     typer.secho(
-                        f"  (transport error: {type(e).__name__}; will keep "
-                        "retrying. Ctrl-C to abort.)",
+                        f"  (transport error: {type(e).__name__}; will keep retrying. Ctrl-C to abort.)",
                         fg=typer.colors.YELLOW,
                         err=True,
                     )
@@ -168,16 +163,14 @@ def login(
                 _print_signed_in(poll.user.email)
                 return
             if isinstance(poll, DeviceSessionExpired):
-                typer.secho(
-                    "Session expired.", fg=typer.colors.RED, err=True
-                )
+                typer.secho("Session expired.", fg=typer.colors.RED, err=True)
                 raise typer.Exit(code=1)
     except KeyboardInterrupt:
         # 130 = 128 + SIGINT, the conventional shell exit code for Ctrl-C.
         # Newline first so the message doesn't ride on the same line as
         # the terminal's "^C" echo.
         typer.secho("\nCancelled.", fg=typer.colors.YELLOW, err=True)
-        raise typer.Exit(code=130)
+        raise typer.Exit(code=130) from None
 
     typer.secho(
         f"Timed out waiting for authorization ({session_seconds // 60} min).",
@@ -203,23 +196,21 @@ def status() -> None:
             fg=typer.colors.RED,
             err=True,
         )
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from None
     except ApiError as e:
         typer.secho(
-            f"Couldn't reach the server cleanly (HTTP {e.status}). Try again "
-            "or check the server status.",
+            f"Couldn't reach the server cleanly (HTTP {e.status}). Try again or check the server status.",
             fg=typer.colors.RED,
             err=True,
         )
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from None
     except httpx.HTTPError as e:
         typer.secho(
-            f"Couldn't reach the server ({type(e).__name__}). Check your "
-            "network or server URL.",
+            f"Couldn't reach the server ({type(e).__name__}). Check your network or server URL.",
             fg=typer.colors.RED,
             err=True,
         )
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from None
 
     typer.echo(f"Signed in as {me.email}")
     if me.account_id:
