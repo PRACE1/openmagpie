@@ -19,6 +19,7 @@ from rest_framework import permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from .registry import get_config_class
 from .serializers import ListenerCreateSerializer, ListenerSerializer
 from .services.listeners import ListenerService
 
@@ -63,6 +64,18 @@ def _serialize(listener) -> dict[str, Any]:
     return cast("dict[str, Any]", ListenerSerializer(listener).data)
 
 
+def _summary(listener) -> dict[str, Any]:
+    """Display projection for the create/dry-run preview, built from the
+    typed config (the only schema owner) so the CLI never parses `data`.
+
+    No fail-safe needed here (unlike the list path): this runs only on
+    create/dry-run, where `listener.data` was just validated by
+    `ListenerService.build()` in this same request, so it's canonical.
+    """
+    config = get_config_class(str(listener.kind)).model_validate(listener.data or {})
+    return config.summary().model_dump(mode="json")
+
+
 class ListenerListCreateView(APIView):
     """POST  /v1/listeners,  create a new listener for the caller's account.
     GET   /v1/listeners,  list listeners in the caller's account.
@@ -104,7 +117,11 @@ class ListenerListCreateView(APIView):
             # client never reads a meaningless id from the preview.
             preview_data.pop("id", None)
             return Response(
-                {**preview_data, "dry_run": True},
+                {
+                    **preview_data,
+                    "summary": _summary(preview),
+                    "dry_run": True,
+                },
                 status=status.HTTP_200_OK,
             )
 
@@ -121,7 +138,11 @@ class ListenerListCreateView(APIView):
         # alone (the 201 vs 200 status already distinguishes them, this
         # just makes the contract explicit on both responses).
         return Response(
-            {**_serialize(listener), "dry_run": False},
+            {
+                **_serialize(listener),
+                "summary": _summary(listener),
+                "dry_run": False,
+            },
             status=status.HTTP_201_CREATED,
         )
 

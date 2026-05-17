@@ -221,17 +221,41 @@ NotifierSpec = Annotated[
 # ── Listener kind configs ─────────────────────────────────────────────────
 
 
+class ListenerConfigSummary(BaseModel):
+    """Display-only projection of a listener config for the CLI preview.
+
+    Built server-side from the typed config (the only place that knows
+    the schema), so the CLI prints it without parsing the `data` blob -
+    no shadow schema on the client. Strings are presentation, not a
+    contract; the CLI owns final layout."""
+
+    streams: list[str] = []
+    notifiers: list[str] = []
+    engine: str = ""
+
+
 class ListenerConfig(BaseModel):
     """Base for every listener-kind config.
 
-    Owns `redacted_dump()`: the read-path counterpart to the create-path
-    `model_validate(...).model_dump(...)`. The serializer calls this
-    instead of hand-walking the raw blob, so what is secret is declared
-    once, on the typed config, and never drifts from the schema. Default:
-    nothing secret. Kinds with secret-bearing sub-specs override."""
+    Declares the read-path contract every kind MUST implement:
+    `redacted_dump()` (the create-path `model_validate().model_dump()`
+    counterpart) and `summary()` (the CLI display projection). Schema
+    knowledge lives here, on the typed config, never on the client.
+
+    These are NOT given working defaults on purpose. A silent default
+    would be a footgun: an empty `summary()` shows a blank preview with
+    no signal, and a `model_dump()` `redacted_dump()` default would leak
+    a new kind's secrets UNREDACTED. A kind that forgets to implement
+    them must fail loudly here, not ship a silent hole."""
 
     def redacted_dump(self) -> dict[str, Any]:
-        return self.model_dump(mode="json")
+        raise NotImplementedError(
+            f"{type(self).__name__} must implement redacted_dump() "
+            "(no safe default: the fallback would leak secrets)"
+        )
+
+    def summary(self) -> ListenerConfigSummary:
+        raise NotImplementedError(f"{type(self).__name__} must implement summary()")
 
 
 class SemanticListenerConfig(ListenerConfig):
@@ -261,3 +285,19 @@ class SemanticListenerConfig(ListenerConfig):
             update={"notifiers": [n.redacted() for n in self.notifiers]}
         )
         return scrubbed.model_dump(mode="json")
+
+    def summary(self) -> ListenerConfigSummary:
+        """Each stream rendered by its own `spec.display()` (so a new
+        connector contributes its label without touching this), notifiers
+        by kind, engine as `kind | model`. No secrets (URLs/headers never
+        appear here)."""
+        engine = (
+            f"{self.engine.kind} | {self.engine.model}"
+            if self.engine.model
+            else self.engine.kind
+        )
+        return ListenerConfigSummary(
+            streams=[w.spec.display() for w in self.streams],
+            notifiers=[n.kind for n in self.notifiers],
+            engine=engine,
+        )

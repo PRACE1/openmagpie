@@ -280,37 +280,20 @@ def _create_or_abort(ac: AppContext, body: dict[str, Any], *, dry_run: bool) -> 
 
 def _print_preview(p: ListenerMutationResponse) -> None:
     """Render the would-be listener so the user can eyeball it before
-    confirming. Top-level fields are pipe-delimited per repo convention;
-    multi-value fields list their items comma-separated. Secrets in the
-    config blob are already redacted server-side.
-
-    `p.data` is walked as a dict on purpose: it's the kind-polymorphic
-    blob the CLI keeps opaque (see api/listener.py)."""
-    data = p.data or {}
-    streams = data.get("streams") or []
-    notifiers = data.get("notifiers") or []
-    engine = data.get("engine") or {}
-
-    # Render the spec generically: kind + its identity fields. Don't
-    # hardcode any connector's key (subreddit/repo/feed_url/...) - the
-    # CLI is kind-agnostic; that knowledge lives server-side.
-    stream_bits = []
-    for s in streams:
-        spec = s.get("spec") or {}
-        kind = spec.get("kind", "?")
-        ident = ":".join(str(v) for k, v in spec.items() if k != "kind")
-        stream_bits.append(f"{kind}:{ident}" if ident else kind)
-    notifier_bits = [n.get("kind", "?") for n in notifiers]
+    confirming. Pure presentation: every value is a typed field on the
+    response (`p.summary` is the server-built display projection). The
+    CLI does NOT parse `p.data` - schema knowledge lives only on the
+    server. Top-level fields pipe-delimited per repo convention;
+    multi-value fields comma-separated."""
+    s = p.summary
 
     typer.secho("Would create this listener:", fg=typer.colors.CYAN)
     typer.echo(f"  name             | {p.name}")
     typer.echo(f"  kind             | {p.kind}")
     typer.echo(f"  delivery         | {p.delivery_mode} | poll {p.poll_interval_seconds}s")
-    typer.echo(
-        f"  engine           | {engine.get('kind', '?')}" + (f" | {engine.get('model')}" if engine.get("model") else "")
-    )
-    typer.echo(f"  streams          | {', '.join(stream_bits) or '(none)'}")
-    typer.echo(f"  notifiers        | {', '.join(notifier_bits) or '(none)'}")
+    typer.echo(f"  engine           | {s.engine or '?'}")
+    typer.echo(f"  streams          | {', '.join(s.streams) or '(none)'}")
+    typer.echo(f"  notifiers        | {', '.join(s.notifiers) or '(none)'}")
 
     instructions = p.instructions.strip().replace("\n", " ")
     if len(instructions) > 100:

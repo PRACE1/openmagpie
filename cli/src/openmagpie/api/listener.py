@@ -44,6 +44,16 @@ class ListenerListResponse(BaseModel):
     items: list[ListenerSummary] = []
 
 
+class ListenerConfigSummary(BaseModel):
+    """Server-built display projection of the config (see the server's
+    `ListenerConfigSummary`). The CLI prints these strings as-is and
+    never parses the opaque `data` blob - no schema knowledge here."""
+
+    streams: list[str] = []
+    notifiers: list[str] = []
+    engine: str = ""
+
+
 class ListenerMutationResponse(BaseModel):
     """Typed envelope for create / dry-run (`POST /v1/listeners`).
 
@@ -66,6 +76,10 @@ class ListenerMutationResponse(BaseModel):
     instructions: str
     poll_interval_seconds: int
     dry_run: bool
+    # Display projection built server-side from the typed config. The CLI
+    # renders this; it does NOT parse `data` (which stays opaque, see
+    # above) - schema knowledge lives only on the server.
+    summary: ListenerConfigSummary = ListenerConfigSummary()
     data: dict[str, Any] = {}
 
 
