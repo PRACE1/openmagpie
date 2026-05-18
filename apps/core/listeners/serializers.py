@@ -21,6 +21,7 @@ from pydantic import ValidationError as PydanticValidationError
 from rest_framework import serializers
 
 from listeners.models import Listener
+from listeners.policy import PolicyError, enforce_policy
 from listeners.registry import get_config_class
 
 from .models.listener import MIN_POLL_INTERVAL_SECONDS
@@ -71,6 +72,14 @@ class ListenerCreateSerializer(serializers.Serializer):
             validated = config_class.model_validate(attrs["data"])
         except PydanticValidationError as exc:
             raise serializers.ValidationError({"data": _pydantic_errors_to_drf(exc)}) from exc
+        # Server policy (engine-kind registered + default-fill, no future
+        # watermark, webhook SSRF) - the Django-coupled guards that moved
+        # out of the shared pure model. Surface as a 400 like shape
+        # errors. enforce_policy returns the engine-normalized config.
+        try:
+            validated = enforce_policy(validated)
+        except PolicyError as exc:
+            raise serializers.ValidationError({"data": [str(exc)]}) from exc
         # Replace the raw dict with the normalized Pydantic dump so the
         # service layer stores a canonical shape regardless of input
         # ordering or omitted defaults.

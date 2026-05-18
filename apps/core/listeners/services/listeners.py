@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from listeners.models import Listener
+from listeners.policy import enforce_policy
 from listeners.registry import get_config_class
 
 from ._listeners_global import ListenerGlobal
@@ -116,7 +117,7 @@ class ListenerService:
         # any caller (mgmt command, future internal flow) gets the same
         # safety net the HTTP path does.
         config_class = get_config_class(kind)
-        validated = config_class.model_validate(data)
+        validated = enforce_policy(config_class.model_validate(data))
         normalized_data = validated.model_dump(mode="json")
         # Scope is enforced by construction here (account_id is bound to
         # this service instance), so `_assert_scope` isn't needed on the
@@ -190,7 +191,11 @@ class ListenerService:
         config_class = get_config_class(str(listener.kind))
         submitted = config_class.model_validate(data)
         prior = config_class.model_validate(listener.data or {})
-        merged = submitted.merge_preserving(prior)
+        # Policy on the MERGED config (what actually persists): engine
+        # fill + registered, no future watermark on newly-submitted
+        # streams, webhook SSRF. Prior watermarks carried by
+        # merge_preserving are already-past by definition.
+        merged = enforce_policy(submitted.merge_preserving(prior))
 
         listener.name = name
         listener.instructions = instructions
