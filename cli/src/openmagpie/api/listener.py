@@ -22,6 +22,38 @@ from pydantic import BaseModel
 from .. import routes
 from ..http import MagpieClient
 
+type ConfigBlob = dict[str, Any]
+"""A listener's kind-specific `data` config.
+
+Opaque to the CLI on purpose: the server (Pydantic registry, keyed by
+the envelope's `kind`) is the sole validator. Typing the *interior*
+here would mirror that schema and drift the moment the server adds a
+kind. The CLI only carries it - YAML round-trip for edit, server emits
+a typed `summary` for display - never reads a field. (The stable
+*envelope* around it, by contrast, IS typed: `ListenerEnvelope`.)
+"""
+
+
+class ListenerEnvelope(BaseModel):
+    """The kind-INDEPENDENT envelope every listener has, regardless of
+    `kind`. Stable, CLI-owned (the template + create options + the edit
+    seed all encode exactly this), so typing it is not registry-mirroring
+    - only `data`'s interior is opaque (`ConfigBlob`).
+
+    `kind` is the top-level discriminator the server lanes on to pick the
+    `data` validator. Extra keys are ignored (server ignores them too);
+    `data` is passed through untouched for the server to validate.
+    """
+
+    name: str
+    instructions: str
+    kind: str
+    delivery_mode: str
+    poll_interval_seconds: int
+    data: ConfigBlob = {}
+
+    model_config = {"extra": "ignore"}
+
 
 class ListenerSummary(BaseModel):
     """Slim view of a Listener for `magpie listener list` output."""
@@ -102,7 +134,7 @@ class ListenerDetail(BaseModel):
     last_polled_at: str | None = None
     next_poll_at: str | None = None
     summary: ListenerConfigSummary = ListenerConfigSummary()
-    data: dict[str, Any] = {}
+    data: ConfigBlob = {}
 
 
 class ListenerApi:

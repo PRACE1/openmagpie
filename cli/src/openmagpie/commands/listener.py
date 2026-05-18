@@ -34,8 +34,13 @@ from typing import Any
 import httpx
 import typer
 import yaml
+from pydantic import ValidationError
 
-from ..api.listener import ListenerDetail, ListenerMutationResponse
+from ..api.listener import (
+    ListenerDetail,
+    ListenerEnvelope,
+    ListenerMutationResponse,
+)
 from ..context import AppContext, app_ctx
 from ..http import ApiError, AuthError
 
@@ -72,18 +77,6 @@ def _handle_api_errors[T](fn: Callable[..., T]) -> Callable[..., T]:
 
     return wrapper
 
-
-# Envelope keys an edit round-trips through $EDITOR (everything the PUT
-# needs). `kind` is included but server-immutable; the operator sees it
-# and the server 409s a change.
-_EDITABLE_KEYS = (
-    "name",
-    "instructions",
-    "kind",
-    "delivery_mode",
-    "poll_interval_seconds",
-    "data",
-)
 
 listener_app = typer.Typer(no_args_is_help=True)
 
@@ -205,7 +198,7 @@ def edit(
     """
     ac = app_ctx()
     detail = ac.api.listener.get(listener_id)
-    seed = yaml.safe_dump(_edit_seed(detail), sort_keys=False)
+    seed = yaml.safe_dump(_edit_seed(detail).model_dump(mode="json"), sort_keys=False)
 
     if file is None:
         body_text = _open_editor_or_abort(seed)
@@ -334,7 +327,14 @@ def _reject_if_unmodified_template(body_text: str) -> None:
         raise typer.Exit(code=1)
 
 
-def _parse_yaml_or_abort(text: str) -> dict[str, Any]:
+def _parse_yaml_or_abort(text: str) -> ListenerEnvelope:
+    """Parse operator YAML into the typed `ListenerEnvelope`.
+
+    Only the kind-INDEPENDENT envelope is validated here (missing
+    `name`, wrong-typed `poll_interval_seconds`, ...) - cheap, stable,
+    and a far better error than a server round-trip for an obvious
+    shape slip. `data`'s interior stays opaque (`ConfigBlob`); the
+    server remains its sole validator."""
     try:
         parsed = yaml.safe_load(text)
     except yaml.YAMLError as e:
@@ -347,19 +347,28 @@ def _parse_yaml_or_abort(text: str) -> dict[str, Any]:
             err=True,
         )
         raise typer.Exit(code=1)
-    return parsed
+    try:
+        return ListenerEnvelope.model_validate(parsed)
+    except ValidationError as e:
+        typer.secho("Config envelope error:", fg=typer.colors.RED, err=True)
+        for err in e.errors():
+            path = ".".join(str(p) for p in err["loc"]) or "_"
+            typer.secho(f"  {path}: {err['msg']}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from None
 
 
 def _mutate(
     ac: AppContext,
-    body: dict[str, Any],
+    envelope: ListenerEnvelope,
     *,
     dry_run: bool,
     listener_id: str | None,
 ) -> ListenerMutationResponse:
     """create (POST) when `listener_id` is None, else edit (PUT). Same
-    response shape either way; `_run_mutation` drives both. Transport
-    errors propagate to the command's `@_handle_api_errors`."""
+    response shape either way; `_run_mutation` drives both. The envelope
+    is dumped to the wire dict here (the api client is the transport
+    boundary). Transport errors propagate to `@_handle_api_errors`."""
+    body = envelope.model_dump(mode="json")
     if listener_id is None:
         return ac.api.listener.create(body, dry_run=dry_run)
     return ac.api.listener.update(listener_id, body, dry_run=dry_run)
@@ -367,7 +376,7 @@ def _mutate(
 
 def _run_mutation(
     ac: AppContext,
-    body: dict[str, Any],
+    body: ListenerEnvelope,
     *,
     listener_id: str | None,
     dry_run: bool,
@@ -419,12 +428,14 @@ def _run_mutation(
     )
 
 
-def _edit_seed(detail: ListenerDetail) -> dict[str, Any]:
-    """The editable YAML doc for `edit`: the PUT envelope rebuilt from
-    the current (redacted) listener. `data` is the server's redacted
-    config, opaque here - the operator edits it as text; the server
-    re-validates and restores `***` secrets + watermarks on PUT."""
-    return {k: getattr(detail, k) for k in _EDITABLE_KEYS}
+def _edit_seed(detail: ListenerDetail) -> ListenerEnvelope:
+    """The editable envelope for `edit`, projected from the current
+    (redacted) listener. `ListenerEnvelope`'s `extra=ignore` drops the
+    read-only fields (id/is_active/summary/...); only the editable
+    envelope survives. `data` is the server's redacted config, opaque
+    here - the operator edits it as text; the server re-validates and
+    restores `***` secrets + watermarks on PUT."""
+    return ListenerEnvelope.model_validate(detail.model_dump())
 
 
 def _open_editor_or_abort(seed: str) -> str:
