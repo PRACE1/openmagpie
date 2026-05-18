@@ -9,6 +9,7 @@ dependencies = [
     "django-oauth-toolkit>=3.0",
     "djangorestframework>=3.15",
     "httpx>=0.28",
+    "openmagpie-schema",
     "pydantic>=2.5",
     "python-dotenv>=1.1",
     "ulid>=1.1",
@@ -21,3 +22,7 @@ dev = [
     "ty>=0.0.1",
     "watchfiles>=1.0",
 ]
+
+# openmagpie-schema is resolved as a workspace member; the workspace
+# source is declared once at the repo-root pyproject (applies to all
+# members). See project memory project_schema_authority_northstar.

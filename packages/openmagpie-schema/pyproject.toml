@@ -1,0 +1,15 @@
+[project]
+name = "openmagpie-schema"
+version = "0.1.0"
+description = "Pure Pydantic wire/config models shared by core (server) and the magpie CLI. Zero Django/DRF — the single source of truth for the cross-boundary shapes."
+requires-python = ">=3.13"
+dependencies = [
+    "pydantic>=2.5",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/openmagpie_schema"]
