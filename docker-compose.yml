@@ -1,12 +1,18 @@
 services:
   core:
-    build: ./core
-    command: uv run python manage.py runserver 0.0.0.0:8000
+    # Context = repo root: the uv workspace's single lock + every
+    # member pyproject live there. Dockerfile is the core member's.
+    build:
+      context: .
+      dockerfile: apps/core/Dockerfile
+    command: uv run --package openmagpie-core python apps/core/manage.py runserver 0.0.0.0:8000
     ports:
       - "8000:8000"
-    env_file: ./core/.env
+    env_file: ./apps/core/.env
     volumes:
-      - ./core:/app
+      # Bind the whole workspace for hot-reload (canonical uv pattern);
+      # anonymous volume keeps the root .venv the image built.
+      - .:/app
       - /app/.venv
     # Probes /healthz via stdlib urllib (no wget/curl in the image).
     # urlopen raises HTTPError on 503 so a degraded DB/cache fails the

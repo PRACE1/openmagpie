@@ -4,11 +4,11 @@ Conventions for AI coding agents (Claude Code, Codex, Cursor, etc.) and human co
 
 This file is cross-cutting only. Each top-level app owns its own conventions:
 
-- [core/AGENTS.md](core/AGENTS.md) — Django backend (models, services, auth, plugins)
-- [cli/AGENTS.md](cli/AGENTS.md) — `magpie` CLI (Typer + httpx + Pydantic)
+- [apps/core/AGENTS.md](apps/core/AGENTS.md) — Django backend (models, services, auth, plugins)
+- [apps/cli/AGENTS.md](apps/cli/AGENTS.md) — `magpie` CLI (Typer + httpx + Pydantic)
 - [web/AGENTS.md](web/AGENTS.md) — pnpm workspace (Next.js + shared packages)
 
-When working in `core/`, `cli/`, or `web/`, load the matching `AGENTS.md` alongside this one.
+When working in `apps/core/`, `apps/cli/`, or `web/`, load the matching `AGENTS.md` alongside this one.
 
 ## What is OpenMagpie
 
@@ -24,11 +24,13 @@ The product is **only** a listener: watches, judges, learns, notifies. It does N
 ## Repo layout
 
 ```
-core/      Django backend (see core/AGENTS.md)
-web/       pnpm workspace, Next.js + shared packages (see web/AGENTS.md)
-cli/       magpie CLI (see cli/AGENTS.md)
-make/      Per-concern Makefile targets
-scripts/   Helper scripts (lint, whitespace, make-help)
+apps/core/                  Django backend (see apps/core/AGENTS.md)
+apps/cli/                   magpie CLI (see apps/cli/AGENTS.md)
+packages/openmagpie-schema/ pure Pydantic models shared by core + cli
+web/                        pnpm workspace, Next.js (see web/AGENTS.md)
+make/                       Per-concern Makefile targets
+scripts/                    Helper scripts (lint, whitespace, make-help)
+pyproject.toml + uv.lock    uv workspace root (one lock for all members)
 ```
 
 ## Naming (cross-cutting domain vocabulary)
