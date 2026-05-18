@@ -1,6 +1,7 @@
-from common.models import BaseModel
 from django.db import models
 from django.utils.translation import gettext_lazy as _
+
+from common.models import BaseModel
 
 from ..constants import (
     PROFILE_ROLE_CHOICES,
@@ -13,15 +14,11 @@ from ..constants import (
 class Account(BaseModel):
     """A tenant, every domain row is scoped to one Account via account_id."""
 
-    name = models.CharField(
-        _("name"), max_length=255, help_text=_("Name of the account")
-    )
+    name = models.CharField(_("name"), max_length=255, help_text=_("Name of the account"))
     is_service_account = models.BooleanField(
         _("service account"),
         default=False,
-        help_text=_(
-            "Internal service account (hidden from frontend, no password login)"
-        ),
+        help_text=_("Internal service account (hidden from frontend, no password login)"),
     )
 
     class Meta:

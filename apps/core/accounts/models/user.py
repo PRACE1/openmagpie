@@ -1,17 +1,16 @@
-from common.fields import ULIDField
 from django.contrib.auth.models import AbstractUser, BaseUserManager
 from django.core.validators import EmailValidator
 from django.db import models
 from django.db.models.functions import Lower
 from django.utils.translation import gettext_lazy as _
 
+from common.fields import ULIDField
+
 
 class UserManager(BaseUserManager["User"]):
     """Custom user manager for email-based authentication."""
 
-    def create_user(
-        self, email: str, password: str | None = None, **extra_fields: object
-    ) -> "User":
+    def create_user(self, email: str, password: str | None = None, **extra_fields: object) -> "User":
         if not email:
             raise ValueError("Email is required")
         email = self.normalize_email(email)
@@ -20,9 +19,7 @@ class UserManager(BaseUserManager["User"]):
         user.save(using=self._db)
         return user
 
-    def create_superuser(
-        self, email: str, password: str | None = None, **extra_fields: object
-    ) -> "User":
+    def create_superuser(self, email: str, password: str | None = None, **extra_fields: object) -> "User":
         extra_fields.setdefault("is_staff", True)
         extra_fields.setdefault("is_superuser", True)
         return self.create_user(email, password, **extra_fields)

@@ -9,8 +9,9 @@ os.environ.setdefault("WEB_BASE_URL", "http://localhost:3001")
 # Browser ↔ Django is plain HTTP in dev; secure cookies would never get sent.
 os.environ.setdefault("AUTH_COOKIE_SECURE", "false")
 
-from .base import *  # noqa: E402, F403
-from common.env import env_bool  # noqa: E402
+from common.env import env_bool
+
+from .base import *  # noqa: F403
 
 DEBUG = env_bool("DEBUG", "true")
 ALLOWED_HOSTS = ["localhost", "127.0.0.1", "core", ".ngrok-free.app"]

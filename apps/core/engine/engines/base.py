@@ -1,9 +1,10 @@
 from dataclasses import dataclass
 from typing import Protocol
 
+from pydantic import BaseModel, Field
+
 from events.observations import Observation
 from listeners.models import Listener
-from pydantic import BaseModel, Field
 
 
 class JudgmentJSON(BaseModel):
@@ -22,7 +23,7 @@ class JudgmentJSON(BaseModel):
 
 @dataclass(frozen=True)
 class JudgmentResult:
-    """In-memory verdict from an Engine. The engine scores relevance (0.0–1.0);
+    """In-memory verdict from an Engine. The engine scores relevance (0.0-1.0);
     the *hit* decision is made by the caller against a Listener-configured
     threshold (`SemanticListenerConfig.hit_threshold`)."""
 

@@ -28,9 +28,7 @@ class Migration(migrations.Migration):
     operations = [
         migrations.RunSQL(
             sql=(
-                "CREATE UNIQUE INDEX IF NOT EXISTS "
-                "uniq_oauth2_application_name "
-                "ON oauth2_provider_application (name);"
+                "CREATE UNIQUE INDEX IF NOT EXISTS uniq_oauth2_application_name ON oauth2_provider_application (name);"
             ),
             reverse_sql=("DROP INDEX IF EXISTS uniq_oauth2_application_name;"),
         ),

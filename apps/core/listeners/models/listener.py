@@ -1,7 +1,8 @@
-from common.models import BaseModel
 from django.core.validators import MinValueValidator
 from django.db import models
 from django.utils.translation import gettext_lazy as _
+
+from common.models import BaseModel
 
 # Floor for Listener.poll_interval_seconds. Reddit's anonymous JSON endpoint
 # rate-limits below ~60s/req; tighter cadences also burn LLM tokens for no real
@@ -27,9 +28,7 @@ class Listener(BaseModel):
         _("kind"),
         max_length=32,
         default="semantic",
-        help_text=_(
-            "Listener kind, identifies the Pydantic config class in listeners.registry"
-        ),
+        help_text=_("Listener kind, identifies the Pydantic config class in listeners.registry"),
     )
     name = models.CharField(_("name"), max_length=255, help_text=_("Short label"))
     instructions = models.TextField(

@@ -19,6 +19,4 @@ class LogNotifier:
         sys.stdout.write(f"{spec.prefix} {json.dumps(payload, default=str)}\n")
         sys.stdout.flush()
         elapsed = int((time.perf_counter() - started) * 1000)
-        return NotificationResult(
-            notifier_kind=self.kind, delivered=True, latency_ms=elapsed
-        )
+        return NotificationResult(notifier_kind=self.kind, delivered=True, latency_ms=elapsed)

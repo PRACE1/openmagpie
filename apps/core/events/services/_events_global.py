@@ -29,6 +29,4 @@ class EventGlobal:
         should go through `EventService(account_id=…).list_pending_for_listener`
         instead, this is intentionally unscoped.
         """
-        return Event.objects.filter(delivered_at__isnull=True).iterator(
-            chunk_size=chunk_size
-        )
+        return Event.objects.filter(delivered_at__isnull=True).iterator(chunk_size=chunk_size)

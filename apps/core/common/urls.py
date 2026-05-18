@@ -42,8 +42,7 @@ def _convert_to_regex(match: re.Match[str]) -> str:
     pattern = _CONVERTER_REGEX.get(converter)
     if pattern is None:
         raise ValueError(
-            f"api_path() doesn't know the {converter!r} converter; "
-            "add it to _CONVERTER_REGEX in common/urls.py."
+            f"api_path() doesn't know the {converter!r} converter; add it to _CONVERTER_REGEX in common/urls.py."
         )
     return f"(?P<{name}>{pattern})"
 

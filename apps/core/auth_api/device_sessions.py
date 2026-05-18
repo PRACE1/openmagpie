@@ -30,13 +30,14 @@ import hashlib
 import hmac
 import secrets
 
-from common.web_urls import AUTH_DEVICE, web_url
 from django.conf import settings
 from django.http import HttpRequest
 from django.utils import timezone
 from rest_framework import permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
+
+from common.web_urls import AUTH_DEVICE, web_url
 
 from .constants import AuthErrorCode, DeviceSessionStatus
 from .device_session_store import DeviceSessionClient, DeviceSessionState, Store
@@ -121,9 +122,7 @@ class DeviceSessionsCreateView(APIView):
             user_code=user_code,
             device_secret_hash=_hash_device_secret(device_secret),
             initiator_ip=_client_ip(request._request),
-            initiator=DeviceSessionClient.model_validate(
-                request.data.get("client") or {}
-            ),
+            initiator=DeviceSessionClient.model_validate(request.data.get("client") or {}),
         )
         Store.put(session_id, state)
         return Response(

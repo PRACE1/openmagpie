@@ -41,9 +41,7 @@ def _hit_dict(obs: Observation, include_fields: list[str]) -> dict[str, Any]:
     return {k: full[k] for k in include_fields if k in full}
 
 
-def build_payload(
-    batch: HitBatch, *, include_fields: list[str] | None = None
-) -> dict[str, Any]:
+def build_payload(batch: HitBatch, *, include_fields: list[str] | None = None) -> dict[str, Any]:
     """Group hits by stream key into a single payload dict, ready for JSON encoding."""
     selected = list(include_fields or [])
     by_source: dict[str, list[dict[str, Any]]] = {}

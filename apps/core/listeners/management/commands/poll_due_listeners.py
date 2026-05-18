@@ -84,9 +84,7 @@ class Command(BaseCommand):
             if result.observed > 0 or result.hits > 0:
                 elapsed = time.monotonic() - started_at
                 noun = "hit" if result.hits == 1 else "hits"
-                self.stdout.write(
-                    f"  result: {result.hits} {noun} in {_format_seconds(elapsed)}"
-                )
+                self.stdout.write(f"  result: {result.hits} {noun} in {_format_seconds(elapsed)}")
 
         if total_listeners == 0 and total_skipped == 0 and total_errored == 0:
             self.stdout.write("No listeners due for poll.")
@@ -143,10 +141,7 @@ class _ProgressPrinter:
         if event.expected_max == 0:
             tail = "cold-start snapshot"
         else:
-            tail = (
-                f"{event.expected_max} items to judge "
-                f"| live hits, status every ~{_HEARTBEAT_SECONDS}s"
-            )
+            tail = f"{event.expected_max} items to judge | live hits, status every ~{_HEARTBEAT_SECONDS}s"
         self._write(f"  {event.stream_display}  {tail}")
 
     def _on_judged(self, event: JudgeProgress) -> None:
@@ -179,11 +174,7 @@ class _ProgressPrinter:
         # separate upstream walks; a high-churn feed can grow between
         # them). Mark the denominator `~` once judged overruns it so the
         # display reads as an estimate, not a broken `12/8`.
-        denom = (
-            f"~{self._expected_max}"
-            if self._judged > self._expected_max
-            else f"{self._expected_max}"
-        )
+        denom = f"~{self._expected_max}" if self._judged > self._expected_max else f"{self._expected_max}"
         return f"{self._judged:>4}/{denom}"
 
     def _stats_summary(self) -> str:
@@ -194,11 +185,7 @@ class _ProgressPrinter:
         eta = remaining * avg
         # Clamp at 100: a best-effort pre-count overrun must not print
         # 137% (see _format_n).
-        pct = (
-            min(100.0, 100.0 * self._judged / self._expected_max)
-            if self._expected_max
-            else 0.0
-        )
+        pct = min(100.0, 100.0 * self._judged / self._expected_max) if self._expected_max else 0.0
         return (
             f"{pct:.0f}%, "
             f"{self._hits} hit, {self._errors} err, "

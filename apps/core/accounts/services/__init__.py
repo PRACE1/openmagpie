@@ -21,4 +21,4 @@ from .accounts import AccountService
 from .profiles import UserProfileService
 from .users import UserService
 
-__all__ = ["UserService", "AccountService", "UserProfileService"]
+__all__ = ["AccountService", "UserProfileService", "UserService"]

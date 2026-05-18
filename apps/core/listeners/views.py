@@ -14,10 +14,11 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from accounts.services import AccountService
 from rest_framework import permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
+
+from accounts.services import AccountService
 
 from .models import Listener
 from .registry import get_config_class
@@ -67,9 +68,7 @@ def _summary(listener) -> dict[str, Any]:
     an empty summary, not 500. Logged via `_redacted_data` already on
     the same request, so just swallow + default here."""
     try:
-        config = get_config_class(str(listener.kind)).model_validate(
-            listener.data or {}
-        )
+        config = get_config_class(str(listener.kind)).model_validate(listener.data or {})
         return config.summary().model_dump(mode="json")
     except Exception:
         return dict(_EMPTY_SUMMARY)
@@ -87,9 +86,7 @@ class ListenerListCreateView(APIView):
         serializer.is_valid(raise_exception=True)
         d = serializer.validated_data
 
-        account_id = AccountService.Global.primary_account_id_for(
-            user_id=str(request.user.id)
-        )
+        account_id = AccountService.Global.primary_account_id_for(user_id=str(request.user.id))
         if account_id is None:
             return _no_primary_account_response(str(request.user.id))
 
@@ -146,9 +143,7 @@ class ListenerListCreateView(APIView):
         )
 
     def get(self, request):
-        account_id = AccountService.Global.primary_account_id_for(
-            user_id=str(request.user.id)
-        )
+        account_id = AccountService.Global.primary_account_id_for(user_id=str(request.user.id))
         if account_id is None:
             return _no_primary_account_response(str(request.user.id))
         listeners = ListenerService(account_id=account_id).list()
@@ -180,9 +175,7 @@ class ListenerDetailView(APIView):
     def _resolve(self, request, listener_id: str):
         """`(svc, listener)` or an error `Response`. Centralizes the
         account-scope + existence checks all three verbs share."""
-        account_id = AccountService.Global.primary_account_id_for(
-            user_id=str(request.user.id)
-        )
+        account_id = AccountService.Global.primary_account_id_for(user_id=str(request.user.id))
         if account_id is None:
             return _no_primary_account_response(str(request.user.id))
         svc = ListenerService(account_id=account_id)
@@ -218,21 +211,18 @@ class ListenerDetailView(APIView):
             return Response(
                 {
                     "error": "kind_immutable",
-                    "detail": (
-                        f"listener kind is {listener.kind!r} and cannot be "
-                        f"changed (requested {d['kind']!r})"
-                    ),
+                    "detail": (f"listener kind is {listener.kind!r} and cannot be changed (requested {d['kind']!r})"),
                 },
                 status=status.HTTP_409_CONFLICT,
             )
 
-        edit_kwargs = dict(
-            name=d["name"],
-            instructions=d["instructions"],
-            delivery_mode=d["delivery_mode"],
-            poll_interval_seconds=d["poll_interval_seconds"],
-            data=d["data"],
-        )
+        edit_kwargs = {
+            "name": d["name"],
+            "instructions": d["instructions"],
+            "delivery_mode": d["delivery_mode"],
+            "poll_interval_seconds": d["poll_interval_seconds"],
+            "data": d["data"],
+        }
 
         if _is_truthy(request.query_params.get("dry_run")):
             # Same validate-only contract as create's dry-run, but id /

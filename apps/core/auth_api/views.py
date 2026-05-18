@@ -17,15 +17,16 @@ from __future__ import annotations
 
 from typing import cast
 
-from accounts.models.user import User
-from accounts.services import UserService
-from common.locks import refresh_token_lock
 from django.contrib.auth import authenticate
 from django.db import transaction
 from oauth2_provider.models import RefreshToken
 from rest_framework import permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
+
+from accounts.models.user import User
+from accounts.services import UserService
+from common.locks import refresh_token_lock
 
 from .auth_backends import extract_request_token
 from .constants import AuthErrorCode
@@ -48,9 +49,7 @@ def _err(code: AuthErrorCode, detail: str, status_code: int) -> Response:
     return Response({"error": str(code), "detail": detail}, status=status_code)
 
 
-def _browser_auth_response(
-    user: User, *, status_code: int = status.HTTP_200_OK
-) -> Response:
+def _browser_auth_response(user: User, *, status_code: int = status.HTTP_200_OK) -> Response:
     """Mint a fresh token pair, return `{user}` + the auth_token cookie.
 
     Refresh token is intentionally NOT echoed back to the browser; the
@@ -191,9 +190,7 @@ class TokensRefreshView(APIView):
                     status.HTTP_409_CONFLICT,
                 )
             try:
-                rt = RefreshToken.objects.select_related("user").get(
-                    token=refresh_token
-                )
+                rt = RefreshToken.objects.select_related("user").get(token=refresh_token)
             except RefreshToken.DoesNotExist:
                 return _err(
                     AuthErrorCode.INVALID_REFRESH_TOKEN,
@@ -214,9 +211,7 @@ class TokensRefreshView(APIView):
             with transaction.atomic():
                 rt.revoke()
                 access, new_refresh, ttl = mint_token_pair_for_user(rt.user)
-            return Response(
-                TokenPairSerializer.build(rt.user, access, new_refresh, ttl).data
-            )
+            return Response(TokenPairSerializer.build(rt.user, access, new_refresh, ttl).data)
 
 
 class TokensRevokeView(APIView):
@@ -247,8 +242,6 @@ class WhoamiView(APIView):
             {
                 "cookies_seen": sorted(request._request.COOKIES.keys()),
                 "has_auth_header": AUTHORIZATION_META_KEY in request._request.META,
-                "user": UserSerializer(request.user).data
-                if request.user is not None
-                else None,
+                "user": UserSerializer(request.user).data if request.user is not None else None,
             }
         )

@@ -9,9 +9,7 @@ class Command(BaseCommand):
     help = "Poll a single listener by ID. Intended for manual / debugging use."
 
     def add_arguments(self, parser: CommandParser) -> None:
-        parser.add_argument(
-            "listener_id", type=str, help="ULID of the listener to poll"
-        )
+        parser.add_argument("listener_id", type=str, help="ULID of the listener to poll")
 
     def handle(self, *args: Any, **options: Any) -> None:
         listener = ListenerService.Global.get(options["listener_id"])

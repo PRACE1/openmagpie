@@ -7,7 +7,7 @@ everything else lives here, typed.
 
 import ipaddress
 from datetime import datetime
-from typing import Annotated, Any, ClassVar, Literal, Union
+from typing import Annotated, Any, ClassVar, Literal
 from urllib.parse import urlparse, urlsplit
 
 from django.conf import settings
@@ -147,9 +147,7 @@ class NotifierSpecBase(BaseModel):
     def redacted(self) -> "NotifierSpecBase":
         return self
 
-    def restore_secrets_from(
-        self, prior: "NotifierSpecBase | None"
-    ) -> "NotifierSpecBase":
+    def restore_secrets_from(self, prior: "NotifierSpecBase | None") -> "NotifierSpecBase":
         return self
 
 
@@ -168,24 +166,18 @@ class WebhookNotifierSpec(NotifierSpecBase):
     kind: Literal["webhook"] = "webhook"
     url: str
     headers: dict[str, str] = {}
-    include_fields: list[
-        str
-    ] = []  # empty = all observation fields except scoping; explicit list = whitelist
+    include_fields: list[str] = []  # empty = all observation fields except scoping; explicit list = whitelist
 
     @field_validator("url")
     @classmethod
     def _validate_url(cls, value: str) -> str:
         parsed = urlparse(value)
         if parsed.scheme not in {"http", "https"}:
-            raise ValueError(
-                f"webhook URL scheme must be http or https, got {parsed.scheme!r}"
-            )
+            raise ValueError(f"webhook URL scheme must be http or https, got {parsed.scheme!r}")
         if not parsed.netloc:
             raise ValueError(f"webhook URL missing host: {value!r}")
         if settings.WEBHOOK_REQUIRE_HTTPS and parsed.scheme != "https":
-            raise ValueError(
-                f"WEBHOOK_REQUIRE_HTTPS is set; webhook URL must be https (got {parsed.scheme!r})"
-            )
+            raise ValueError(f"WEBHOOK_REQUIRE_HTTPS is set; webhook URL must be https (got {parsed.scheme!r})")
         # If the host is a literal IP, refuse blocked ranges at save time.
         # Hostnames are resolved + checked at send time (TOCTOU caveat noted in the notifier).
         if settings.WEBHOOK_BLOCK_PRIVATE_IPS and parsed.hostname:
@@ -194,16 +186,8 @@ class WebhookNotifierSpec(NotifierSpecBase):
             except ValueError:
                 pass  # not an IP literal; skip
             else:
-                if (
-                    ip.is_private
-                    or ip.is_loopback
-                    or ip.is_link_local
-                    or ip.is_multicast
-                    or ip.is_reserved
-                ):
-                    raise ValueError(
-                        f"WEBHOOK_BLOCK_PRIVATE_IPS is set; URL host resolves to blocked IP {ip}"
-                    )
+                if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_reserved:
+                    raise ValueError(f"WEBHOOK_BLOCK_PRIVATE_IPS is set; URL host resolves to blocked IP {ip}")
         return value
 
     def redacted(self) -> "WebhookNotifierSpec":
@@ -217,9 +201,7 @@ class WebhookNotifierSpec(NotifierSpecBase):
             }
         )
 
-    def restore_secrets_from(
-        self, prior: "NotifierSpecBase | None"
-    ) -> "WebhookNotifierSpec":
+    def restore_secrets_from(self, prior: "NotifierSpecBase | None") -> "WebhookNotifierSpec":
         """Inverse of `redacted()` for edit round-trip: a value still
         equal to the redaction sentinel means the operator left it
         masked, so keep the prior real value; a changed value is taken
@@ -232,9 +214,7 @@ class WebhookNotifierSpec(NotifierSpecBase):
             update={
                 "url": prior.url if _is_redacted_url(self.url) else self.url,
                 "headers": {
-                    name: prior.headers[name]
-                    if value == REDACTED and name in prior.headers
-                    else value
+                    name: prior.headers[name] if value == REDACTED and name in prior.headers else value
                     for name, value in self.headers.items()
                 },
             }
@@ -251,7 +231,7 @@ class LogNotifierSpec(NotifierSpecBase):
 
 
 NotifierSpec = Annotated[
-    Union[WebhookNotifierSpec, LogNotifierSpec],
+    WebhookNotifierSpec | LogNotifierSpec,
     Field(discriminator="kind"),
 ]
 
@@ -288,8 +268,7 @@ class ListenerConfig(BaseModel):
 
     def redacted_dump(self) -> dict[str, Any]:
         raise NotImplementedError(
-            f"{type(self).__name__} must implement redacted_dump() "
-            "(no safe default: the fallback would leak secrets)"
+            f"{type(self).__name__} must implement redacted_dump() (no safe default: the fallback would leak secrets)"
         )
 
     def summary(self) -> ListenerConfigSummary:
@@ -331,9 +310,7 @@ class SemanticListenerConfig(ListenerConfig):
         """Redact per notifier spec, then dump. Each spec masks its own
         secrets (see NotifierSpecBase.redacted), so adding a new
         secret-bearing notifier needs no change here."""
-        scrubbed = self.model_copy(
-            update={"notifiers": [n.redacted() for n in self.notifiers]}
-        )
+        scrubbed = self.model_copy(update={"notifiers": [n.redacted() for n in self.notifiers]})
         return scrubbed.model_dump(mode="json")
 
     def summary(self) -> ListenerConfigSummary:
@@ -341,11 +318,7 @@ class SemanticListenerConfig(ListenerConfig):
         connector contributes its label without touching this), notifiers
         by kind, engine as `kind | model`. No secrets (URLs/headers never
         appear here)."""
-        engine = (
-            f"{self.engine.kind} | {self.engine.model}"
-            if self.engine.model
-            else self.engine.kind
-        )
+        engine = f"{self.engine.kind} | {self.engine.model}" if self.engine.model else self.engine.kind
         return ListenerConfigSummary(
             streams=[w.spec.display() for w in self.streams],
             notifiers=[n.kind for n in self.notifiers],
@@ -379,9 +352,7 @@ class SemanticListenerConfig(ListenerConfig):
             for w in self.streams
         ]
         notifiers = [
-            n.restore_secrets_from(
-                prior_notifiers[i] if i < len(prior_notifiers) else None
-            )
+            n.restore_secrets_from(prior_notifiers[i] if i < len(prior_notifiers) else None)
             for i, n in enumerate(self.notifiers)
         ]
         return self.model_copy(update={"streams": streams, "notifiers": notifiers})

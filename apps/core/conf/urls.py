@@ -1,7 +1,8 @@
-from common.urls import api_include
-from common.views import healthz
 from django.conf import settings
 from django.urls import path
+
+from common.urls import api_include
+from common.views import healthz
 
 # NOTE: we intentionally do NOT mount `oauth2_provider.urls`. The Toolkit
 # models (AccessToken / RefreshToken / Application) are useful storage

@@ -80,9 +80,7 @@ class BearerOrCookieAuthentication(BaseAuthentication):
         if django_request.method not in _SAFE_METHODS:
             origin = (django_request.META.get("HTTP_ORIGIN") or "").rstrip("/")
             if not origin or origin not in _allowed_origins():
-                raise exceptions.PermissionDenied(
-                    "request Origin not in the allowed list"
-                )
+                raise exceptions.PermissionDenied("request Origin not in the allowed list")
 
         return (user, None)
 

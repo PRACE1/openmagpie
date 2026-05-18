@@ -17,6 +17,7 @@ from collections.abc import Iterator
 from datetime import datetime
 
 from django.db import IntegrityError, transaction
+
 from events.models import Event
 from events.observations import Observation
 from listeners.models import Listener
@@ -38,9 +39,7 @@ class EventService:
 
     def _assert_scope(self, account_id: str, what: str) -> None:
         if account_id != self.account_id:
-            raise ValueError(
-                f"{what} account_id mismatch: {account_id!r} not in scope {self.account_id!r}"
-            )
+            raise ValueError(f"{what} account_id mismatch: {account_id!r} not in scope {self.account_id!r}")
 
     def persist_hit(self, observation: Observation, listener: Listener) -> Event | None:
         """Persist a confirmed hit, idempotently.
@@ -80,9 +79,7 @@ class EventService:
             return None
         return event
 
-    def list_pending_for_listener(
-        self, *, listener_id: str, chunk_size: int = 100
-    ) -> Iterator[Event]:
+    def list_pending_for_listener(self, *, listener_id: str, chunk_size: int = 100) -> Iterator[Event]:
         """Undelivered Events for a listener (digest scheduler uses this)."""
         return Event.objects.filter(
             account_id=self.account_id,
@@ -90,22 +87,16 @@ class EventService:
             delivered_at__isnull=True,
         ).iterator(chunk_size=chunk_size)
 
-    def list_recent_for_listener(
-        self, *, listener_id: str, limit: int = 25
-    ) -> list[Event]:
+    def list_recent_for_listener(self, *, listener_id: str, limit: int = 25) -> list[Event]:
         """Most recent Events for a listener, ordered by occurred_at desc.
         Materialized as a list (capped), ad-hoc spot-check use only."""
         return list(
-            Event.objects.filter(
-                account_id=self.account_id, listener_id=listener_id
-            ).order_by("-occurred_at")[:limit]
+            Event.objects.filter(account_id=self.account_id, listener_id=listener_id).order_by("-occurred_at")[:limit]
         )
 
     def mark_delivered(self, *, event_ids: list[str], delivered_at: datetime) -> None:
         """Bulk-mark Events as delivered. Scoped to this service's account."""
-        Event.objects.filter(account_id=self.account_id, id__in=event_ids).update(
-            delivered_at=delivered_at
-        )
+        Event.objects.filter(account_id=self.account_id, id__in=event_ids).update(delivered_at=delivered_at)
 
     def mark_one_delivered(self, event: Event, /, *, delivered_at: datetime) -> None:
         """Mark a single Event as delivered. Used by instant-mode delivery."""

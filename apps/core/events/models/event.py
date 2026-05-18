@@ -1,6 +1,7 @@
-from common.models import BaseModel
 from django.db import models
 from django.utils.translation import gettext_lazy as _
+
+from common.models import BaseModel
 
 
 class Event(BaseModel):
@@ -32,9 +33,7 @@ class Event(BaseModel):
         blank=True,
         help_text=_("Null = pending delivery. Set when all notifiers succeed."),
     )
-    data = models.JSONField(
-        _("data"), default=dict, help_text=_("Full Observation.model_dump()")
-    )
+    data = models.JSONField(_("data"), default=dict, help_text=_("Full Observation.model_dump()"))
 
     class Meta:
         verbose_name = _("event")

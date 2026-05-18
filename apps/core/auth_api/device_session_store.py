@@ -89,7 +89,7 @@ class DeviceSessionState(BaseModel):
         expires_in: int,
         token_type: str,
         user: dict[str, Any],
-    ) -> "DeviceSessionState":
+    ) -> DeviceSessionState:
         """Return a new state in the COMPLETED phase. Preserves the
         pending bag's user_code / device_secret_hash / initiator info
         so the CLI's post-complete poll still authenticates and we

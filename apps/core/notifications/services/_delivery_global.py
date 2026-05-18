@@ -22,9 +22,7 @@ class DeliveryGlobal:
     """
 
     @staticmethod
-    def deliver_digest(
-        listener: Listener, config: SemanticListenerConfig
-    ) -> int | None:
+    def deliver_digest(listener: Listener, config: SemanticListenerConfig) -> int | None:
         """Locked entry point for one Listener's digest cycle.
 
         Acquires `digest_lock(listener.id)`; returns None if another process
@@ -40,6 +38,4 @@ class DeliveryGlobal:
         with digest_lock(str(listener.id)) as acquired:
             if not acquired:
                 return None
-            return DeliveryService(account_id=str(listener.account_id)).deliver_digest(
-                listener, config
-            )
+            return DeliveryService(account_id=str(listener.account_id)).deliver_digest(listener, config)

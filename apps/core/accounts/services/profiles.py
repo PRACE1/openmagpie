@@ -36,19 +36,11 @@ class UserProfileGlobal:
         # one back, the first-created. Without an explicit order, the
         # DB is free to return any row and the choice can flip between
         # queries.
-        return (
-            UserProfile.objects.filter(user_id=user_id, is_primary=True)
-            .order_by("id")
-            .first()
-        )
+        return UserProfile.objects.filter(user_id=user_id, is_primary=True).order_by("id").first()
 
     @staticmethod
     def any_active_for_user(*, user_id: str) -> UserProfile | None:
-        return (
-            UserProfile.objects.filter(user_id=user_id, status=PROFILE_STATUS_ACTIVE)
-            .order_by("id")
-            .first()
-        )
+        return UserProfile.objects.filter(user_id=user_id, status=PROFILE_STATUS_ACTIVE).order_by("id").first()
 
 
 class UserProfileService:

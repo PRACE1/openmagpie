@@ -82,9 +82,7 @@ DATABASES = {
 }
 
 AUTH_PASSWORD_VALIDATORS = [
-    {
-        "NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"
-    },
+    {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
     {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator"},
     {"NAME": "django.contrib.auth.password_validation.CommonPasswordValidator"},
     {"NAME": "django.contrib.auth.password_validation.NumericPasswordValidator"},
@@ -112,17 +110,9 @@ API_VERSION_PREFIX = os.environ.get("API_VERSION_PREFIX", "v1")
 
 # CORS / CSRF for the web client. Empty by default so prod has to opt-in
 # explicitly via env; `local.py` overrides with permissive dev defaults.
-CORS_ALLOWED_ORIGINS = [
-    o.strip()
-    for o in os.environ.get("CORS_ALLOWED_ORIGINS", "").split(",")
-    if o.strip()
-]
+CORS_ALLOWED_ORIGINS = [o.strip() for o in os.environ.get("CORS_ALLOWED_ORIGINS", "").split(",") if o.strip()]
 CORS_ALLOW_CREDENTIALS = True
-CSRF_TRUSTED_ORIGINS = [
-    o.strip()
-    for o in os.environ.get("CSRF_TRUSTED_ORIGINS", "").split(",")
-    if o.strip()
-]
+CSRF_TRUSTED_ORIGINS = [o.strip() for o in os.environ.get("CSRF_TRUSTED_ORIGINS", "").split(",") if o.strip()]
 
 # `auth_token` browser cookie (set by auth_api.cookies). Secure-by-default
 # in base; local.py loosens it for plain-HTTP dev. Domain is unset (host-only)
@@ -150,12 +140,8 @@ REST_FRAMEWORK = {
 }
 
 OAUTH2_PROVIDER = {
-    "ACCESS_TOKEN_EXPIRES_SECONDS": int(
-        os.environ.get("ACCESS_TOKEN_EXPIRES_SECONDS", "3600")
-    ),
-    "REFRESH_TOKEN_EXPIRE_SECONDS": int(
-        os.environ.get("REFRESH_TOKEN_EXPIRE_SECONDS", str(14 * 86400))
-    ),
+    "ACCESS_TOKEN_EXPIRES_SECONDS": int(os.environ.get("ACCESS_TOKEN_EXPIRES_SECONDS", "3600")),
+    "REFRESH_TOKEN_EXPIRE_SECONDS": int(os.environ.get("REFRESH_TOKEN_EXPIRE_SECONDS", str(14 * 86400))),
     "ROTATE_REFRESH_TOKEN": True,
     "SCOPES": {"read": "Read", "write": "Read and write"},
     "DEFAULT_SCOPES": ["read", "write"],
@@ -165,21 +151,15 @@ OAUTH2_PROVIDER = {
 # Device session (CLI login handshake) TTLs. Short, because the user is
 # expected to authorize within minutes; the completed bag is even shorter
 # since the CLI polls every 2s and needs only a brief window to pick it up.
-DEVICE_SESSION_PENDING_TTL_SECONDS = int(
-    os.environ.get("DEVICE_SESSION_PENDING_TTL_SECONDS", str(15 * 60))
-)
-DEVICE_SESSION_COMPLETED_TTL_SECONDS = int(
-    os.environ.get("DEVICE_SESSION_COMPLETED_TTL_SECONDS", str(5 * 60))
-)
+DEVICE_SESSION_PENDING_TTL_SECONDS = int(os.environ.get("DEVICE_SESSION_PENDING_TTL_SECONDS", str(15 * 60)))
+DEVICE_SESSION_COMPLETED_TTL_SECONDS = int(os.environ.get("DEVICE_SESSION_COMPLETED_TTL_SECONDS", str(5 * 60)))
 
 # Cache (also used as the lock backend for scheduler concurrency control).
 # Defaults to Django's db cache, zero-deps, survives process restart, fine
 # for single-host. Swap to django-redis / memcached via env when there's a
 # real reason (multi-host scheduler, ephemeral locks). Run
 # `manage.py createcachetable` once after switching backends or on cold db.
-CACHE_BACKEND = os.environ.get(
-    "CACHE_BACKEND", "django.core.cache.backends.db.DatabaseCache"
-)
+CACHE_BACKEND = os.environ.get("CACHE_BACKEND", "django.core.cache.backends.db.DatabaseCache")
 CACHE_LOCATION = os.environ.get("CACHE_LOCATION", "openmagpie_cache")
 CACHES = {"default": {"BACKEND": CACHE_BACKEND, "LOCATION": CACHE_LOCATION}}
 
@@ -195,9 +175,7 @@ DIGEST_LOCK_TIMEOUT_SECONDS = int(os.environ.get("DIGEST_LOCK_TIMEOUT_SECONDS", 
 # Refresh-token rotation lock failsafe. The critical section is one row
 # read + revoke + mint, so milliseconds in practice; 30s leaves plenty
 # of headroom if the DB is briefly slow.
-REFRESH_TOKEN_LOCK_TIMEOUT_SECONDS = int(
-    os.environ.get("REFRESH_TOKEN_LOCK_TIMEOUT_SECONDS", "30")
-)
+REFRESH_TOKEN_LOCK_TIMEOUT_SECONDS = int(os.environ.get("REFRESH_TOKEN_LOCK_TIMEOUT_SECONDS", "30"))
 
 # Relevance engine defaults. ENGINE_DEFAULT_KIND selects which engine
 # `SemanticListenerConfig` falls back to when a Listener's config doesn't

@@ -19,9 +19,10 @@ race window where two concurrent signups both passed the optimistic
 
 from __future__ import annotations
 
+from django.db import IntegrityError
+
 from accounts.models.user import User
 from accounts.services import AccountService, UserProfileService, UserService
-from django.db import IntegrityError
 
 
 class EmailAlreadyExists(Exception):

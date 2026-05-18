@@ -11,6 +11,7 @@ from collections.abc import Iterator
 from datetime import datetime
 
 from django.db.models import Q
+
 from listeners.models import Listener
 
 
@@ -24,9 +25,7 @@ class ListenerGlobal:
         return Listener.objects.get(id=id)
 
     @staticmethod
-    def list_due_for_poll(
-        *, now: datetime, chunk_size: int = 100
-    ) -> Iterator[Listener]:
+    def list_due_for_poll(*, now: datetime, chunk_size: int = 100) -> Iterator[Listener]:
         """Active Listeners whose next_poll_at has elapsed (or is unset).
         Spans all accounts, scheduler entry point."""
         return (
@@ -36,15 +35,11 @@ class ListenerGlobal:
         )
 
     @staticmethod
-    def list_due_for_digest(
-        *, now: datetime, chunk_size: int = 100
-    ) -> Iterator[Listener]:
+    def list_due_for_digest(*, now: datetime, chunk_size: int = 100) -> Iterator[Listener]:
         """Active digest-mode Listeners whose digest interval has elapsed.
         Spans all accounts, scheduler entry point."""
         return (
-            Listener.objects.filter(
-                is_active=True, delivery_mode=Listener.DeliveryMode.DIGEST
-            )
+            Listener.objects.filter(is_active=True, delivery_mode=Listener.DeliveryMode.DIGEST)
             .filter(Q(next_digest_at__isnull=True) | Q(next_digest_at__lte=now))
             .iterator(chunk_size=chunk_size)
         )

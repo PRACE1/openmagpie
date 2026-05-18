@@ -4,11 +4,12 @@ from collections.abc import Iterator
 from datetime import datetime
 
 import httpx
+from pydantic import ValidationError
+
 from events.observations import Observation
 from events.registry import register
 from listeners.configs import RedditSubredditStreamSpec
 from listeners.models import Listener
-from pydantic import ValidationError
 
 from ..base import BaseConnector, ConnectorParseError
 from .observations import NewRedditPostObservation
@@ -39,7 +40,7 @@ class RedditSubRedditConnector(BaseConnector):
 
     Cold-start semantics: the *first* poll for a brand-new Listener (StreamWatch
     with `last_event_at=None`) yields whatever a single poll cycle returns,
-    up to `MAX_PAGES × PAGE_SIZE` posts from the head of /new. Every subsequent
+    up to `MAX_PAGES x PAGE_SIZE` posts from the head of /new. Every subsequent
     cycle is pure live mode: only posts newer than `last_event_at` are yielded.
 
     There is no backfill. Posts older than the moment we cold-started are
@@ -99,8 +100,7 @@ class RedditSubRedditConnector(BaseConnector):
                 # missing required field on a post should fail this stream's
                 # poll cycle, not the whole scheduler.
                 raise ConnectorParseError(
-                    f"reddit /r/{subreddit}/new/.json returned an unexpected payload: "
-                    f"{type(exc).__name__}: {exc}"
+                    f"reddit /r/{subreddit}/new/.json returned an unexpected payload: {type(exc).__name__}: {exc}"
                 ) from exc
 
             after = listing.data.after
@@ -108,9 +108,7 @@ class RedditSubRedditConnector(BaseConnector):
                 return  # empty page, nothing more to consume
 
             for child in listing.data.children:
-                obs = NewRedditPostObservation.from_reddit_blob(
-                    child.data, listener, spec
-                )
+                obs = NewRedditPostObservation.from_reddit_blob(child.data, listener, spec)
                 if since is not None and obs.occurred_at <= since:
                     # /new is reverse-chronological, all remaining items on
                     # this and later pages are older. We've caught up.

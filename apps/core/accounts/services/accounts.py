@@ -27,9 +27,9 @@ class AccountGlobal:
         """
         from .profiles import UserProfileGlobal
 
-        profile = UserProfileGlobal.primary_for_user(
+        profile = UserProfileGlobal.primary_for_user(user_id=user_id) or UserProfileGlobal.any_active_for_user(
             user_id=user_id
-        ) or UserProfileGlobal.any_active_for_user(user_id=user_id)
+        )
         return str(profile.account_id) if profile is not None else None
 
 

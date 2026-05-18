@@ -28,9 +28,7 @@ def _cookie_kwargs() -> dict:
     }
 
 
-def set_auth_cookie(
-    response: HttpResponse, token_value: str, max_age: int
-) -> HttpResponse:
+def set_auth_cookie(response: HttpResponse, token_value: str, max_age: int) -> HttpResponse:
     """Attach `auth_token=<token>` to the response with the configured TTL."""
     response.set_cookie(
         AUTH_COOKIE_NAME,

@@ -17,10 +17,11 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from listeners.models import Listener
-from listeners.registry import get_config_class
 from pydantic import ValidationError as PydanticValidationError
 from rest_framework import serializers
+
+from listeners.models import Listener
+from listeners.registry import get_config_class
 
 from .models.listener import MIN_POLL_INTERVAL_SECONDS
 
@@ -58,7 +59,7 @@ class ListenerCreateSerializer(serializers.Serializer):
         try:
             get_config_class(value)
         except KeyError:
-            raise serializers.ValidationError(f"unknown listener kind {value!r}")
+            raise serializers.ValidationError(f"unknown listener kind {value!r}") from None
         return value
 
     def validate(self, attrs: dict[str, Any]) -> dict[str, Any]:
@@ -69,9 +70,7 @@ class ListenerCreateSerializer(serializers.Serializer):
         try:
             validated = config_class.model_validate(attrs["data"])
         except PydanticValidationError as exc:
-            raise serializers.ValidationError(
-                {"data": _pydantic_errors_to_drf(exc)}
-            ) from exc
+            raise serializers.ValidationError({"data": _pydantic_errors_to_drf(exc)}) from exc
         # Replace the raw dict with the normalized Pydantic dump so the
         # service layer stores a canonical shape regardless of input
         # ordering or omitted defaults.
@@ -127,9 +126,7 @@ def _redacted_data(listener: Listener) -> dict[str, Any]:
     columns so the operator sees it exists and is broken.
     """
     try:
-        config = get_config_class(str(listener.kind)).model_validate(
-            listener.data or {}
-        )
+        config = get_config_class(str(listener.kind)).model_validate(listener.data or {})
         return config.redacted_dump()
     except Exception:
         logger.exception(

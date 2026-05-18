@@ -31,11 +31,7 @@ DEFAULT_ACCESS_TTL_SECONDS = 3600
 
 
 def _access_ttl_seconds() -> int:
-    return int(
-        settings.OAUTH2_PROVIDER.get(
-            "ACCESS_TOKEN_EXPIRES_SECONDS", DEFAULT_ACCESS_TTL_SECONDS
-        )
-    )
+    return int(settings.OAUTH2_PROVIDER.get("ACCESS_TOKEN_EXPIRES_SECONDS", DEFAULT_ACCESS_TTL_SECONDS))
 
 
 def get_cli_application() -> Application:
@@ -92,9 +88,7 @@ def mint_token_pair_for_user(user) -> tuple[AccessToken, RefreshToken, int]:
         application=application,
         token=secrets.token_urlsafe(48),
         expires=now + timedelta(seconds=ttl),
-        scope=" ".join(
-            settings.OAUTH2_PROVIDER.get("DEFAULT_SCOPES", ["read", "write"])
-        ),
+        scope=" ".join(settings.OAUTH2_PROVIDER.get("DEFAULT_SCOPES", ["read", "write"])),
     )
     refresh = RefreshToken.objects.create(
         user=user,

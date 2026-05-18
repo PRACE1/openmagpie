@@ -31,8 +31,10 @@ from dataclasses import dataclass
 from functools import cached_property
 
 import httpx
-from common.locks import poll_lock
 from django.utils import timezone
+from pydantic import ValidationError
+
+from common.locks import poll_lock
 from engine import registry as engine_registry
 from engine.engines import Engine
 from events.observations import Observation
@@ -42,7 +44,6 @@ from listeners import registry as listeners_registry
 from listeners.configs import SemanticListenerConfig, StreamWatch
 from listeners.models import Listener
 from notifications.services import DeliveryService
-from pydantic import ValidationError
 from sources import registry as source_registry
 from sources.connectors.base import ConnectorParseError
 
@@ -195,14 +196,10 @@ class PollListenerOperation:
         """Re-fire instant delivery for any Event left at delivered_at=NULL by a
         previous failed cycle. Instant listeners don't run the digest sweep, so
         without this they'd stay stuck forever. Rides the existing poll cadence."""
-        for stuck in self.event_svc.list_pending_for_listener(
-            listener_id=str(self.listener.id)
-        ):
+        for stuck in self.event_svc.list_pending_for_listener(listener_id=str(self.listener.id)):
             try:
                 obs = hydrate_event(stuck)
-                self.delivery_svc.deliver_instant(
-                    stuck, obs, self.listener, self.config
-                )
+                self.delivery_svc.deliver_instant(stuck, obs, self.listener, self.config)
             except _RECOVERABLE_ERRORS as exc:
                 logger.warning(
                     "stuck-pending retry failed listener=%s event=%s err=%s: %s",
@@ -255,9 +252,7 @@ class PollListenerOperation:
         # halve the Reddit anon rate-limit headroom - for a number that
         # goes straight to a no-op.
         if self._progress_active:
-            expected_max = connector.count(
-                watch.spec, self.listener, since=watch.last_event_at
-            )
+            expected_max = connector.count(watch.spec, self.listener, since=watch.last_event_at)
         else:
             expected_max = 0
         self.on_progress(

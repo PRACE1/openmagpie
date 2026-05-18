@@ -11,6 +11,7 @@ lazy-import `DeliveryService` to avoid a circular import at module load.
 import logging
 
 from django.utils import timezone
+
 from events.models import Event
 from events.observations import Observation
 from events.registry import hydrate as hydrate_event
@@ -38,9 +39,7 @@ class DeliveryService:
 
     def _assert_scope(self, account_id: str, what: str) -> None:
         if account_id != self.account_id:
-            raise ValueError(
-                f"{what} account_id mismatch: {account_id!r} not in scope {self.account_id!r}"
-            )
+            raise ValueError(f"{what} account_id mismatch: {account_id!r} not in scope {self.account_id!r}")
 
     def _log_result(self, listener: Listener, result: NotificationResult) -> None:
         log = logger.info if result.delivered else logger.warning
@@ -110,9 +109,7 @@ class DeliveryService:
         so the next scheduler pass re-batches the same pending Events).
         """
         self._assert_scope(str(listener.account_id), "listener")
-        pending = list(
-            self._events.list_pending_for_listener(listener_id=str(listener.id))
-        )
+        pending = list(self._events.list_pending_for_listener(listener_id=str(listener.id)))
         if not pending:
             return 0
 
@@ -125,8 +122,6 @@ class DeliveryService:
             period_end=now,
         )
         if self._fire_all(batch, config, listener):
-            self._events.mark_delivered(
-                event_ids=[str(e.id) for e in pending], delivered_at=now
-            )
+            self._events.mark_delivered(event_ids=[str(e.id) for e in pending], delivered_at=now)
             return len(pending)
         return 0

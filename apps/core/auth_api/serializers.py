@@ -9,12 +9,12 @@ changes here ripple to both clients.
 
 from __future__ import annotations
 
-from accounts.services import AccountService
 from django.contrib.auth.password_validation import validate_password
 from rest_framework import serializers
 
-from .constants import BEARER_TOKEN_TYPE
+from accounts.services import AccountService
 
+from .constants import BEARER_TOKEN_TYPE
 
 # ── Input ──────────────────────────────────────────────────────────────
 

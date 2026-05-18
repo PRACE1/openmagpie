@@ -1,9 +1,10 @@
 import time
 
 import httpx
+from pydantic import BaseModel
+
 from events.observations import Observation
 from listeners.models import Listener
-from pydantic import BaseModel
 
 from .base import JudgmentJSON, JudgmentResult
 

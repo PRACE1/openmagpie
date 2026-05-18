@@ -32,8 +32,7 @@ class Command(BaseCommand):
             self.stdout.write("No listeners due for digest.")
         else:
             self.stdout.write(
-                f"\nDelivered {total_delivered} hit(s) across {total_listeners} listener(s), "
-                f"skipped {total_skipped}"
+                f"\nDelivered {total_delivered} hit(s) across {total_listeners} listener(s), skipped {total_skipped}"
             )
 
     def _deliver_one(self, listener: Listener, now: datetime) -> int | None:
@@ -41,9 +40,7 @@ class Command(BaseCommand):
         on any skip (unsupported kind, lock held by another process)."""
         config = listeners_registry.load_config(listener)
         if not isinstance(config, SemanticListenerConfig):
-            self.stdout.write(
-                f"  {listener}: skipped (unsupported kind={listener.kind})"
-            )
+            self.stdout.write(f"  {listener}: skipped (unsupported kind={listener.kind})")
             return None
 
         delivered = DeliveryService.Global.deliver_digest(listener, config)

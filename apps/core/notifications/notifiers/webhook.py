@@ -19,6 +19,7 @@ from urllib.parse import urlparse
 
 import httpx
 from django.conf import settings
+
 from listeners.configs import WebhookNotifierSpec
 from notifications.services.batching import build_payload
 
@@ -41,13 +42,7 @@ def _check_destination(url: str) -> str | None:
             return f"DNS resolution failed for {host!r}: {exc}"
         for info in infos:
             ip = ipaddress.ip_address(info[4][0])
-            if (
-                ip.is_private
-                or ip.is_loopback
-                or ip.is_link_local
-                or ip.is_multicast
-                or ip.is_reserved
-            ):
+            if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_reserved:
                 return f"hostname {host!r} resolves to blocked IP {ip}"
     return None
 
@@ -68,9 +63,7 @@ class WebhookNotifier:
         payload = build_payload(batch, include_fields=spec.include_fields)
         started = time.perf_counter()
         try:
-            response = httpx.post(
-                spec.url, json=payload, headers=spec.headers, timeout=30.0
-            )
+            response = httpx.post(spec.url, json=payload, headers=spec.headers, timeout=30.0)
             response.raise_for_status()
         except httpx.HTTPError as exc:
             elapsed = int((time.perf_counter() - started) * 1000)
@@ -82,6 +75,4 @@ class WebhookNotifier:
             )
 
         elapsed = int((time.perf_counter() - started) * 1000)
-        return NotificationResult(
-            notifier_kind=self.kind, delivered=True, latency_ms=elapsed
-        )
+        return NotificationResult(notifier_kind=self.kind, delivered=True, latency_ms=elapsed)

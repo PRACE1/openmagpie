@@ -6,9 +6,10 @@ browser holds it in an HttpOnly cookie; the CLI sends it via
 `Authorization: Bearer ...`. One lookup path, two delivery mechanisms.
 """
 
-from accounts.models.user import User
 from django.http import HttpRequest
 from oauth2_provider.models import AccessToken
+
+from accounts.models.user import User
 
 from .constants import AUTHORIZATION_META_KEY, BEARER_SCHEME
 from .cookies import AUTH_COOKIE_NAME
