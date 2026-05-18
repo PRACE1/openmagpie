@@ -1,11 +1,15 @@
-"""DRF serializers for the listeners API.
+"""Listeners API wire shapes.
 
-`ListenerCreateSerializer` validates the envelope and delegates the
-kind-specific `data` blob to the Pydantic registry. Pydantic errors are
-re-shaped into DRF's nested 400 format so a `data.streams[0].spec.kind`
-problem surfaces at the right path on the client.
+Input is a DRF serializer (`ListenerCreateSerializer`) because that's
+the HTTP request-validation boundary: field rules + the flat-path 400
+errors, delegating the `data` blob to the Pydantic registry.
 
-`ListenerSerializer` is the flat output shape, fed an ORM `Listener`.
+Output is NOT a DRF serializer. `listener_wire()` is a plain builder:
+the only non-trivial part of the response (the redacted config) is
+already owned by the typed Pydantic config, so a DRF output serializer
+was just a hand-maintained field-mirror - and its field literally named
+`data` shadowed `BaseSerializer.data`, needing a cast to work around.
+One builder, one source of truth, used by list/create/dry-run/get/edit.
 """
 
 from __future__ import annotations
@@ -109,60 +113,58 @@ def _pydantic_errors_to_drf(exc: PydanticValidationError) -> dict[str, Any]:
 # ── Output ─────────────────────────────────────────────────────────────
 
 
-class ListenerSerializer(serializers.Serializer):
-    """Wire shape for a Listener record. Fed an ORM `Listener` instance.
+def _redacted_data(listener: Listener) -> dict[str, Any]:
+    """`listener.data` validated through the kind's typed config and
+    redacted (the config owns what's secret - see
+    configs.NotifierSpecBase.redacted).
 
-    Also serves the dry-run preview, which is fed an *unsaved* instance.
-    `created_at` is `None` until `.save()` (auto_now_add), hence
-    `allow_null`. `id` is an empty string (not null) pre-save, since
-    `ULIDField` generates in `pre_save`; the dry-run view strips that
-    placeholder so a client never reads a meaningless id.
+    Per-row fail-safe: re-validation can fail for a single row (unknown
+    kind, data drift, a settings-dependent validator like the webhook
+    URL check). That MUST NOT 500 a `many` list - it would abort the
+    whole account's list, hiding healthy listeners. On failure log and
+    return a sentinel, NEVER raw `listener.data` (that would leak
+    unredacted webhook secrets). The row stays visible via its model
+    columns so the operator sees it exists and is broken.
     """
+    try:
+        config = get_config_class(str(listener.kind)).model_validate(
+            listener.data or {}
+        )
+        return config.redacted_dump()
+    except Exception:
+        logger.exception(
+            "listener %s data failed redaction (kind=%s); returning sentinel",
+            listener.id,
+            listener.kind,
+        )
+        return {"error": "config_unreadable"}
 
-    id = serializers.CharField()
-    name = serializers.CharField()
-    instructions = serializers.CharField()
-    kind = serializers.CharField()
-    delivery_mode = serializers.CharField()
-    is_active = serializers.BooleanField()
-    poll_interval_seconds = serializers.IntegerField()
-    last_polled_at = serializers.DateTimeField(allow_null=True)
-    next_poll_at = serializers.DateTimeField(allow_null=True)
-    last_digest_at = serializers.DateTimeField(allow_null=True)
-    next_digest_at = serializers.DateTimeField(allow_null=True)
-    # user_id is the creator for audit/display. Listeners are account-scoped
-    # (any user in the account can read/manage them); this field shows who
-    # created the listener, it is not an ownership filter. See ListenerService.
-    user_id = serializers.CharField()
-    data = serializers.SerializerMethodField()
-    created_at = serializers.DateTimeField(allow_null=True)
 
-    def get_data(self, obj: Listener) -> dict[str, Any]:
-        """Config blob with secrets redacted, via the kind's typed config.
+def listener_wire(listener: Listener) -> dict[str, Any]:
+    """The single source for a Listener's wire shape. list / create /
+    dry-run / get / edit all go through here, so the response can't drift
+    between endpoints.
 
-        Symmetric with the create path (`model_validate(...).model_dump`):
-        we validate `obj.data` against the kind's config and let it
-        `redacted_dump()`. What is secret is declared once on the typed
-        spec (see configs.NotifierSpecBase.redacted), so the serializer
-        carries no schema knowledge and can't drift when a new
-        secret-bearing notifier is added.
-
-        Per-row fail-safe: re-validation can fail for a single row
-        (unknown kind, data drift, settings-dependent validators like
-        the webhook URL check). That MUST NOT 500 the whole account's
-        list (`many=True` would abort entirely, hiding healthy
-        listeners). On failure return a redacted sentinel - never raw
-        `obj.data`, which would leak unredacted webhook secrets. The row
-        stays visible (its model columns: id/name/kind/...) so the
-        operator sees it exists and is broken.
-        """
-        try:
-            config = get_config_class(str(obj.kind)).model_validate(obj.data or {})
-            return config.redacted_dump()
-        except Exception:
-            logger.exception(
-                "listener %s data failed redaction (kind=%s); returning sentinel",
-                obj.id,
-                obj.kind,
-            )
-            return {"error": "config_unreadable"}
+    Datetimes are returned raw; DRF's JSON renderer ISO-encodes them.
+    Tolerates an unsaved instance (dry-run): `created_at` is None
+    pre-save (auto_now_add), `id` is the empty-string ULID placeholder
+    (the create dry-run view strips it; edit keeps the real id).
+    """
+    return {
+        "id": listener.id,
+        "name": listener.name,
+        "instructions": listener.instructions,
+        "kind": listener.kind,
+        "delivery_mode": listener.delivery_mode,
+        "is_active": listener.is_active,
+        "poll_interval_seconds": listener.poll_interval_seconds,
+        "last_polled_at": listener.last_polled_at,
+        "next_poll_at": listener.next_poll_at,
+        "last_digest_at": listener.last_digest_at,
+        "next_digest_at": listener.next_digest_at,
+        # creator, for audit/display. Account-scoped reads mean this is
+        # NOT an ownership filter (see ListenerService).
+        "user_id": listener.user_id,
+        "data": _redacted_data(listener),
+        "created_at": listener.created_at,
+    }

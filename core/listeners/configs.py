@@ -38,6 +38,13 @@ def _redact_webhook_url(url: str) -> str:
     return f"{parts.scheme}://{netloc}/***"
 
 
+def _is_redacted_url(url: str) -> bool:
+    """True if `url` is the placeholder `redacted()` emits, i.e. the
+    operator left it masked on an edit (didn't change it). The redacted
+    form always ends `/***`; bare `***` covers an unparseable original."""
+    return url == REDACTED or url.endswith("/***")
+
+
 # ── Stream specs (discriminated union over kind) ──────────────────────────
 #
 # Each connector defines its own immutable identity shape. Add a new variant
@@ -129,12 +136,20 @@ def _default_engine_spec() -> EngineSpec:
 
 
 class NotifierSpecBase(BaseModel):
-    """Common base for notifier specs. Owns the redaction contract so it
-    lives next to the schema it redacts (single source of truth; symmetric
-    with how create validates through this same typed config). Default:
-    nothing secret, return self. Specs with secrets override `redacted`."""
+    """Common base for notifier specs. Owns both halves of the secret
+    contract so they live next to the schema (single source of truth):
+    `redacted()` masks secrets for output; `restore_secrets_from(prior)`
+    is its inverse for edit round-trip - a value still equal to the
+    redaction sentinel means "unchanged", so keep the prior real value.
+    Defaults: nothing secret, return self. Secret-bearing specs override
+    BOTH (so a new one can't implement masking without round-trip)."""
 
     def redacted(self) -> "NotifierSpecBase":
+        return self
+
+    def restore_secrets_from(
+        self, prior: "NotifierSpecBase | None"
+    ) -> "NotifierSpecBase":
         return self
 
 
@@ -202,6 +217,29 @@ class WebhookNotifierSpec(NotifierSpecBase):
             }
         )
 
+    def restore_secrets_from(
+        self, prior: "NotifierSpecBase | None"
+    ) -> "WebhookNotifierSpec":
+        """Inverse of `redacted()` for edit round-trip: a value still
+        equal to the redaction sentinel means the operator left it
+        masked, so keep the prior real value; a changed value is taken
+        as-is. `prior` is the already-paired prior notifier for this
+        slot (caller does the O(1) pairing) - no lookup here. Header
+        check is O(1) dict membership."""
+        if not isinstance(prior, WebhookNotifierSpec):
+            return self  # slot kind changed: nothing to restore
+        return self.model_copy(
+            update={
+                "url": prior.url if _is_redacted_url(self.url) else self.url,
+                "headers": {
+                    name: prior.headers[name]
+                    if value == REDACTED and name in prior.headers
+                    else value
+                    for name, value in self.headers.items()
+                },
+            }
+        )
+
 
 class LogNotifierSpec(NotifierSpecBase):
     """Writes the batch to stdout. For dev / verification. No secrets,
@@ -257,6 +295,18 @@ class ListenerConfig(BaseModel):
     def summary(self) -> ListenerConfigSummary:
         raise NotImplementedError(f"{type(self).__name__} must implement summary()")
 
+    def merge_preserving(self, prior: "ListenerConfig") -> "ListenerConfig":
+        """Edit round-trip: return self with state that must NOT reset on
+        an edit carried over from `prior` - per-stream poll watermarks
+        and redacted secrets the operator left masked. No safe default:
+        a silent passthrough would reset every watermark (re-poll/re-
+        judge history) and corrupt every secret to `***`. A kind must
+        implement this consciously."""
+        raise NotImplementedError(
+            f"{type(self).__name__} must implement merge_preserving() "
+            "(no safe default: would reset watermarks and corrupt secrets)"
+        )
+
 
 class SemanticListenerConfig(ListenerConfig):
     """Schema for Listener.data when Listener.kind == 'semantic'."""
@@ -301,3 +351,37 @@ class SemanticListenerConfig(ListenerConfig):
             notifiers=[n.kind for n in self.notifiers],
             engine=engine,
         )
+
+    def merge_preserving(self, prior: "ListenerConfig") -> "SemanticListenerConfig":
+        """Carry forward, from `prior`, the config state an edit must not
+        reset (id/created_at/poll-state COLUMNS are the service's job,
+        not this - this is config-blob only):
+
+        - per-stream `last_event_at`, keyed by spec identity, so editing
+          unrelated fields doesn't cold-start a stream and re-judge
+          history;
+        - redacted secrets the operator left as `***` (the GET we
+          round-tripped through is redacted, so unchanged secrets come
+          back masked).
+
+        Lookups precomputed once: a spec->watermark dict (O(n) build,
+        O(1) per stream) and prior notifiers indexed by position (O(1)).
+        No nested scans.
+        """
+        prior_streams = getattr(prior, "streams", [])
+        prior_notifiers = getattr(prior, "notifiers", [])
+
+        watermarks = {w.spec.model_dump_json(): w.last_event_at for w in prior_streams}
+        streams = [
+            w.model_copy(update={"last_event_at": watermarks[key]})
+            if (key := w.spec.model_dump_json()) in watermarks
+            else w  # new stream (no prior match): keep submitted (None=cold-start)
+            for w in self.streams
+        ]
+        notifiers = [
+            n.restore_secrets_from(
+                prior_notifiers[i] if i < len(prior_notifiers) else None
+            )
+            for i, n in enumerate(self.notifiers)
+        ]
+        return self.model_copy(update={"streams": streams, "notifiers": notifiers})

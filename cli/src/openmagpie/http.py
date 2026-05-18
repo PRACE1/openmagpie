@@ -192,6 +192,24 @@ class MagpieClient:
             return _handle(resp)
         return self._authed_request("POST", path, json_body=body, params=params, headers=headers)
 
+    def put(
+        self,
+        path: str,
+        *,
+        json_body: dict[str, Any] | None = None,
+        params: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> Any:
+        return self._authed_request("PUT", path, json_body=json_body or {}, params=params, headers=headers)
+
+    def delete(
+        self,
+        path: str,
+        *,
+        headers: dict[str, str] | None = None,
+    ) -> Any:
+        return self._authed_request("DELETE", path, headers=headers)
+
     def _authed_request(
         self,
         method: str,

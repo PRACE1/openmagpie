@@ -166,6 +166,86 @@ class ListenerService:
         listener.save()
         return listener
 
+    def build_update(
+        self,
+        listener: Listener,
+        /,
+        *,
+        name: str,
+        instructions: str,
+        delivery_mode: str,
+        poll_interval_seconds: int,
+        data: dict[str, Any],
+    ) -> Listener:
+        """Validate an edit and apply it to the EXISTING `listener`
+        instance (unsaved). Mirrors `build` for the dry-run path.
+
+        `kind` is intentionally not a parameter: it is immutable on edit
+        (changing it would swap the config schema and make watermark /
+        secret preservation ill-defined). The view rejects a kind change
+        before calling this.
+
+        Identity/audit/poll-state COLUMNS (`id`, `created_at`,
+        `user_id`, `last_polled_at`, ...) are preserved by construction:
+        we mutate the fetched row in place and never reassign them. The
+        config blob carries forward its own must-not-reset state via
+        `merge_preserving` (watermarks + `***` secrets).
+        """
+        self._assert_scope(str(listener.account_id), "listener")
+        self.validate_delivery_mode(delivery_mode)
+
+        config_class = get_config_class(str(listener.kind))
+        submitted = config_class.model_validate(data)
+        prior = config_class.model_validate(listener.data or {})
+        merged = submitted.merge_preserving(prior)
+
+        listener.name = name
+        listener.instructions = instructions
+        listener.delivery_mode = delivery_mode
+        listener.poll_interval_seconds = poll_interval_seconds
+        listener.data = merged.model_dump(mode="json")
+        return listener
+
+    def update(
+        self,
+        listener: Listener,
+        /,
+        *,
+        name: str,
+        instructions: str,
+        delivery_mode: str,
+        poll_interval_seconds: int,
+        data: dict[str, Any],
+    ) -> Listener:
+        """Validate (via `build_update`) then persist. Saves ONLY the
+        editable fields so identity/audit/poll-state columns can't be
+        touched even accidentally."""
+        listener = self.build_update(
+            listener,
+            name=name,
+            instructions=instructions,
+            delivery_mode=delivery_mode,
+            poll_interval_seconds=poll_interval_seconds,
+            data=data,
+        )
+        listener.save(
+            update_fields=[
+                "name",
+                "instructions",
+                "delivery_mode",
+                "poll_interval_seconds",
+                "data",
+                "updated_at",
+            ]
+        )
+        return listener
+
+    def delete(self, listener: Listener, /) -> None:
+        """Delete a listener. Scope-asserted defense-in-depth even though
+        `get()` already account-scoped the fetch."""
+        self._assert_scope(str(listener.account_id), "listener")
+        listener.delete()
+
     def update_poll_state(
         self,
         listener: Listener,
