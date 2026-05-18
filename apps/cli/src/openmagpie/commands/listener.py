@@ -37,9 +37,9 @@ import yaml
 from pydantic import ValidationError
 
 from ..api.listener import (
-    ListenerDetail,
     ListenerEnvelope,
     ListenerMutationResponse,
+    ListenerView,
 )
 from ..context import AppContext, app_ctx
 from ..http import ApiError, AuthError
@@ -428,7 +428,7 @@ def _run_mutation(
     )
 
 
-def _edit_seed(detail: ListenerDetail) -> ListenerEnvelope:
+def _edit_seed(detail: ListenerView) -> ListenerEnvelope:
     """The editable envelope for `edit`, projected from the current
     (redacted) listener. `ListenerEnvelope`'s `extra=ignore` drops the
     read-only fields (id/is_active/summary/...); only the editable
@@ -449,7 +449,7 @@ def _open_editor_or_abort(seed: str) -> str:
     return edited
 
 
-def _print_listener(obj: ListenerMutationResponse | ListenerDetail, header: str) -> None:
+def _print_listener(obj: ListenerMutationResponse | ListenerView, header: str) -> None:
     """Render a listener for the operator. Pure presentation off typed
     fields; `obj.summary` is the server-built display projection (the
     CLI never parses the config blob). Shared by create/edit previews
