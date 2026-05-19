@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from listeners.models import Listener
-from listeners.policy import enforce_policy
+from listeners.policy import PolicyError, enforce_policy
 from listeners.registry import load_config, parse_config, validate_config
 
 from ._listeners_global import ListenerGlobal
@@ -200,7 +200,15 @@ class ListenerService:
         # (`prior` is a read; load_config skips policy on at-rest data.)
         submitted = parse_config(str(listener.kind), data)
         prior = load_config(listener)
-        merged = enforce_policy(submitted.merge_preserving(prior))
+        try:
+            merged = submitted.merge_preserving(prior)
+        except ValueError as exc:
+            # merge_preserving refuses when a masked secret can't be
+            # matched to a prior webhook (notifier list changed) - never
+            # persist '***' as a live secret. Surface as a policy
+            # rejection (-> 400) like the other guards, not a 500.
+            raise PolicyError(str(exc)) from exc
+        merged = enforce_policy(merged)
 
         listener.name = name
         listener.instructions = instructions

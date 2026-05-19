@@ -21,6 +21,7 @@ from accounts.services import AccountService
 from openmagpie_schema.wire import ListenerListResponse
 
 from .models import Listener
+from .policy import PolicyError
 from .serializers import (
     ListenerCreateSerializer,
     listener_mutation,
@@ -198,21 +199,29 @@ class ListenerDetailView(APIView):
             "data": d["data"],
         }
 
-        if _is_truthy(request.query_params.get("dry_run")):
-            # Same validate-only contract as create's dry-run, but id /
-            # created_at are real (existing row), so unlike create we do
-            # NOT strip id - the preview shows the actual listener.
-            preview = svc.build_update(listener, **edit_kwargs)
+        # Policy runs on the MERGED config inside build_update/update
+        # (see services.build_update): engine/watermark/webhook guards,
+        # plus the refusal to persist a masked secret that couldn't be
+        # restored. Map all of them to a 400 with the same {"data": [...]}
+        # shape the create path uses, so the CLI error printer is uniform.
+        try:
+            if _is_truthy(request.query_params.get("dry_run")):
+                # Same validate-only contract as create's dry-run, but id
+                # / created_at are real (existing row), so unlike create
+                # we do NOT strip id - the preview shows the listener.
+                preview = svc.build_update(listener, **edit_kwargs)
+                return Response(
+                    listener_mutation(preview, dry_run=True).model_dump(mode="json"),
+                    status=status.HTTP_200_OK,
+                )
+
+            updated = svc.update(listener, **edit_kwargs)
             return Response(
-                listener_mutation(preview, dry_run=True).model_dump(mode="json"),
+                listener_mutation(updated, dry_run=False).model_dump(mode="json"),
                 status=status.HTTP_200_OK,
             )
-
-        updated = svc.update(listener, **edit_kwargs)
-        return Response(
-            listener_mutation(updated, dry_run=False).model_dump(mode="json"),
-            status=status.HTTP_200_OK,
-        )
+        except PolicyError as exc:
+            return Response({"data": [str(exc)]}, status=status.HTTP_400_BAD_REQUEST)
 
     def delete(self, request, listener_id: str):
         resolved = self._resolve(request, listener_id)

@@ -277,8 +277,30 @@ class SemanticListenerConfig(ListenerConfig):
             else w  # new stream (no prior match): keep submitted (None=cold-start)
             for w in self.streams
         ]
-        notifiers = [
-            n.restore_secrets_from(prior_notifiers[i] if i < len(prior_notifiers) else None)
-            for i, n in enumerate(self.notifiers)
-        ]
-        return self.model_copy(update={"streams": streams, "notifiers": notifiers})
+        # Notifiers have no non-secret identity to key on (a webhook's
+        # url + headers ARE the secret), so a masked secret is restored
+        # by position WITHIN its kind: the i-th submitted webhook pairs
+        # with the i-th prior webhook. Kind-filtering (not raw list
+        # index) means adding/removing a non-webhook notifier - the
+        # common edit - can't shift a webhook onto a non-webhook slot
+        # and silently drop its secret. If a masked secret still can't
+        # be matched (webhook count changed, or a reorder the mask
+        # hides), REFUSE: persisting '***' as the live URL/header is
+        # silent secret loss, the worst outcome. The operator re-enters
+        # the secret explicitly (server maps this to a 400).
+        prior_webhooks = [n for n in prior_notifiers if isinstance(n, WebhookNotifierSpec)]
+        restored = []
+        webhook_i = 0
+        for n in self.notifiers:
+            if isinstance(n, WebhookNotifierSpec):
+                paired = prior_webhooks[webhook_i] if webhook_i < len(prior_webhooks) else None
+                webhook_i += 1
+                n = n.restore_secrets_from(paired)
+                if _is_redacted_url(n.url) or any(v == REDACTED for v in n.headers.values()):
+                    raise ValueError(
+                        "a webhook secret was left masked ('***') but could not be matched "
+                        "to a prior webhook to restore it (the notifier list changed); "
+                        "re-enter the webhook URL and any secret header values explicitly"
+                    )
+            restored.append(n)
+        return self.model_copy(update={"streams": streams, "notifiers": restored})
