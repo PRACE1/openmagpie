@@ -22,7 +22,7 @@ from rest_framework import serializers
 
 from listeners.models import Listener
 from listeners.policy import PolicyError
-from listeners.registry import get_config_class, validate_config
+from listeners.registry import get_config_class, load_config, validate_config
 from openmagpie_schema.configs import ListenerConfigSummary
 from openmagpie_schema.wire import (
     ListenerMutationResponse,
@@ -140,7 +140,7 @@ def _redacted_data(listener: Listener) -> dict[str, Any]:
     columns so the operator sees it exists and is broken.
     """
     try:
-        config = get_config_class(str(listener.kind)).model_validate(listener.data or {})
+        config = load_config(listener)
         return config.redacted_dump()
     except Exception:
         logger.exception(
@@ -165,7 +165,7 @@ def _listener_summary(listener: Listener) -> ListenerConfigSummary:
     is already logged by `_redacted_data` on the same request, so just
     default here."""
     try:
-        config = get_config_class(str(listener.kind)).model_validate(listener.data or {})
+        config = load_config(listener)
         return config.summary()
     except Exception:
         return _EMPTY_SUMMARY

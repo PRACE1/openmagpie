@@ -17,27 +17,40 @@ def get_config_class(kind: str) -> type[ListenerConfig]:
     return _REGISTRY[kind]
 
 
+def parse_config(kind: str, data: dict) -> ListenerConfig:
+    """kind + raw dict -> typed config, SHAPE ONLY (no policy).
+
+    The ONE place `get_config_class(...).model_validate(...)` is called -
+    every other raw->typed path composes from here, so config classes are
+    never reached into directly outside this module. Use this (not
+    `validate_config`) when policy must run on a later-derived object,
+    e.g. `build_update` merges submitted+prior then enforces on the
+    MERGE OUTPUT.
+
+    Raises PydanticValidationError on a shape violation.
+    """
+    return get_config_class(kind).model_validate(data)
+
+
 def validate_config(kind: str, data: dict) -> ListenerConfig:
-    """The single raw-dict -> policy-safe typed config path for WRITES.
+    """Untrusted input -> policy-safe typed config: `parse_config` (shape)
+    + enforce_policy (the server-only Django/settings guards) fused so a
+    callsite can't do the first and forget the second - the failure mode
+    the shape / policy split otherwise reintroduced.
 
-    model_validate (shape, from the shared pure model) + enforce_policy
-    (the server-only Django/settings guards) fused so a callsite can't
-    do the first and forget the second - the failure mode the shape /
-    policy split otherwise reintroduced. Symmetric with `load_config`
-    (the read-path twin).
-
-    Read path is deliberately NOT this: stored `data` is already
-    normalized, so re-running policy would re-fill engine kind and
-    re-check already-past watermarks for no gain.
+    For WRITES where the returned object is exactly what persists
+    (create). Symmetric with `load_config` (read-path twin).
 
     Raises PydanticValidationError (shape) or PolicyError (policy);
     callers map each to the appropriate 400.
     """
-    return enforce_policy(get_config_class(kind).model_validate(data))
+    return enforce_policy(parse_config(kind, data))
 
 
 def load_config(listener: Listener) -> ListenerConfig:
-    """Validate listener.data against the kind's Pydantic config class.
+    """At-rest listener -> typed config, shape only (see `parse_config`).
 
-    Read path: shape only, no policy (see `validate_config`)."""
-    return get_config_class(str(listener.kind)).model_validate(listener.data)
+    No policy: stored data is already normalized, and re-enforcing under
+    possibly-changed settings (e.g. WEBHOOK_REQUIRE_HTTPS flipped on
+    after creation) could spuriously fail a pure read."""
+    return parse_config(str(listener.kind), listener.data or {})

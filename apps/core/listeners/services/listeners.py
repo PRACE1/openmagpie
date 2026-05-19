@@ -12,7 +12,7 @@ from typing import Any
 
 from listeners.models import Listener
 from listeners.policy import enforce_policy
-from listeners.registry import get_config_class, validate_config
+from listeners.registry import load_config, parse_config, validate_config
 
 from ._listeners_global import ListenerGlobal
 
@@ -187,19 +187,19 @@ class ListenerService:
         self._assert_scope(str(listener.account_id), "listener")
         self.validate_delivery_mode(delivery_mode)
 
-        # Deliberately NOT validate_config here: that fuses validate +
-        # policy on one input, but the object policy must check is the
-        # MERGE OUTPUT, not `submitted` (whose watermarks get replaced by
-        # `prior`'s during the merge). So shape-validate both inputs,
-        # merge, then enforce on the result. The explicit enforce_policy
-        # below is the actual logic, not a forgotten second step.
-        config_class = get_config_class(str(listener.kind))
-        submitted = config_class.model_validate(data)
-        prior = config_class.model_validate(listener.data or {})
-        # Policy on the MERGED config (what actually persists): engine
-        # fill + registered, no future watermark on newly-submitted
-        # streams, webhook SSRF. Prior watermarks carried by
-        # merge_preserving are already-past by definition.
+        # parse_config = shape only (no policy). Policy runs on the
+        # MERGE OUTPUT below, not on `submitted`, because the merge
+        # output is what persists and merge_preserving rewrites
+        # policy-relevant fields (swaps a matching stream's
+        # last_event_at for prior's, restores masked secrets) - so
+        # `submitted` is the wrong object to enforce. It is also not
+        # the only seam: the HTTP path already policy-checked the
+        # request body in the serializer; this merged-enforce is the
+        # single policy seam for non-serializer callers (mgmt command)
+        # and the catch for anything the merge itself introduced.
+        # (`prior` is a read; load_config skips policy on at-rest data.)
+        submitted = parse_config(str(listener.kind), data)
+        prior = load_config(listener)
         merged = enforce_policy(submitted.merge_preserving(prior))
 
         listener.name = name
