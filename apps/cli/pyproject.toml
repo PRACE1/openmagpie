@@ -30,3 +30,10 @@ packages = ["src/openmagpie"]
 # openmagpie-schema is resolved as a workspace member; the workspace
 # source is declared once at the repo-root pyproject (applies to all
 # members). See project memory project_schema_authority_northstar.
+#
+# NOT yet standalone-installable: openmagpie-schema is workspace-only
+# and unpublished, so `pipx install` / `uv tool install` / pip from
+# this dir cannot resolve it. The CLI IS intended for standalone
+# distribution, so this must be resolved first (publish openmagpie-
+# schema to PyPI, or vendor it into the wheel). Tracked in project
+# memory: project_followup_cli_standalone_dist.
