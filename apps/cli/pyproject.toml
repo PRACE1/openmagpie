@@ -6,7 +6,6 @@ requires-python = ">=3.13"
 dependencies = [
     "typer>=0.12",
     "httpx>=0.28",
-    "openmagpie-schema",
     "pydantic>=2.5",
     "pyyaml>=6.0",
 ]
@@ -18,6 +17,10 @@ magpie = "openmagpie.cli:app"
 dev = [
     "ruff>=0.11",
     "ty>=0.0.1",
+    # Dev/test/typecheck only: resolved as the editable workspace member
+    # (root pyproject declares the workspace source). It is deliberately
+    # NOT a [project.dependency] - see the vendoring note below.
+    "openmagpie-schema",
 ]
 
 [build-system]
@@ -27,13 +30,18 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/openmagpie"]
 
-# openmagpie-schema is resolved as a workspace member; the workspace
-# source is declared once at the repo-root pyproject (applies to all
-# members). See project memory project_schema_authority_northstar.
+# Standalone-installable by VENDORING openmagpie-schema into the wheel.
 #
-# NOT yet standalone-installable: openmagpie-schema is workspace-only
-# and unpublished, so `pipx install` / `uv tool install` / pip from
-# this dir cannot resolve it. The CLI IS intended for standalone
-# distribution, so this must be resolved first (publish openmagpie-
-# schema to PyPI, or vendor it into the wheel). Tracked in project
-# memory: project_followup_cli_standalone_dist.
+# openmagpie-schema is single-sourced once in the repo and resolved as
+# a uv workspace member for dev (see project memory
+# project_schema_authority_northstar). A uv workspace source is
+# dev-only - it does not travel in wheel metadata - so it is NOT a
+# [project.dependency] (a `pipx install` / `uv tool install` could not
+# resolve it). Instead force-include copies the pure-Pydantic package
+# into the magpie wheel at build time: the artifact is self-contained,
+# single source is preserved in-repo, the server is unaffected (it runs
+# from the workspace, never as a wheel). The vendored copy is frozen at
+# CLI build, which is correct - it must match the server wire contract
+# at release regardless. See project_followup_cli_standalone_dist.
+[tool.hatch.build.targets.wheel.force-include]
+"../../packages/openmagpie-schema/src/openmagpie_schema" = "openmagpie_schema"
