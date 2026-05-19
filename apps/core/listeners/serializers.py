@@ -21,8 +21,8 @@ from pydantic import ValidationError as PydanticValidationError
 from rest_framework import serializers
 
 from listeners.models import Listener
-from listeners.policy import PolicyError, enforce_policy
-from listeners.registry import get_config_class
+from listeners.policy import PolicyError
+from listeners.registry import get_config_class, validate_config
 from openmagpie_schema.configs import ListenerConfigSummary
 from openmagpie_schema.wire import (
     ListenerMutationResponse,
@@ -73,17 +73,16 @@ class ListenerCreateSerializer(serializers.Serializer):
         # `data` is validated against the kind-specific Pydantic class.
         # We do it in `validate()` (not `validate_data()`) because we
         # need the already-validated `kind` field to pick the schema.
-        config_class = get_config_class(attrs["kind"])
+        # validate_config = model_validate (shape) + enforce_policy
+        # (engine-kind registered + default-fill, no future watermark,
+        # webhook SSRF). One call, one source - the callsite can't run
+        # shape validation and forget the policy half. Each failure mode
+        # still maps to its own 400: shape -> per-field paths, policy ->
+        # {"data": [msg]}.
         try:
-            validated = config_class.model_validate(attrs["data"])
+            validated = validate_config(attrs["kind"], attrs["data"])
         except PydanticValidationError as exc:
             raise serializers.ValidationError({"data": _pydantic_errors_to_drf(exc)}) from exc
-        # Server policy (engine-kind registered + default-fill, no future
-        # watermark, webhook SSRF) - the Django-coupled guards that moved
-        # out of the shared pure model. Surface as a 400 like shape
-        # errors. enforce_policy returns the engine-normalized config.
-        try:
-            validated = enforce_policy(validated)
         except PolicyError as exc:
             raise serializers.ValidationError({"data": [str(exc)]}) from exc
         # Replace the raw dict with the normalized Pydantic dump so the

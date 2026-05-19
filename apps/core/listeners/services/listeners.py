@@ -12,7 +12,7 @@ from typing import Any
 
 from listeners.models import Listener
 from listeners.policy import enforce_policy
-from listeners.registry import get_config_class
+from listeners.registry import get_config_class, validate_config
 
 from ._listeners_global import ListenerGlobal
 
@@ -116,8 +116,7 @@ class ListenerService:
         # service is the seam where wrong shape becomes impossible, so
         # any caller (mgmt command, future internal flow) gets the same
         # safety net the HTTP path does.
-        config_class = get_config_class(kind)
-        validated = enforce_policy(config_class.model_validate(data))
+        validated = validate_config(kind, data)
         normalized_data = validated.model_dump(mode="json")
         # Scope is enforced by construction here (account_id is bound to
         # this service instance), so `_assert_scope` isn't needed on the
@@ -188,6 +187,12 @@ class ListenerService:
         self._assert_scope(str(listener.account_id), "listener")
         self.validate_delivery_mode(delivery_mode)
 
+        # Deliberately NOT validate_config here: that fuses validate +
+        # policy on one input, but the object policy must check is the
+        # MERGE OUTPUT, not `submitted` (whose watermarks get replaced by
+        # `prior`'s during the merge). So shape-validate both inputs,
+        # merge, then enforce on the result. The explicit enforce_policy
+        # below is the actual logic, not a forgotten second step.
         config_class = get_config_class(str(listener.kind))
         submitted = config_class.model_validate(data)
         prior = config_class.model_validate(listener.data or {})
