@@ -108,7 +108,16 @@ def _enforce_webhooks(config: ListenerConfig) -> None:
 
 def enforce_policy(config: ListenerConfig) -> ListenerConfig:
     """Apply every server policy guard; return the (engine-normalized)
-    config or raise `PolicyError`. Idempotent."""
+    config or raise `PolicyError`. Idempotent.
+
+    The guards duck-type the config (`getattr(config, "engine"/"streams"/
+    "notifiers", default)`) because `ListenerConfig` is the abstract base
+    and only `SemanticListenerConfig` exists today. A future kind that
+    omits or renames these fields would silently skip the guard, not
+    fail loud. When a 2nd kind lands, replace the getattrs with an
+    explicit structural contract on `ListenerConfig` (e.g. abstract
+    accessors) so a missing guard is a hard error, matching the base
+    class's NotImplementedError stance for the read path."""
     config = _enforce_engine(config)
     _enforce_watermarks(config)
     _enforce_webhooks(config)

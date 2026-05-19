@@ -163,7 +163,11 @@ def get(listener_id: str = typer.Argument(..., help="Listener id.")) -> None:
     state = "active" if detail.is_active else "paused"
     _print_listener(detail, f"Listener {detail.id}  [{state}]")
     if detail.last_polled_at:
-        typer.echo(f"  last polled      | {detail.last_polled_at}")
+        # .isoformat(): the shared ListenerWire types this `datetime`
+        # (server is its authority), so str() would render Python's
+        # "2026-05-19 10:35:14+00:00" (space separator). isoformat keeps
+        # the ISO-8601 the operator expects.
+        typer.echo(f"  last polled      | {detail.last_polled_at.isoformat()}")
 
 
 @listener_app.command("edit")
