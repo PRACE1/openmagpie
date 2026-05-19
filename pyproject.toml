@@ -1,0 +1,23 @@
+# Monorepo root: a minimal meta-project (uv requires the workspace root
+# to be a member with a [project] table; this one has no code of its
+# own). It exists to declare the uv workspace so `apps/*` and
+# `packages/*` resolve against ONE root uv.lock, and to declare the
+# shared-package source once for all members.
+#
+# Chosen over a path-dependency after checking the uv docs: uv
+# recommends a workspace for multiple packages in one repo. See project
+# memory project_schema_authority_northstar.
+[project]
+name = "openmagpie"
+version = "0.1.0"
+description = "OpenMagpie monorepo (uv workspace root; no code of its own)."
+requires-python = ">=3.13"
+
+[tool.uv.workspace]
+members = ["apps/*", "packages/*"]
+
+# Declared once here; applies to every member (per uv: root sources
+# apply workspace-wide). So apps/core + apps/cli just list
+# `openmagpie-schema` in their dependencies.
+[tool.uv.sources]
+openmagpie-schema = { workspace = true }

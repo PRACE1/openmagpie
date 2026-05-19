@@ -1,0 +1,33 @@
+# No [build-system]/packages block (unlike cli + openmagpie-schema):
+# core is a Django app run via manage.py and `uv run`, never built or
+# installed as a wheel. uv treats it as a virtual workspace member -
+# its deps resolve, its code is never packaged.
+
+[project]
+name = "openmagpie-core"
+version = "0.1.0"
+description = "OpenMagpie core — open-source semantic listener"
+requires-python = ">=3.13"
+dependencies = [
+    "django>=6.0.5",
+    "django-cors-headers>=4.6",
+    "django-oauth-toolkit>=3.0",
+    "djangorestframework>=3.15",
+    "httpx>=0.28",
+    "openmagpie-schema",
+    "pydantic>=2.5",
+    "python-dotenv>=1.1",
+    "ulid>=1.1",
+]
+
+[dependency-groups]
+dev = [
+    "django-stubs>=5.1",
+    "ruff>=0.11",
+    "ty>=0.0.1",
+    "watchfiles>=1.0",
+]
+
+# openmagpie-schema is resolved as a workspace member; the workspace
+# source is declared once at the repo-root pyproject (applies to all
+# members). See project memory project_schema_authority_northstar.

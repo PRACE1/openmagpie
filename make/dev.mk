@@ -22,7 +22,7 @@ dev-exec: ## Run a command in a container (e.g. make dev-exec SVC=core CMD="uv r
 	docker compose exec $(SVC) $(CMD)
 
 dev-manage: ## Run Django manage.py command (e.g. make dev-manage CMD=shell)
-	$(MAKE) dev-exec SVC=core CMD="uv run python manage.py $(CMD)"
+	$(MAKE) dev-exec SVC=core CMD="uv run --package openmagpie-core python apps/core/manage.py $(CMD)"
 
 dev-test: ## Run Django test suite
 	$(MAKE) dev-manage CMD=test
@@ -48,12 +48,12 @@ dev-web: ## Start (or restart) just the Next.js dev container and tail its logs
 dev-web-shell: ## Open a shell in the web container
 	docker compose exec web sh
 
-dev-cli-sync: ## Sync the magpie CLI's uv-managed env (cli/.venv)
-	cd cli && uv sync
-	@echo "Run: cd cli && uv run magpie auth login"
+dev-cli-sync: ## Sync the uv workspace (one root .venv for all members)
+	uv sync
+	@echo "Run: make dev-cli ARGS=\"auth login\""
 
 dev-cli: ## Run the magpie CLI via uv (e.g. make dev-cli ARGS="auth login")
-	cd cli && uv run magpie $(ARGS)
+	uv run --package openmagpie-cli magpie $(ARGS)
 
 dev-lint: ## Run linters (ruff + whitespace/final-newline on tracked text files)
 	$(MAKE) dev-exec SVC=core CMD="uv run ruff check ."
@@ -65,8 +65,8 @@ dev-lint-fix: ## Auto-fix lint issues
 	$(MAKE) dev-exec SVC=core CMD="uv run ruff format ."
 	./scripts/check-whitespace.sh --fix
 
-dev-types: ## Run ty static type checker
-	$(MAKE) dev-exec SVC=core CMD="uv run ty check ."
+dev-types: ## Run ty static type checker (core + shared schema pkg)
+	$(MAKE) dev-exec SVC=core CMD="uv run --package openmagpie-core ty check apps/core packages/openmagpie-schema"
 
 dev-check: ## Run lint + types + tests (pre-commit habit)
 	$(MAKE) dev-lint
