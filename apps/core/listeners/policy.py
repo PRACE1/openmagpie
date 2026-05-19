@@ -76,6 +76,10 @@ def _enforce_watermarks(config: ListenerConfig) -> None:
         value = watch.last_event_at
         if value is None:
             continue
+        # Pydantic parses offset-aware ISO into an aware datetime (the
+        # normal path). A *naive* value is assumed UTC (now.tzinfo is
+        # UTC under USE_TZ) - a naive local-time input would be read as
+        # UTC. Acceptable: the API contract is ISO-8601 with offset.
         v = value if value.tzinfo else value.replace(tzinfo=now.tzinfo)
         if v > now:
             raise PolicyError(

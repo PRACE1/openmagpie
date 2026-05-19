@@ -25,8 +25,6 @@ from openmagpie_schema.configs import (
     StreamSpec,
     StreamWatch,
     WebhookNotifierSpec,
-    _is_redacted_url,
-    _redact_webhook_url,
 )
 
 __all__ = [
@@ -42,6 +40,4 @@ __all__ = [
     "StreamSpec",
     "StreamWatch",
     "WebhookNotifierSpec",
-    "_is_redacted_url",
-    "_redact_webhook_url",
 ]

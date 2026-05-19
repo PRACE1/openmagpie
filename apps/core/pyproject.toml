@@ -1,3 +1,8 @@
+# No [build-system]/packages block (unlike cli + openmagpie-schema):
+# core is a Django app run via manage.py and `uv run`, never built or
+# installed as a wheel. uv treats it as a virtual workspace member -
+# its deps resolve, its code is never packaged.
+
 [project]
 name = "openmagpie-core"
 version = "0.1.0"
