@@ -40,9 +40,9 @@ Apps are created with `python manage.py startapp <name>` inside the container (`
 - **Services are classes, not loose module functions.** One class per primary entity (e.g. `ListenerService`, `EventService`, `DeliveryService`). Instance methods for account-scoped operations; a nested `class Global:` (with `@staticmethod` methods) for cross-tenant operations.
 - **Account-scoped services bind their scope in `__init__`** and raise `ValueError` if `account_id` is missing or empty. Methods then drop the `account_id=` kwarg; `self.account_id` is the single source of truth. Scoped services also assert that incoming domain objects match `self.account_id` (defense-in-depth at the seam; `ValueError` if a foreign-account object is handed in).
 - **System-level operations live under `<Service>.Global`** as static methods. These are the only place cross-tenant queries happen; reach for them sparingly (schedulers, admin / debug entry points).
-- **One-shot orchestrators are `Operation` classes**, not `Service` classes. Pattern: build with the domain object, call `.run()` once, discard. Use this when an action has internal state across helpers (counters, watermarks) and would otherwise force every helper to thread the same args. Example: `PollListenerOperation(listener).run()`. The `Service` suffix stays reserved for reusable, account-scoped services; `Operation` signals "single-use, not reusable."
+- **One-shot orchestrators are `Operation` classes**, not `Service` classes. Pattern: build with the domain object, call `.run()` once, discard. Use this when an action has internal state across helpers (counters, watermarks) and would otherwise force every helper to thread the same args. Examples: `FeedPollOperation(feed).run()` (poll a feed's streams), `JudgeListenerOperation(listener).run()` (judge a listener's new feed items). The `Service` suffix stays reserved for reusable, account-scoped services; `Operation` signals "single-use, not reusable."
 - **Operations instantiate scoped services internally** from the domain object's `account_id`; callers just hand in a domain object. Service constructions belong on `@cached_property` so `__init__` stays validation-only.
-- **Function-shaped wrappers** (e.g. `poll_listener(listener)`) may exist alongside an Operation for callers that prefer the function form (mgmt commands, scripts). The wrapper is one line: `return PollListenerOperation(listener).run()`.
+- **Function-shaped wrappers** (e.g. `judge_listener(listener)`, `poll_feed(feed)`) may exist alongside an Operation for callers that prefer the function form (mgmt commands, scripts). The wrapper is small: it enters `poll_lock(...)`, returns `None` on contention (caller records a skip), and otherwise runs `Operation(...).run()`.
 - **`get`/`get_by_<field>` raise `DoesNotExist`.** Never return `None`. Type stays `-> Model`; callers handle missing via `try/except`. If "might not exist" is the normal path, add a separate `find_by_<field>` returning `Model | None`.
 - **Return iterators for collections.** Use `.iterator(chunk_size=N)`; callers `list(...)` if they need to materialize. Bulk writes use `.bulk_create()` / `.bulk_update()`.
 - **Every query hits an index.** Every column in a service WHERE must be indexed via `db_index=True`, a `UniqueConstraint`, or `Meta.indexes`. Don't add an explicit index if a `UniqueConstraint` already left-prefix-covers the read path.
@@ -53,17 +53,19 @@ Apps are created with `python manage.py startapp <name>` inside the container (`
 # Account-scoped (the common case)
 svc = ListenerService(account_id=account_id)
 listener = svc.get(id)
-svc.update_poll_state(listener, last_polled_at=now, data=...)
+svc.advance_judge_cursor(listener, item_id=...)
 
 # Cross-tenant (rare; scheduler, admin)
-for listener in ListenerService.Global.list_due_for_poll(now=now):
+for listener in ListenerService.Global.list_active():
+    ...
+for feed in FeedService.Global.list_due_for_poll(now=now):
     ...
 
 # One-shot Operation (recommended)
-result = PollListenerOperation(listener).run()
+result = JudgeListenerOperation(listener).run()
 
-# Or the function-shaped wrapper (identical behavior)
-result = poll_listener(listener)
+# Or the function-shaped wrapper (locked; identical behavior)
+result = judge_listener(listener)
 ```
 
 ## Scoping
@@ -77,40 +79,49 @@ result = poll_listener(listener)
 - `django-stubs` is installed so ty resolves `.objects`, manager generics, and field descriptors. When something still trips ty, fix it properly: explicit `ClassVar[Manager[Self]]` annotation, `cast()` at the field boundary, or a small helper in `common/`. `# type: ignore` is a last resort with the specific rule name, used only when no principled fix exists.
 - Run `make dev-types` before declaring done. Don't reach for `# type: ignore`, `# noqa`, or workarounds to make checks pass; find the root cause.
 
-## Typed-blob pattern (Listener & Event)
+## Typed-blob pattern (Feed, Listener & Event)
 
-Both models carry queryable common fields top-level + a `data: JSONField` whose schema is owned by a Pydantic class.
+Each model carries queryable common fields top-level + a `data: JSONField` whose schema is owned by a Pydantic class (registered per `kind`).
 
-- **`Listener.data`** is validated by a Pydantic config class keyed off `Listener.kind` (see `listeners.registry`). v0 only kind is `"semantic"` → `SemanticListenerConfig`. New kind = new Pydantic class + registry entry, no schema migration.
-- **`Event.data`** is the full `Observation.model_dump()` of the observation that triggered the hit. `events.registry.hydrate(event)` returns the typed Observation.
-- **Queryable fields stay top-level**: scoping, source/kind, dedup (`external_id`), time, delivery state (`delivered_at`).
-- **Stream-specific identifiers** (subreddit, repo) live inside `data`, accessed via `Observation.stream_slug()`, which subclasses override.
+- **`Feed.data`** is validated by a Pydantic config keyed off `Feed.kind` (see `feeds.registry`). v1 kind is `"curated"` → `CuratedFeedConfig` (streams + per-stream watermarks + retention). The Feed owns the stream set and the poll loop.
+- **`Listener.data`** is validated by a Pydantic config keyed off `Listener.kind` (see `listeners.registry`). v1 kind is `"semantic"` → `SemanticListenerConfig` (feed_id + filter + engine + notifiers). A listener is an *attention over a Feed*; it does not own streams.
+- **`Event.data`** is the FeedItem snapshot the hit was judged from (a full `Observation.model_dump()`). `events.registry.hydrate(event)` returns the typed Observation. `Event.kind` is the event-type discriminator (`"hit"` today); a hit is one kind of event.
+- **`FeedItem.data`** is the full `Observation.model_dump()` of a polled item (the browsable log; all items, not hit-only).
+- **Queryable fields stay top-level**: scoping, dedup keys, delivery state (`delivered_at`), the judgment cursor (`Listener.last_judged_item_id`).
+- **Stream-specific identifiers** (subreddit, repo) live inside `data`, accessed via `Observation.stream_slug()`; a FeedItem's originating stream is keyed by `FeedItem.stream_key` for Listener filtering.
 
-## Event-sourced pipeline (hit-only)
+## Pipeline: the Feed polls, the Listener judges
 
-`Event` rows exist **only** when a Listener's engine judged the observation relevant. Misses live and die in memory.
+Two stages, two cadences. The **Feed** polls its streams and persists **every** item as a `FeedItem` (the browsable log, retention-windowed). The **Listener** judges new items; an `Event` (kind=`"hit"`) exists **only** when the engine judged an item relevant. Misses produce no Event and aren't re-judged (the listener's cursor advances past them).
 
 ```
-poll_due_listeners
-  ↓ for listener in due:
-      config  = listeners.registry.load_config(listener)   # SemanticListenerConfig
-      engine  = engine.registry.get(config.engine.kind)
-      for watch in config.streams:
-          connector = sources.registry.get(watch.spec.kind)
-          for obs in connector.poll(watch.spec, listener, since=watch.last_event_at):
-              advance watch.last_event_at                  # high-water mark, in memory
-              if engine.judge(obs, listener).hit:
-                  event = events.services.persist_hit(obs, listener)
-                  if listener.delivery_mode == Listener.DeliveryMode.INSTANT:
-                      notifications.deliver_instant(event, obs, listener, config)
-  ↓ one save per cycle: listener.data (config dump) + poll state
+# stage 1 — the Feed polls (poll_due_feeds; per-feed lock)
+for feed in FeedService.Global.list_due_for_poll(now):
+    config = feeds.registry.load_config(feed)            # CuratedFeedConfig
+    for watch in config.streams:
+        connector = sources.registry.get(watch.spec.kind)
+        obs = list(connector.poll(watch.spec, since=watch.last_event_at))
+        advance watch.last_event_at                       # high-water mark, in memory
+        feeds.services.record_items(feed, stream_key=..., observations=obs)   # idempotent
+    update_poll_state(feed) + prune_items(retention_days)
+
+# stage 2 — Listeners judge (judge_listeners; all active, per-listener lock)
+for listener in ListenerService.Global.list_active():
+    config = listeners.registry.load_config(listener)     # SemanticListenerConfig
+    feed   = FeedService(...).get(config.feed_id)
+    for item in FeedItems(feed) with id > listener.last_judged_item_id matching config.filter:
+        if engine.judge(hydrate_data(item.data), listener).score >= config.hit_threshold:
+            event = events.services.persist_hit(item, listener, score)   # Event(kind="hit")
+            if listener.delivery_mode == INSTANT:
+                notifications.deliver_instant(event, obs, listener, config)
+    advance listener.last_judged_item_id                  # so misses aren't re-judged
 ```
 
-Forward-looking by default. A StreamWatch created with `last_event_at=None` (the default for a fresh listener) is treated as "snapshot now"; the polling op sets `last_event_at = timezone.now()` on the first cycle and yields zero observations. The next poll cadence catches whatever's accumulated since that snapshot.
+Forward-looking by default. A `StreamWatch` with `last_event_at=None` (the default for a fresh feed's stream) is "snapshot now": the feed poll op sets `last_event_at = timezone.now()` on the first cycle and records zero items. The next poll cadence catches whatever's accumulated since.
 
-Operators who want backfill set `last_event_at = now - timedelta(days=N)` explicitly at listener-create time. There is no implicit "scan all history" mode; if you want history, you ask for it by date.
+Operators who want backfill set `last_event_at = now - timedelta(days=N)` explicitly at feed-create time. There is no implicit "scan all history" mode; if you want history, you ask for it by date.
 
-**No surprise multi-hour cold-starts.** This rule exists so creating a listener never accidentally enqueues an hours-long LLM run on day one. If a future Listener needs deep history, build it as a separate feature with its own state model (cursor + horizon + completion flag); don't smuggle it into the watermark.
+**No surprise multi-hour cold-starts.** Creating a feed never enqueues an hours-long fetch on day one; deep history would be a separate feature with its own state model, not smuggled into the watermark.
 
 ## Notifications & delivery state
 

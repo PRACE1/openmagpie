@@ -24,59 +24,25 @@ never parses the config blob - the server emits a typed `summary`.
 
 from __future__ import annotations
 
-import functools
 import sys
-from collections.abc import Callable
 from importlib import resources
-from pathlib import Path
-from typing import Any
 
-import httpx
 import typer
 import yaml
 from pydantic import ValidationError
 
+from .. import console
 from ..api.listener import (
     ListenerEnvelope,
     ListenerMutationResponse,
     ListenerView,
 )
 from ..context import AppContext, app_ctx
-from ..http import ApiError, AuthError
-
-
-def _handle_api_errors[T](fn: Callable[..., T]) -> Callable[..., T]:
-    """Translate the transport failure modes into one clean CLI exit, at
-    the command boundary. Command bodies just call `ac.api.listener.*`
-    directly - no thunks. `typer.Exit` (confirm-aborts, the persistence
-    sanity guards) is NOT caught, so it propagates normally. `ApiError`
-    goes through `_print_api_error` so 400 field errors and structured
-    4xx/5xx details both read legibly."""
-
-    @functools.wraps(fn)
-    def wrapper(*args: Any, **kwargs: Any) -> T:
-        try:
-            return fn(*args, **kwargs)
-        except AuthError:
-            typer.secho(
-                "Not authenticated. Run `magpie auth login` first.",
-                fg=typer.colors.RED,
-                err=True,
-            )
-            raise typer.Exit(code=1) from None
-        except ApiError as e:
-            _print_api_error(e)
-            raise typer.Exit(code=1) from None
-        except httpx.HTTPError as e:
-            typer.secho(
-                f"Couldn't reach the server ({type(e).__name__}).",
-                fg=typer.colors.RED,
-                err=True,
-            )
-            raise typer.Exit(code=1) from None
-
-    return wrapper
-
+from ._shared import (
+    _handle_api_errors,
+    _open_editor_or_abort,
+    _read_file_or_abort,
+)
 
 listener_app = typer.Typer(no_args_is_help=True)
 
@@ -120,6 +86,15 @@ def create(
         "-y",
         help="Skip the confirmation prompt. Required for non-interactive input.",
     ),
+    skip_existing: bool = typer.Option(
+        False,
+        "--skip-existing",
+        help=(
+            "Don't judge items already in the feed's retention window. Seeds "
+            "the listener's judge cursor from the feed's newest item at "
+            "create time, so only items arriving from now on get judged."
+        ),
+    ),
 ) -> None:
     """Create a listener from a YAML config.
 
@@ -133,6 +108,8 @@ def create(
 
     `--dry-run` stops after the preview (never creates). `--yes` skips
     the prompt and is required when input is piped (no TTY to prompt on).
+    By default a new listener judges every item already in the feed's
+    retention window; pass `--skip-existing` to start forward-only.
     """
     if file is None:
         body_text = _edit_template_or_abort()
@@ -148,7 +125,8 @@ def create(
     _reject_if_unmodified_template(body_text)
 
     body = _parse_yaml_or_abort(body_text)
-    _run_mutation(app_ctx(), body, listener_id=None, dry_run=dry_run, yes=yes)
+    seed_cursor = "latest" if skip_existing else None
+    _run_mutation(app_ctx(), body, listener_id=None, dry_run=dry_run, yes=yes, seed_cursor=seed_cursor)
 
 
 # ── Get / Edit / Delete (single listener) ──────────────────────────────
@@ -160,14 +138,9 @@ def get(listener_id: str = typer.Argument(..., help="Listener id.")) -> None:
     """Show one listener in the caller's account."""
     ac = app_ctx()
     detail = ac.api.listener.get(listener_id)
-    state = "active" if detail.is_active else "paused"
-    _print_listener(detail, f"Listener {detail.id}  [{state}]")
-    if detail.last_polled_at:
-        # .isoformat(): the shared ListenerWire types this `datetime`
-        # (server is its authority), so str() would render Python's
-        # "2026-05-19 10:35:14+00:00" (space separator). isoformat keeps
-        # the ISO-8601 the operator expects.
-        typer.echo(f"  last polled      | {detail.last_polled_at.isoformat()}")
+    _print_listener(detail, f"Listener {detail.id}  [{console.active_or_paused(detail.is_active)}]")
+    if detail.last_judged_item_id:
+        console.kv("last judged item", detail.last_judged_item_id)
 
 
 @listener_app.command("edit")
@@ -232,25 +205,15 @@ def delete(
 
     if not yes:
         if not sys.stdin.isatty():
-            typer.secho(
-                f"Piped input: can't prompt. Re-run with --yes to delete {detail.name} ({detail.id}).",
-                fg=typer.colors.YELLOW,
-                err=True,
-            )
+            console.warn(f"Piped input: can't prompt. Re-run with --yes to delete {detail.name} ({detail.id}).")
             raise typer.Exit(code=1)
-        typer.secho(
-            f"Delete listener {detail.name} ({detail.id})? This cannot be undone.",
-            fg=typer.colors.RED,
-        )
+        console.error(f"Delete listener {detail.name} ({detail.id})? This cannot be undone.")
         if not typer.confirm("Delete?"):
-            typer.secho("Aborted.", fg=typer.colors.YELLOW, err=True)
+            console.warn("Aborted.")
             raise typer.Exit(code=1)
 
     ac.api.listener.delete(listener_id)
-    typer.secho(
-        f"✓ Deleted listener {detail.name} ({detail.id})",
-        fg=typer.colors.GREEN,
-    )
+    console.success(f"Deleted listener {detail.name} ({detail.id})")
 
 
 # ── List ───────────────────────────────────────────────────────────────
@@ -264,15 +227,17 @@ def list_() -> None:
     items = ac.api.listener.list()
 
     if not items:
-        typer.echo("No listeners yet. Try `magpie listener template`.")
+        console.log("No listeners yet. Try `magpie listener template`.")
         return
 
     # Compact one-line-per-listener output. Pipe-delimited fields per
     # repo convention. id last because it's the longest, lets the
     # interesting fields (name, kind, mode, active) sit left-aligned.
     for it in items:
-        active = "active" if it.is_active else "paused"
-        typer.echo(f"  {it.name} | {it.kind} | {it.delivery_mode} | {active} | {it.id}")
+        rate = console.rate(it.recent_hits, it.recent_items)
+        console.log(
+            f"  {it.name} | {it.kind} | {it.delivery_mode} | {console.active_or_paused(it.is_active)} | hit {rate} | {it.id}"
+        )
 
 
 # ── Helpers ────────────────────────────────────────────────────────────
@@ -286,16 +251,8 @@ def _abort_unexpected(what: str, maybe_id: str | None) -> typer.Exit:
     msg = f"Unexpected server response: {what}."
     if maybe_id:
         msg += f" A listener may have been created - check id {maybe_id}"
-    typer.secho(msg, fg=typer.colors.RED, err=True)
+    console.error(msg)
     return typer.Exit(code=1)
-
-
-def _read_file_or_abort(path: str) -> str:
-    p = Path(path)
-    if not p.exists():
-        typer.secho(f"File not found: {path}", fg=typer.colors.RED, err=True)
-        raise typer.Exit(code=1)
-    return p.read_text()
 
 
 def _edit_template_or_abort() -> str:
@@ -307,7 +264,7 @@ def _edit_template_or_abort() -> str:
     """
     edited = typer.edit(TEMPLATE_YAML, extension=".yaml")
     if edited is None:
-        typer.secho("Edit cancelled.", fg=typer.colors.YELLOW, err=True)
+        console.warn("Edit cancelled.")
         raise typer.Exit(code=1) from None
     return edited
 
@@ -321,12 +278,10 @@ def _reject_if_unmodified_template(body_text: str) -> None:
     only then hit the --yes wall: the actual mistake (you didn't fill
     anything in) never surfaces. Fail here, with the next step."""
     if body_text.strip() == TEMPLATE_YAML.strip():
-        typer.secho(
+        console.warn(
             "This is the unmodified template (nothing filled in). Edit "
             "it and pass it with -f, or run `magpie listener create` "
-            "(no -f) to fill it in interactively.",
-            fg=typer.colors.YELLOW,
-            err=True,
+            "(no -f) to fill it in interactively."
         )
         raise typer.Exit(code=1)
 
@@ -335,29 +290,25 @@ def _parse_yaml_or_abort(text: str) -> ListenerEnvelope:
     """Parse operator YAML into the typed `ListenerEnvelope`.
 
     Only the kind-INDEPENDENT envelope is validated here (missing
-    `name`, wrong-typed `poll_interval_seconds`, ...) - cheap, stable,
-    and a far better error than a server round-trip for an obvious
-    shape slip. `data`'s interior stays opaque (`ConfigBlob`); the
-    server remains its sole validator."""
+    `name`, wrong-typed `delivery_mode`, ...) - cheap, stable, and a far
+    better error than a server round-trip for an obvious shape slip.
+    `data`'s interior stays opaque (`ConfigBlob`); the server remains its
+    sole validator."""
     try:
         parsed = yaml.safe_load(text)
     except yaml.YAMLError as e:
-        typer.secho(f"YAML parse error: {e}", fg=typer.colors.RED, err=True)
+        console.error(f"YAML parse error: {e}")
         raise typer.Exit(code=1) from None
     if not isinstance(parsed, dict):
-        typer.secho(
-            "Config root must be a YAML mapping (key: value pairs).",
-            fg=typer.colors.RED,
-            err=True,
-        )
+        console.error("Config root must be a YAML mapping (key: value pairs).")
         raise typer.Exit(code=1)
     try:
         return ListenerEnvelope.model_validate(parsed)
     except ValidationError as e:
-        typer.secho("Config envelope error:", fg=typer.colors.RED, err=True)
+        console.error("Config envelope error:")
         for err in e.errors():
             path = ".".join(str(p) for p in err["loc"]) or "_"
-            typer.secho(f"  {path}: {err['msg']}", fg=typer.colors.RED, err=True)
+            console.error(f"  {path}: {err['msg']}")
         raise typer.Exit(code=1) from None
 
 
@@ -367,6 +318,7 @@ def _mutate(
     *,
     dry_run: bool,
     listener_id: str | None,
+    seed_cursor: str | None = None,
 ) -> ListenerMutationResponse:
     """create (POST) when `listener_id` is None, else edit (PUT). Same
     response shape either way; `_run_mutation` drives both. The envelope
@@ -374,7 +326,7 @@ def _mutate(
     boundary). Transport errors propagate to `@_handle_api_errors`."""
     body = envelope.model_dump(mode="json")
     if listener_id is None:
-        return ac.api.listener.create(body, dry_run=dry_run)
+        return ac.api.listener.create(body, dry_run=dry_run, seed_cursor=seed_cursor)
     return ac.api.listener.update(listener_id, body, dry_run=dry_run)
 
 
@@ -385,6 +337,7 @@ def _run_mutation(
     listener_id: str | None,
     dry_run: bool,
     yes: bool,
+    seed_cursor: str | None = None,
 ) -> None:
     """Shared create/edit tail: server validate-only -> preview ->
     confirm -> apply. `listener_id` None = create, else edit.
@@ -396,7 +349,7 @@ def _run_mutation(
     is_edit = listener_id is not None
     noun = "update" if is_edit else "create"
 
-    preview = _mutate(ac, body, dry_run=True, listener_id=listener_id)
+    preview = _mutate(ac, body, dry_run=True, listener_id=listener_id, seed_cursor=seed_cursor)
     if not preview.dry_run or (preview.id and not is_edit):
         raise _abort_unexpected(
             "asked for a dry run but the server reported a persisted listener",
@@ -405,31 +358,26 @@ def _run_mutation(
     _print_listener(preview, f"Would {noun} this listener:")
 
     if dry_run:
-        typer.secho("Dry run only. Nothing was changed.", fg=typer.colors.YELLOW, err=True)
+        console.warn("Dry run only. Nothing was changed.")
         return
 
     if not yes:
         if not sys.stdin.isatty():
-            typer.secho(
+            console.warn(
                 f"Piped input: can't prompt for confirmation. Re-run with "
                 f"--yes to {noun}, --dry-run to validate only, or run the "
-                f"command without -f to use $EDITOR.",
-                fg=typer.colors.YELLOW,
-                err=True,
+                f"command without -f to use $EDITOR."
             )
             raise typer.Exit(code=1)
         if not typer.confirm(f"{noun.capitalize()} this listener?"):
-            typer.secho("Aborted.", fg=typer.colors.YELLOW, err=True)
+            console.warn("Aborted.")
             raise typer.Exit(code=1)
 
-    result = _mutate(ac, body, dry_run=False, listener_id=listener_id)
+    result = _mutate(ac, body, dry_run=False, listener_id=listener_id, seed_cursor=seed_cursor)
     if result.dry_run or not result.id:
         raise _abort_unexpected(f"{noun} did not confirm persistence", result.id)
     done = "Updated" if is_edit else "Created"
-    typer.secho(
-        f"✓ {done} listener {result.name} ({result.id})",
-        fg=typer.colors.GREEN,
-    )
+    console.success(f"{done} listener {result.name} ({result.id})")
 
 
 def _edit_seed(detail: ListenerView) -> ListenerEnvelope:
@@ -442,18 +390,7 @@ def _edit_seed(detail: ListenerView) -> ListenerEnvelope:
     return ListenerEnvelope.model_validate(detail.model_dump())
 
 
-def _open_editor_or_abort(seed: str) -> str:
-    """Open $EDITOR on `seed` (the current config for an edit). Aborts
-    if the editor returns nothing (quit without saving). Unchanged text
-    is allowed - re-applying the same config is a valid no-op edit."""
-    edited = typer.edit(seed, extension=".yaml")
-    if edited is None:
-        typer.secho("Edit cancelled.", fg=typer.colors.YELLOW, err=True)
-        raise typer.Exit(code=1) from None
-    return edited
-
-
-def _print_listener(obj: ListenerMutationResponse | ListenerView, header: str) -> None:
+def _print_listener(obj: ListenerMutationResponse | ListenerView, title: str) -> None:
     """Render a listener for the operator. Pure presentation off typed
     fields; `obj.summary` is the server-built display projection (the
     CLI never parses the config blob). Shared by create/edit previews
@@ -461,66 +398,21 @@ def _print_listener(obj: ListenerMutationResponse | ListenerView, header: str) -
     multi-value fields comma-separated."""
     s = obj.summary
 
-    typer.secho(header, fg=typer.colors.CYAN)
-    typer.echo(f"  name             | {obj.name}")
-    typer.echo(f"  kind             | {obj.kind}")
-    typer.echo(f"  delivery         | {obj.delivery_mode} | poll {obj.poll_interval_seconds}s")
-    typer.echo(f"  engine           | {s.engine or '?'}")
-    typer.echo(f"  streams          | {', '.join(s.streams) or '(none)'}")
-    typer.echo(f"  notifiers        | {', '.join(s.notifiers) or '(none)'}")
+    console.header(title)
+    console.kv("name", obj.name)
+    console.kv("kind", obj.kind)
+    console.kv("delivery", obj.delivery_mode)
+    console.kv("feed", s.feed or "(none)")
+    console.kv("engine", s.engine or "?")
+    console.kv("notifiers", ", ".join(s.notifiers) or "(none)")
+    if obj.recent_items:
+        rate = console.rate(obj.recent_hits, obj.recent_items)
+        console.kv(
+            f"hit rate ({obj.recent_window_days}d)",
+            f"{rate} ({obj.recent_hits}/{obj.recent_items})",
+        )
 
     instructions = obj.instructions.strip().replace("\n", " ")
     if len(instructions) > 100:
         instructions = instructions[:99] + "…"
-    typer.echo(f"  instructions     | {instructions or '(empty)'}")
-
-
-def _print_api_error(e: ApiError) -> None:
-    """Pretty-print a server-side error.
-
-    On 400 the body is the serializer's flat `{path: [messages]}` shape
-    (`{"data": {"streams[0].spec.kind": ["..."]}}`); walk it and print
-    one line per leaf. Non-400 (404/409/5xx) carry a structured
-    `{"error","detail"}`; surface the `detail`/`error` string only -
-    never the whole body, which can carry tokens on other endpoints.
-    """
-    if e.status == 400 and isinstance(e.body, dict):
-        typer.secho("Validation error:", fg=typer.colors.RED, err=True)
-        for line in _flatten_errors(e.body):
-            typer.secho(f"  {line}", fg=typer.colors.RED, err=True)
-        return
-    detail = ""
-    if isinstance(e.body, dict):
-        for key in ("detail", "error"):
-            val = e.body.get(key)
-            if isinstance(val, str) and val:
-                detail = f" {val}"
-                break
-    typer.secho(
-        f"Server returned an error (HTTP {e.status}).{detail}",
-        fg=typer.colors.RED,
-        err=True,
-    )
-
-
-def _flatten_errors(body: Any, prefix: str = "") -> list[str]:
-    """DFS over the error dict; yield `path: message` strings.
-
-    The value at each leaf is typically a list of strings, but the
-    server also emits a top-level "detail" key for non-field errors, so
-    handle scalars too.
-    """
-    out: list[str] = []
-    if isinstance(body, dict):
-        for key, val in body.items():
-            child_prefix = f"{prefix}.{key}" if prefix else key
-            out.extend(_flatten_errors(val, child_prefix))
-    elif isinstance(body, list):
-        for i, item in enumerate(body):
-            if isinstance(item, (dict, list)):
-                out.extend(_flatten_errors(item, f"{prefix}[{i}]"))
-            else:
-                out.append(f"{prefix or '_'}: {item}")
-    else:
-        out.append(f"{prefix or '_'}: {body}")
-    return out
+    console.kv("instructions", instructions or "(empty)")

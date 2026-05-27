@@ -1,3 +1,3 @@
-from .event import Event
+from .event import Event, EventKind
 
-__all__ = ["Event"]
+__all__ = ["Event", "EventKind"]

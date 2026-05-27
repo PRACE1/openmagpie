@@ -12,15 +12,16 @@ effectively did:
 `enforce_policy` is idempotent (safe to run at both): the engine-kind
 fill is a no-op once set; the checks are pure predicates.
 
-Guards (each preserved verbatim from the old validators):
+Guards:
   1. engine kind: empty -> settings.ENGINE_DEFAULT_KIND; then it MUST
      be registered in engine.registry (else a typo cold-starts fine
      then wedges the scheduler on the first warm poll).
-  2. no future `last_event_at` (a future watermark silently disables
-     the stream until wall-clock passes it).
-  3. webhook SSRF: settings.WEBHOOK_REQUIRE_HTTPS /
+  2. webhook SSRF: settings.WEBHOOK_REQUIRE_HTTPS /
      WEBHOOK_BLOCK_PRIVATE_IPS (the structural http/https+host check
      stays in the pure model).
+
+(The no-future-watermark guard moved to feeds.policy: streams are owned
+by the Feed now, not the Listener.)
 
 Raises `PolicyError` (ValueError) on violation; callers map it to a
 400 (HTTP) or let it propagate (mgmt-command seam).
@@ -32,7 +33,6 @@ import ipaddress
 from urllib.parse import urlparse
 
 from django.conf import settings
-from django.utils import timezone
 
 from openmagpie_schema.configs import (
     ListenerConfig,
@@ -68,26 +68,6 @@ def _enforce_engine(config: ListenerConfig) -> ListenerConfig:
     return config
 
 
-def _enforce_watermarks(config: ListenerConfig) -> None:
-    """No future per-stream `last_event_at` (silently disables the
-    stream until wall-clock passes it)."""
-    now = timezone.now()
-    for watch in getattr(config, "streams", []):
-        value = watch.last_event_at
-        if value is None:
-            continue
-        # Pydantic parses offset-aware ISO into an aware datetime (the
-        # normal path). A *naive* value is assumed UTC (now.tzinfo is
-        # UTC under USE_TZ) - a naive local-time input would be read as
-        # UTC. Acceptable: the API contract is ISO-8601 with offset.
-        v = value if value.tzinfo else value.replace(tzinfo=now.tzinfo)
-        if v > now:
-            raise PolicyError(
-                f"last_event_at is in the future ({value.isoformat()}); "
-                "a future watermark silently disables the stream until then"
-            )
-
-
 def _enforce_webhooks(config: ListenerConfig) -> None:
     """settings-driven SSRF policy on webhook URLs. The pure model
     already enforced http/https scheme + host present."""
@@ -110,15 +90,17 @@ def enforce_policy(config: ListenerConfig) -> ListenerConfig:
     """Apply every server policy guard; return the (engine-normalized)
     config or raise `PolicyError`. Idempotent.
 
-    The guards duck-type the config (`getattr(config, "engine"/"streams"/
+    The guards duck-type the config (`getattr(config, "engine"/
     "notifiers", default)`) because `ListenerConfig` is the abstract base
     and only `SemanticListenerConfig` exists today. A future kind that
     omits or renames these fields would silently skip the guard, not
     fail loud. When a 2nd kind lands, replace the getattrs with an
     explicit structural contract on `ListenerConfig` (e.g. abstract
     accessors) so a missing guard is a hard error, matching the base
-    class's NotImplementedError stance for the read path."""
+    class's NotImplementedError stance for the read path.
+
+    (No watermark guard here anymore: listeners don't own streams - the
+    Feed does, and that guard lives in feeds.policy.)"""
     config = _enforce_engine(config)
-    _enforce_watermarks(config)
     _enforce_webhooks(config)
     return config

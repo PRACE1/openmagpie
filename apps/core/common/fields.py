@@ -1,6 +1,20 @@
+from datetime import datetime
+
 import ulid
 from django.db import models
 from django.utils.translation import gettext_lazy as _
+
+
+def min_ulid_at(dt: datetime) -> str:
+    """Smallest ULID whose timestamp is `dt` (ms-truncated).
+
+    For id-range cutoffs equivalent to a `created_at` cutoff: ULIDs are
+    lex-sortable and time-monotonic at ms resolution, so `id < min_ulid_at(dt)`
+    selects exactly rows whose ULID-ms < dt-ms. A row whose ULID-ms equals
+    dt-ms survives this cycle (random bits > all-zeros) and is caught next
+    cycle — boundary-safe, never permanently missed.
+    """
+    return ulid.encode_time(int(dt.timestamp() * 1000), 10) + "0" * 16
 
 
 class ULIDField(models.CharField):

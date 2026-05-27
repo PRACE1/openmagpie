@@ -44,9 +44,15 @@ class ListenerWire(BaseModel):
     kind: str
     delivery_mode: str
     is_active: bool
-    poll_interval_seconds: int
-    last_polled_at: datetime | None = None
-    next_poll_at: datetime | None = None
+    # Judgment cursor: highest FeedItem id this listener has judged.
+    # (Poll cadence + poll timestamps moved to the Feed; not here.)
+    last_judged_item_id: str = ""
+    # Rolling hit rate over the last `recent_window_days`: hits / items the
+    # feed saw in the window (both from timestamped, retention-bounded data;
+    # no stored counters). Computed server-side; 0/0 when not applicable.
+    recent_window_days: int = 0
+    recent_hits: int = 0
+    recent_items: int = 0
     last_digest_at: datetime | None = None
     next_digest_at: datetime | None = None
     # creator, audit/display only - account-scoped reads mean this is

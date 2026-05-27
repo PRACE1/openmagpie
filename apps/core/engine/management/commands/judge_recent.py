@@ -4,7 +4,7 @@ from django.core.management.base import BaseCommand, CommandParser
 
 from engine import registry
 from events.registry import hydrate
-from events.services import EventService
+from events.services import EventKind, EventService
 from listeners import registry as listeners_registry
 from listeners.configs import SemanticListenerConfig
 from listeners.services import ListenerService
@@ -26,7 +26,9 @@ class Command(BaseCommand):
         threshold = config.hit_threshold if isinstance(config, SemanticListenerConfig) else 0.8
 
         engine = registry.get(options["engine"])
-        events = event_svc.list_recent_for_listener(listener_id=str(listener.id), limit=options["limit"])
+        events = event_svc.list_recent_for_listener(
+            kind=EventKind.HIT, listener_id=str(listener.id), limit=options["limit"]
+        )
 
         self.stdout.write(
             f"Re-judging {len(events)} persisted hit(s) against listener '{listener.name}' "

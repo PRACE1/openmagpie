@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 
 from rest_framework import permissions, status
+from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -28,7 +29,8 @@ from .serializers import (
     listener_view,
     listener_wire,
 )
-from .services.listeners import ListenerService
+from .services.listeners import ListenerService, SeedCursor
+from .stats import compute_hit_rates
 
 logger = logging.getLogger("listeners")
 
@@ -78,37 +80,55 @@ class ListenerListCreateView(APIView):
 
         svc = ListenerService(account_id=account_id)
 
-        if _is_truthy(request.query_params.get("dry_run")):
-            # Validate-only: build the would-be record in memory and
-            # return it WITHOUT persisting. `build()` runs the IDENTICAL
-            # serializer + service validation as create, so the preview
-            # is faithful for *validation*. It does not guarantee save
-            # success (persistence can still fail); the preview is a
-            # validation preview, not a create-success promise.
-            preview = svc.build(
+        # ?seed_cursor=<value>: validate against SeedCursor up-front so a
+        # typo / unknown token (e.g. "lastest", "newest") 400s instead of
+        # silently falling through to the empty-cursor default — that
+        # would re-judge the full retention window, the exact opposite of
+        # the opt-out the operator just asked for. Validated even on
+        # dry-run so the operator catches the typo before the real POST.
+        seed_cursor_raw = request.query_params.get("seed_cursor") or None
+        if seed_cursor_raw is not None:
+            try:
+                SeedCursor(seed_cursor_raw)
+            except ValueError:
+                raise ValidationError(
+                    {"seed_cursor": [f"expected one of {[c.value for c in SeedCursor]}, got {seed_cursor_raw!r}"]}
+                ) from None
+
+        # build/create run the feed-exists policy check (the listener's
+        # feed_id must reference a Feed in this account) -> PolicyError;
+        # map it to a 400 like the serializer's shape/policy errors.
+        try:
+            if _is_truthy(request.query_params.get("dry_run")):
+                # Validate-only: build the would-be record in memory and
+                # return it WITHOUT persisting. `build()` runs the IDENTICAL
+                # service validation as create, so the preview is faithful
+                # for *validation* (not a create-success promise).
+                preview = svc.build(
+                    user_id=str(request.user.id),
+                    name=d["name"],
+                    instructions=d["instructions"],
+                    kind=d["kind"],
+                    delivery_mode=d["delivery_mode"],
+                    data=d["data"],
+                )
+                preview_data = listener_mutation(preview, dry_run=True).model_dump(mode="json")
+                # `id` is an empty-string placeholder pre-save; drop it so a
+                # client never reads a meaningless id from the preview.
+                preview_data.pop("id", None)
+                return Response(preview_data, status=status.HTTP_200_OK)
+
+            listener = svc.create(
                 user_id=str(request.user.id),
                 name=d["name"],
                 instructions=d["instructions"],
                 kind=d["kind"],
                 delivery_mode=d["delivery_mode"],
-                poll_interval_seconds=d["poll_interval_seconds"],
                 data=d["data"],
+                seed_cursor=seed_cursor_raw,
             )
-            preview_data = listener_mutation(preview, dry_run=True).model_dump(mode="json")
-            # `id` is an empty-string placeholder pre-save; drop it so a
-            # client never reads a meaningless id from the preview.
-            preview_data.pop("id", None)
-            return Response(preview_data, status=status.HTTP_200_OK)
-
-        listener = svc.create(
-            user_id=str(request.user.id),
-            name=d["name"],
-            instructions=d["instructions"],
-            kind=d["kind"],
-            delivery_mode=d["delivery_mode"],
-            poll_interval_seconds=d["poll_interval_seconds"],
-            data=d["data"],
-        )
+        except PolicyError as exc:
+            return Response({"data": [str(exc)]}, status=status.HTTP_400_BAD_REQUEST)
         # Symmetric `dry_run: False` so a client can branch on the body
         # alone (the 201 vs 200 status already distinguishes them, this
         # just makes the contract explicit on both responses).
@@ -122,7 +142,10 @@ class ListenerListCreateView(APIView):
         if account_id is None:
             return _no_primary_account_response(str(request.user.id))
         listeners = ListenerService(account_id=account_id).list()
-        return Response(ListenerListResponse(items=[listener_wire(o) for o in listeners]).model_dump(mode="json"))
+        # Batched rolling hit rates (constant queries, no N+1).
+        rates = compute_hit_rates(listeners)
+        items = [listener_wire(o, recent=rates.get(str(o.id), (0, 0))) for o in listeners]
+        return Response(ListenerListResponse(items=items).model_dump(mode="json"))
 
 
 def _not_found_response(listener_id: str) -> Response:
@@ -195,7 +218,6 @@ class ListenerDetailView(APIView):
             "name": d["name"],
             "instructions": d["instructions"],
             "delivery_mode": d["delivery_mode"],
-            "poll_interval_seconds": d["poll_interval_seconds"],
             "data": d["data"],
         }
 

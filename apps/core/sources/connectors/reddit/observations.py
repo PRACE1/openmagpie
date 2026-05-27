@@ -4,8 +4,7 @@ from typing import TYPE_CHECKING, ClassVar
 from events.observations import Observation
 
 if TYPE_CHECKING:
-    from listeners.configs import RedditSubredditStreamSpec
-    from listeners.models import Listener
+    from openmagpie_schema.configs import RedditSubredditStreamSpec
 
     from .payloads import RedditPostPayload
 
@@ -36,7 +35,6 @@ class NewRedditPostObservation(Observation):
     def from_reddit_blob(
         cls,
         raw: "RedditPostPayload",
-        listener: "Listener",
         spec: "RedditSubredditStreamSpec",
     ) -> "NewRedditPostObservation":
         return cls(
@@ -44,8 +42,6 @@ class NewRedditPostObservation(Observation):
             kind=cls.EVENT_KIND,
             occurred_at=datetime.fromtimestamp(raw.created_utc, tz=UTC),
             source=spec.kind,
-            user_id=str(listener.user_id),
-            account_id=str(listener.account_id),
             title=raw.title,
             content=raw.selftext,
             author=raw.author or "",  # Reddit returns null for deleted users

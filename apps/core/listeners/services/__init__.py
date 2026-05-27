@@ -1,40 +1,37 @@
 """listeners.services, public surface.
 
-from listeners.services import ListenerService, poll_listener
+from listeners.services import ListenerService, judge_listener
 
 # Account-scoped operations:
 svc = ListenerService(account_id=X)
 listener = svc.get(id)
-svc.update_poll_state(listener, last_polled_at=now, data=...)
+svc.advance_judge_cursor(listener, item_id=...)
 
-# Cross-tenant operations (scheduler):
-for listener in ListenerService.Global.list_due_for_poll(now=now):
+# Cross-tenant operations (judgment scheduler):
+for listener in ListenerService.Global.list_active():
     ...
 
-# Orchestrator (one-shot operation):
-result = PollListenerOperation(listener).run()
-# Or the equivalent function-shaped wrapper:
-result = poll_listener(listener)
+# Judgment orchestrator (one-shot operation):
+result = JudgeListenerOperation(listener).run()
+# Or the equivalent function-shaped wrapper (locked):
+result = judge_listener(listener)
 """
 
-from .listeners import ListenerService
-from .polling import (
+from .judgment import (
+    JudgeListenerOperation,
     JudgeProgress,
-    PollEvent,
-    PollListenerOperation,
-    PollProgressCallback,
-    PollResult,
-    StreamStarted,
-    poll_listener,
+    JudgeProgressCallback,
+    JudgeResult,
+    judge_listener,
 )
+from .listeners import ListenerService, SeedCursor
 
 __all__ = [
+    "JudgeListenerOperation",
     "JudgeProgress",
+    "JudgeProgressCallback",
+    "JudgeResult",
     "ListenerService",
-    "PollEvent",
-    "PollListenerOperation",
-    "PollProgressCallback",
-    "PollResult",
-    "StreamStarted",
-    "poll_listener",
+    "SeedCursor",
+    "judge_listener",
 ]

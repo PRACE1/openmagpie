@@ -55,7 +55,6 @@ class ListenerEnvelope(BaseModel):
     instructions: str
     kind: str
     delivery_mode: str
-    poll_interval_seconds: int
     data: ConfigBlob = {}
 
     model_config = {"extra": "ignore"}
@@ -67,18 +66,32 @@ class ListenerApi:
     def __init__(self, http: MagpieClient) -> None:
         self._http = http
 
-    def create(self, body: dict[str, Any], *, dry_run: bool = False) -> ListenerMutationResponse:
+    def create(
+        self,
+        body: dict[str, Any],
+        *,
+        dry_run: bool = False,
+        seed_cursor: str | None = None,
+    ) -> ListenerMutationResponse:
         """POST a listener. Returns the parsed `ListenerMutationResponse`.
         Server-side validation errors propagate as `ApiError` (status=400)
         carrying the per-field detail in `e.body`.
 
         `dry_run=True` adds `?dry_run=true`: the server runs the identical
         validation and returns the validated record (with `dry_run: true`)
-        WITHOUT persisting. Used for the preview/confirm step. It is a
-        validation preview, not a create-success guarantee.
+        WITHOUT persisting. Used for the preview/confirm step.
+
+        `seed_cursor="latest"` adds `?seed_cursor=latest`: the server seeds
+        `last_judged_item_id` from the feed's newest item at create time so
+        the listener only judges items that arrive from now on (skipping
+        what's already in the feed's retention window).
         """
-        params = {"dry_run": "true"} if dry_run else None
-        raw = self._http.post(routes.listeners.collection, json_body=body, params=params)
+        params: dict[str, str] = {}
+        if dry_run:
+            params["dry_run"] = "true"
+        if seed_cursor:
+            params["seed_cursor"] = seed_cursor
+        raw = self._http.post(routes.listeners.collection, json_body=body, params=params or None)
         return ListenerMutationResponse.model_validate(raw)
 
     def list(self) -> builtins.list[ListenerWire]:

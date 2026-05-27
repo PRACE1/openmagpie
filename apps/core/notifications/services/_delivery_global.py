@@ -7,9 +7,14 @@ The leading underscore signals "implementation detail of delivery.py"; the
 Reach for these sparingly, scheduler entry points + admin / debug commands.
 """
 
+from typing import TYPE_CHECKING
+
 from common.locks import digest_lock
 from listeners.configs import SemanticListenerConfig
 from listeners.models import Listener
+
+if TYPE_CHECKING:
+    from .delivery import DigestResult
 
 
 class DeliveryGlobal:
@@ -22,13 +27,13 @@ class DeliveryGlobal:
     """
 
     @staticmethod
-    def deliver_digest(listener: Listener, config: SemanticListenerConfig) -> int | None:
+    def deliver_digest(listener: Listener, config: SemanticListenerConfig) -> "DigestResult | None":
         """Locked entry point for one Listener's digest cycle.
 
         Acquires `digest_lock(listener.id)`; returns None if another process
-        already holds it. Otherwise returns the number of hits delivered
-        (0 on partial / total failure of the notifiers, the Events stay
-        pending and the next cycle re-batches them).
+        already holds it. Otherwise returns a `DigestResult` with delivered
+        + attempted counts so the scheduler can distinguish "nothing
+        pending" from "everything failed."
 
         Tests / direct access should call
         `DeliveryService(account_id=...).deliver_digest(...)` to bypass.

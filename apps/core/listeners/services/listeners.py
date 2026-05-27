@@ -8,8 +8,11 @@ call shape (`ListenerService.Global.<op>`) is stable regardless of layout.
 
 import logging
 from datetime import datetime, timedelta
+from enum import StrEnum
 from typing import Any
 
+from feeds.models import Feed
+from feeds.services import FeedService
 from listeners.models import Listener
 from listeners.policy import PolicyError, enforce_policy
 from listeners.registry import load_config, parse_config, validate_config
@@ -17,6 +20,23 @@ from listeners.registry import load_config, parse_config, validate_config
 from ._listeners_global import ListenerGlobal
 
 logger = logging.getLogger("listeners")
+
+
+class SeedCursor(StrEnum):
+    """Accepted values for the create-time `seed_cursor` hint.
+
+    `LATEST`: seed `last_judged_item_id` from the feed's newest item at
+    create time so the listener only judges items arriving from now on
+    (skip the retention backlog). Unset / `None`: cursor stays empty,
+    listener judges everything in the retention window on first cycle
+    (the default).
+
+    Unknown values must 400 at the view boundary — silently falling
+    through to the default defeats the opt-out the operator asked for.
+    """
+
+    LATEST = "latest"
+
 
 # Soft, advisory only. Not a cap (nothing is dropped) - just the point
 # where an un-paginated account-scoped list is large enough that someone
@@ -91,6 +111,17 @@ class ListenerService:
             )
         return listeners
 
+    def _assert_feed_exists(self, config: object) -> None:
+        """The listener's feed_id MUST reference a Feed in this account.
+        Cross-table integrity the pure schema can't check; raises
+        PolicyError (-> 400) so a listener can't point at a missing or
+        cross-account feed and then fail every judge cycle."""
+        feed_id = getattr(config, "feed_id", None)
+        if not feed_id:
+            return  # a future kind without a feed; nothing to check
+        if not Feed.objects.filter(id=feed_id, account_id=self.account_id).exists():
+            raise PolicyError(f"unknown feed {feed_id!r} in this account")
+
     def build(
         self,
         *,
@@ -99,14 +130,13 @@ class ListenerService:
         instructions: str,
         kind: str,
         delivery_mode: str,
-        poll_interval_seconds: int,
         data: dict[str, Any],
     ) -> Listener:
         """Validate the inputs and return an UNSAVED Listener instance.
 
         Runs the full validation `create` does (DeliveryMode enum + the
-        kind's Pydantic config, which includes the engine-kind registry
-        check) and normalizes `data` to the canonical Pydantic JSON
+        kind's Pydantic config incl. the engine-kind registry check +
+        feed-exists) and normalizes `data` to the canonical Pydantic JSON
         dump, but never touches the DB. The dry-run path serializes the
         instance this returns so the preview is byte-for-byte what
         `create` would persist, no second validation path to drift.
@@ -117,10 +147,11 @@ class ListenerService:
         # any caller (mgmt command, future internal flow) gets the same
         # safety net the HTTP path does.
         validated = validate_config(kind, data)
+        self._assert_feed_exists(validated)
         normalized_data = validated.model_dump(mode="json")
         # Scope is enforced by construction here (account_id is bound to
         # this service instance), so `_assert_scope` isn't needed on the
-        # write path the way it is for update_poll_state/update_digest.
+        # write path the way it is for update_digest_state.
         return Listener(
             user_id=user_id,
             account_id=self.account_id,
@@ -128,7 +159,6 @@ class ListenerService:
             name=name,
             instructions=instructions,
             delivery_mode=delivery_mode,
-            poll_interval_seconds=poll_interval_seconds,
             data=normalized_data,
         )
 
@@ -140,12 +170,18 @@ class ListenerService:
         instructions: str,
         kind: str,
         delivery_mode: str,
-        poll_interval_seconds: int,
         data: dict[str, Any],
+        seed_cursor: str | None = None,
     ) -> Listener:
         """Validate (via `build`) then persist. `data` is stored as the
         canonical Pydantic JSON dump so downstream readers always see a
         normalized blob regardless of input ordering / omitted defaults.
+
+        Cursor starts empty by default so a new Listener attached to a
+        Feed with existing items judges them all (within the retention
+        window). Pass `seed_cursor=SeedCursor.LATEST` (the string "latest")
+        to skip existing items and only judge what arrives from now on;
+        the cursor is set from the feed's newest item id at create time.
         """
         listener = self.build(
             user_id=user_id,
@@ -153,11 +189,34 @@ class ListenerService:
             instructions=instructions,
             kind=kind,
             delivery_mode=delivery_mode,
-            poll_interval_seconds=poll_interval_seconds,
             data=data,
         )
+        if seed_cursor == SeedCursor.LATEST:
+            self._seed_cursor_to_latest(listener)
         listener.save()
         return listener
+
+    def _seed_cursor_to_latest(self, listener: Listener) -> None:
+        """Set `last_judged_item_id` to the feed's newest FeedItem id so
+        the listener only judges items newer than what already exists.
+        No-op if the listener has no `feed_id` or the feed has no items."""
+        config = load_config(listener)
+        feed_id = getattr(config, "feed_id", None)
+        if not feed_id:
+            return
+        feed_svc = FeedService(account_id=self.account_id)
+        try:
+            feed = feed_svc.get(feed_id)
+        except Feed.DoesNotExist as exc:
+            # build's _assert_feed_exists check has already passed; reaching
+            # here means a concurrent operator deleted the feed between
+            # validate and seed. Re-raise as PolicyError → 400 so the
+            # creating user gets a real error instead of a silently-dangling
+            # listener with cursor='' pointing at a missing feed.
+            raise PolicyError(f"feed {feed_id!r} was deleted before listener could be created") from exc
+        newest = feed_svc.newest_item_id(feed)
+        if newest:
+            listener.last_judged_item_id = newest
 
     def build_update(
         self,
@@ -167,53 +226,46 @@ class ListenerService:
         name: str,
         instructions: str,
         delivery_mode: str,
-        poll_interval_seconds: int,
         data: dict[str, Any],
     ) -> Listener:
         """Validate an edit and apply it to the EXISTING `listener`
         instance (unsaved). Mirrors `build` for the dry-run path.
 
         `kind` is intentionally not a parameter: it is immutable on edit
-        (changing it would swap the config schema and make watermark /
-        secret preservation ill-defined). The view rejects a kind change
-        before calling this.
+        (changing it would swap the config schema). The view rejects a
+        kind change before calling this.
 
-        Identity/audit/poll-state COLUMNS (`id`, `created_at`,
-        `user_id`, `last_polled_at`, ...) are preserved by construction:
-        we mutate the fetched row in place and never reassign them. The
+        Identity/audit/judgment COLUMNS (`id`, `created_at`, `user_id`,
+        `last_judged_item_id`, ...) are preserved by construction: we
+        mutate the fetched row in place and never reassign them. The
         config blob carries forward its own must-not-reset state via
-        `merge_preserving` (watermarks + `***` secrets).
+        `merge_preserving` (masked `***` secrets; no stream watermarks
+        anymore - the Feed owns those).
         """
         self._assert_scope(str(listener.account_id), "listener")
         self.validate_delivery_mode(delivery_mode)
 
-        # parse_config = shape only (no policy). Policy runs on the
-        # MERGE OUTPUT below, not on `submitted`, because the merge
-        # output is what persists and merge_preserving rewrites
-        # policy-relevant fields (swaps a matching stream's
-        # last_event_at for prior's, restores masked secrets) - so
-        # `submitted` is the wrong object to enforce. It is also not
-        # the only seam: the HTTP path already policy-checked the
-        # request body in the serializer; this merged-enforce is the
-        # single policy seam for non-serializer callers (mgmt command)
-        # and the catch for anything the merge itself introduced.
-        # (`prior` is a read; load_config skips policy on at-rest data.)
+        # parse_config = shape only (no policy). Policy runs on the MERGE
+        # OUTPUT below, not on `submitted`: merge_preserving restores
+        # masked secrets, so the merge output is the right object to
+        # enforce. The HTTP path already policy-checked the request body
+        # in the serializer; this merged-enforce is the single policy seam
+        # for non-serializer callers + the catch for merge-introduced state.
         submitted = parse_config(str(listener.kind), data)
         prior = load_config(listener)
         try:
             merged = submitted.merge_preserving(prior)
         except ValueError as exc:
-            # merge_preserving refuses when a masked secret can't be
-            # matched to a prior webhook (notifier list changed) - never
-            # persist '***' as a live secret. Surface as a policy
-            # rejection (-> 400) like the other guards, not a 500.
+            # merge refuses when a masked secret can't be matched to a
+            # prior webhook (notifier list changed) - never persist '***'
+            # as a live secret. Surface as a 400, not a 500.
             raise PolicyError(str(exc)) from exc
         merged = enforce_policy(merged)
+        self._assert_feed_exists(merged)
 
         listener.name = name
         listener.instructions = instructions
         listener.delivery_mode = delivery_mode
-        listener.poll_interval_seconds = poll_interval_seconds
         listener.data = merged.model_dump(mode="json")
         return listener
 
@@ -225,18 +277,16 @@ class ListenerService:
         name: str,
         instructions: str,
         delivery_mode: str,
-        poll_interval_seconds: int,
         data: dict[str, Any],
     ) -> Listener:
         """Validate (via `build_update`) then persist. Saves ONLY the
-        editable fields so identity/audit/poll-state columns can't be
+        editable fields so identity/audit/judgment columns can't be
         touched even accidentally."""
         listener = self.build_update(
             listener,
             name=name,
             instructions=instructions,
             delivery_mode=delivery_mode,
-            poll_interval_seconds=poll_interval_seconds,
             data=data,
         )
         listener.save(
@@ -244,7 +294,6 @@ class ListenerService:
                 "name",
                 "instructions",
                 "delivery_mode",
-                "poll_interval_seconds",
                 "data",
                 "updated_at",
             ]
@@ -257,20 +306,13 @@ class ListenerService:
         self._assert_scope(str(listener.account_id), "listener")
         listener.delete()
 
-    def update_poll_state(
-        self,
-        listener: Listener,
-        /,
-        *,
-        last_polled_at: datetime,
-        data: dict,
-    ) -> None:
-        """Update poll bookkeeping. `data` is the (mutated) Pydantic config dumped to JSON."""
+    def advance_judge_cursor(self, listener: Listener, /, *, item_id: str) -> None:
+        """Set the listener's judgment cursor to `item_id` (the highest
+        FeedItem id considered this cycle). Items with id <= this are not
+        re-judged."""
         self._assert_scope(str(listener.account_id), "listener")
-        listener.last_polled_at = last_polled_at
-        listener.next_poll_at = last_polled_at + timedelta(seconds=int(listener.poll_interval_seconds))
-        listener.data = data
-        listener.save(update_fields=["last_polled_at", "next_poll_at", "data", "updated_at"])
+        listener.last_judged_item_id = item_id
+        listener.save(update_fields=["last_judged_item_id", "updated_at"])
 
     def update_digest_state(
         self,

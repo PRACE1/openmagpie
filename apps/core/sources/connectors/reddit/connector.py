@@ -8,8 +8,7 @@ from pydantic import ValidationError
 
 from events.observations import Observation
 from events.registry import register
-from listeners.configs import RedditSubredditStreamSpec
-from listeners.models import Listener
+from openmagpie_schema.configs import RedditSubredditStreamSpec
 
 from ..base import BaseConnector, ConnectorParseError
 from .observations import NewRedditPostObservation
@@ -65,7 +64,6 @@ class RedditSubRedditConnector(BaseConnector):
     def poll(
         self,
         spec: RedditSubredditStreamSpec,
-        listener: Listener,
         since: datetime | None,
     ) -> Iterator[NewRedditPostObservation]:
         subreddit = spec.subreddit
@@ -108,7 +106,7 @@ class RedditSubRedditConnector(BaseConnector):
                 return  # empty page, nothing more to consume
 
             for child in listing.data.children:
-                obs = NewRedditPostObservation.from_reddit_blob(child.data, listener, spec)
+                obs = NewRedditPostObservation.from_reddit_blob(child.data, spec)
                 if since is not None and obs.occurred_at <= since:
                     # /new is reverse-chronological, all remaining items on
                     # this and later pages are older. We've caught up.
