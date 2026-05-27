@@ -278,13 +278,11 @@ def payload_sample(
     `--json` for the structured envelope when scripting.
     Pure preview — fires nothing.
     """
-    import json
-
     ac = app_ctx()
     result = ac.api.listener.payload_sample(listener_id)
 
     if json_out:
-        typer.echo(json.dumps(result, indent=2, default=str))
+        typer.echo(result.model_dump_json(indent=2))
         return
 
     _print_payload_sample(result)

@@ -92,3 +92,31 @@ class ListenerMutationResponse(ListenerWire):
     id: str | None = None
     summary: ListenerConfigSummary = ListenerConfigSummary()
     dry_run: bool
+
+
+class NotifierPayload(BaseModel):
+    """One configured notifier's rendered output for a preview batch.
+
+    `rendered` is notifier-defined: webhook emits a dict (the JSON body
+    the operator's endpoint would receive), log emits a string (the
+    multi-line text written to server logs). Carried opaquely on the
+    wire — each notifier kind owns its rendered shape and the envelope
+    just passes it through, same pattern as `data: ConfigBlob`."""
+
+    kind: str
+    target: str | None = None
+    rendered: dict[str, Any] | str
+
+
+class PayloadSampleResponse(BaseModel):
+    """`GET /v1/listeners/<id>/payload-sample` — dry-run delivery output.
+
+    One `NotifierPayload` per configured notifier (every kind the
+    listener would fire, not just one), so an operator wiring `webhook
+    + log` sees both side by side. `synthetic` is True when any hit in
+    the batch was backfilled from a synthetic Observation (real hits
+    were short of the preview target); the renderer treats hits the
+    same either way."""
+
+    synthetic: bool
+    notifiers: list[NotifierPayload] = []

@@ -24,6 +24,8 @@ from openmagpie_schema.wire import (
     ListenerMutationResponse,
     ListenerView,
     ListenerWire,
+    NotifierPayload,
+    PayloadSampleResponse,
 )
 
 from .. import routes
@@ -37,6 +39,8 @@ __all__ = [
     "ListenerMutationResponse",
     "ListenerView",
     "ListenerWire",
+    "NotifierPayload",
+    "PayloadSampleResponse",
 ]
 
 
@@ -120,24 +124,19 @@ class ListenerApi:
         raw = self._http.put(routes.listeners.detail(listener_id), json_body=body, params=params)
         return ListenerMutationResponse.model_validate(raw)
 
-    def payload_sample(self, listener_id: str) -> dict[str, Any]:
+    def payload_sample(self, listener_id: str) -> PayloadSampleResponse:
         """GET what each of the listener's notifiers would emit for the
         next batch — same code path delivery takes, just without the
         ship step. Honors per-notifier `include_fields` and the
         listener's `delivery_mode`. Uses real hit Events if any exist;
         otherwise synthetic Observations fill in.
 
-        Returns:
-            {
-              "synthetic": bool,
-              "notifiers": [
-                {"kind": "webhook", "target": "<url>", "rendered": <dict>},
-                {"kind": "log",     "target": null,    "rendered": "<text>"},
-                ...
-              ]
-            }
-        """
-        return self._http.get(routes.listeners.payload_sample(listener_id))
+        The wire envelope is typed; each `NotifierPayload.rendered`
+        stays a `dict | str` union — opaque per-kind, same pattern as
+        the listener `data` blob (the server is the schema authority
+        for what each notifier emits)."""
+        raw = self._http.get(routes.listeners.payload_sample(listener_id))
+        return PayloadSampleResponse.model_validate(raw)
 
     def rewind(self, listener_id: str, *, to: str | None = None) -> ListenerView:
         """Reset the listener's judge cursor.

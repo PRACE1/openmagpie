@@ -18,6 +18,8 @@ from typing import Any
 import httpx
 import typer
 
+from openmagpie_schema.wire import PayloadSampleResponse
+
 from .. import console
 from ..http import ApiError, AuthError
 
@@ -66,7 +68,7 @@ def _open_editor_or_abort(seed: str) -> str:
     return edited
 
 
-def _print_payload_sample(result: dict[str, Any]) -> None:
+def _print_payload_sample(result: PayloadSampleResponse) -> None:
     """Render the payload-sample envelope for a human.
 
     One block per notifier (header: `kind` or `kind | target`), body
@@ -74,26 +76,22 @@ def _print_payload_sample(result: dict[str, Any]) -> None:
     string-rendered ones (log). Shared by `listener payload-sample`
     and the `quickstart` wizard so both flows format hits identically.
     """
-    if result.get("synthetic"):
+    if result.synthetic:
         console.warn("(synthetic sample — listener has no hit events yet)")
 
-    notifiers = result.get("notifiers", [])
-    if not notifiers:
+    if not result.notifiers:
         console.warn("(no notifiers configured — this listener fires nothing)")
         return
 
-    for i, entry in enumerate(notifiers):
+    for i, entry in enumerate(result.notifiers):
         if i > 0:
             typer.echo("")
-        kind = entry["kind"]
-        target = entry.get("target")
-        header = f"{kind} | {target}" if target else kind
+        header = f"{entry.kind} | {entry.target}" if entry.target else entry.kind
         console.header(header)
-        rendered = entry["rendered"]
-        if isinstance(rendered, dict):
-            typer.echo(json.dumps(rendered, indent=2, default=str))
+        if isinstance(entry.rendered, dict):
+            typer.echo(json.dumps(entry.rendered, indent=2, default=str))
         else:
-            typer.echo(str(rendered))
+            typer.echo(entry.rendered)
 
 
 def _print_api_error(e: ApiError) -> None:
