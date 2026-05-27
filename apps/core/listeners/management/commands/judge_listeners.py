@@ -3,8 +3,9 @@ from typing import Any
 
 from django.core.management.base import BaseCommand
 
+from common.humanize import ellipsize, humanize_seconds
 from listeners.services import ListenerService
-from listeners.services.judgment import JudgeProgress, judge_listener
+from listeners.services.judgment import JudgeCycleStarted, JudgeEvent, judge_listener
 
 logger = logging.getLogger("listeners")
 
@@ -26,15 +27,22 @@ class Command(BaseCommand):
         total_hits = 0
         total_skipped = 0
 
-        def on_progress(ev: JudgeProgress) -> None:
+        def on_progress(ev: JudgeEvent) -> None:
             if quiet:
                 return
-            if ev.error:
-                self.stdout.write(f"    ERR  {ev.obs.external_id}: {ev.error}")
+            if isinstance(ev, JudgeCycleStarted):
+                self.stdout.write(f"  judging {ev.pending} item(s) (~{humanize_seconds(ev.est_seconds)})")
+                self.stdout.write(f"         score  {'title':<60}  progress")
                 return
-            mark = "HIT " if ev.hit else "..."
-            title = (ev.obs.title or "")[:60]
-            self.stdout.write(f"    {mark} {ev.score:.2f} {title}")
+            # JudgeItemDone
+            if ev.error:
+                label = ev.external_id or "?"
+                self.stdout.write(f"    ERR   {label}: {ev.error}")
+                return
+            mark = "HIT " if ev.hit else "... "
+            title = ellipsize(ev.obs.title or "", 60)
+            progress = f"{ev.done}/{ev.total}, ~{humanize_seconds(ev.eta_seconds)} left" if ev.total else ""
+            self.stdout.write(f"    {mark} {ev.score:>5.2f}  {title:<60}  {progress}")
 
         total_failed = 0
         for listener in ListenerService.Global.list_active():

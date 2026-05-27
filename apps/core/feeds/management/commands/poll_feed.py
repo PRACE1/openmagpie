@@ -23,10 +23,7 @@ class Command(BaseCommand):
         self.stdout.write(f"{feed.name} | {feed.id}")
 
         def on_progress(ev: StreamPolled) -> None:
-            if ev.cold_start:
-                self.stdout.write(f"  {ev.stream_display}: cold-start (watermark set, no backfill)")
-            else:
-                self.stdout.write(f"  {ev.stream_display}: {ev.observed} observed, {ev.recorded} new")
+            self.stdout.write(f"  {ev.stream_display}: {ev.observed} observed, {ev.recorded} new")
 
         result = FeedPollOperation(feed, on_progress=on_progress).run()
         self.stdout.write(

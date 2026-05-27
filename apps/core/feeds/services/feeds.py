@@ -309,6 +309,28 @@ class FeedService:
             .first()
         )
 
+    def count_items_in_window(
+        self,
+        feed: Feed,
+        /,
+        *,
+        after_id: str,
+        through_id: str,
+    ) -> int:
+        """How many FeedItems sit in `(after_id, through_id]` for this feed.
+
+        Cheap COUNT query the judge cycle uses to size up work before the
+        slow leg (one LLM call per item). Lets the management command
+        print a "judging N items (~Ns)" heads-up so the operator knows
+        what they're in for. Same window shape as `iter_items_in_window`."""
+        self._assert_scope(str(feed.account_id), "feed")
+        return FeedItem.objects.filter(
+            account_id=self.account_id,
+            feed_id=feed.id,
+            id__gt=after_id,
+            id__lte=through_id,
+        ).count()
+
     def iter_items_in_window(
         self,
         feed: Feed,

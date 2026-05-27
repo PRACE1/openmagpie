@@ -8,7 +8,7 @@ hit threshold 0.7) and shows the resulting payload sample so the
 operator sees what hits will look like before any real items arrive.
 
 Engine availability is checked up front so an "Ollama down" environment
-fails BEFORE the operator types instructions — beats discovering it at
+fails BEFORE the operator types instructions, vs discovering it at
 first judge cycle once polling starts. The listener pins
 `engine.model` to whatever the server reports as its default so the
 existing listener-config policy availability check (see
@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import re
 import shutil
+from datetime import UTC, datetime, timedelta
 
 import typer
 
@@ -59,6 +60,7 @@ def quickstart() -> None:
 
     subreddits = _prompt_subreddits()
     instructions = _prompt_instructions()
+    backfill = _prompt_backfill()
 
     base = _slug(subreddits[0])
     feed_name = f"{base}-feed"
@@ -71,6 +73,8 @@ def quickstart() -> None:
     console.kv("Notify on", _truncate(instructions))
     console.kv("Notify via", "server log (add a webhook later)")
     console.kv("Scored by", f"{engine.kind} | {engine.default_model}")
+    if backfill is not None:
+        console.kv("Backfill", f"last {_hours_label(backfill)} (~1s per backfilled post)")
     typer.echo("")
     if not typer.confirm("Start watching?", default=True):
         console.warn("Aborted.")
@@ -81,7 +85,7 @@ def quickstart() -> None:
         kind="curated",
         poll_interval_seconds=300,
         data={
-            "streams": [{"spec": {"kind": "reddit_subreddit", "subreddit": s}} for s in subreddits],
+            "streams": [_stream_watch(s, backfill) for s in subreddits],
             "retention_days": 30,
         },
     )
@@ -120,7 +124,7 @@ def quickstart() -> None:
     # The watch exists at this point; a listener failure leaves an
     # orphan, so we surface the cleanup command explicitly. The decorator
     # would still print the API error, but the operator wouldn't know
-    # about the half-applied state — name it here.
+    # about the half-applied state; name it here.
     try:
         ac.api.listener.create(listener_body, dry_run=True)
     except ApiError as exc:
@@ -206,12 +210,64 @@ def _prompt_subreddits() -> list[str]:
 
 def _prompt_instructions() -> str:
     """The scoring model reads this verbatim, so empty is a hard
-    error — without it there's nothing to filter posts against."""
+    error; without it there's nothing to filter posts against."""
     while True:
         text = typer.prompt("What should I notify you about? (a sentence or two, plain English)").strip()
         if text:
             return text
         console.warn("Need at least a sentence; without it there's nothing to filter posts against.")
+
+
+_BACKFILL_MAX_HOURS = 168  # 7 days; Reddit's listing endpoints cap the response anyway
+_BACKFILL_DEFAULT_HOURS = 24
+
+
+def _prompt_backfill() -> timedelta | None:
+    """Optional historical window so the first poll has posts to score.
+
+    One prompt, integer hours: `0` means live-only (server policy
+    fills `last_event_at = now` and the first poll fetches only
+    items posted after that), `1..168` translates to a past
+    `last_event_at = now - hours` on every stream. Default is 24h
+    because the demo is the point of quickstart: out of the box
+    you want real posts to score, not an empty feed.
+
+    The prompt names the cost-side of the trade-off: each backfilled
+    post is one LLM judge call (a few seconds on local Ollama), so a
+    week-long window on a busy subreddit can mean minutes of scoring
+    on the first tick. Operator picks; we don't gate it."""
+    while True:
+        hours = typer.prompt(
+            f"How many hours of recent posts to backfill? (0-{_BACKFILL_MAX_HOURS}, 0 = live-only; ~1s per backfilled post)",
+            default=_BACKFILL_DEFAULT_HOURS,
+            type=int,
+        )
+        if hours == 0:
+            return None
+        if 1 <= hours <= _BACKFILL_MAX_HOURS:
+            return timedelta(hours=hours)
+        console.warn(f"Pick 0 (live-only) or 1-{_BACKFILL_MAX_HOURS}.")
+
+
+def _hours_label(delta: timedelta) -> str:
+    """`72 hours` → `3 days`; smaller numbers stay in hours so a 24h
+    default reads naturally."""
+    hours = int(delta.total_seconds() // 3600)
+    if hours >= 24 and hours % 24 == 0:
+        days = hours // 24
+        return f"{days} day{'s' if days != 1 else ''}"
+    return f"{hours} hour{'s' if hours != 1 else ''}"
+
+
+def _stream_watch(subreddit: str, backfill: timedelta | None) -> dict:
+    """Build one stream-watch envelope. When `backfill` is set, pin
+    `last_event_at` to `now - backfill` so the first poll fetches
+    items from that window forward; otherwise leave it absent and
+    the server's policy defaults it to `now` (live-only)."""
+    watch: dict = {"spec": {"kind": "reddit_subreddit", "subreddit": subreddit}}
+    if backfill is not None:
+        watch["last_event_at"] = (datetime.now(UTC) - backfill).isoformat()
+    return watch
 
 
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
@@ -225,8 +281,8 @@ def _slug(s: str) -> str:
 def _loop_command() -> str:
     """Shell command that keeps `make dev-tick` ticking at the poll cadence.
 
-    Prefer `watch` when it's on PATH — clearer output for a long-running
-    loop. Fall back to a portable `while`/`sleep` loop otherwise so the
+    Prefer `watch` when it's on PATH (clearer output for a long-running
+    loop). Fall back to a portable `while`/`sleep` loop otherwise so the
     suggestion still works on a fresh macOS (no `watch` by default) or
     any other host without the GNU coreutils watch binary.
     """
