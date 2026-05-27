@@ -21,7 +21,7 @@ from accounts.api import AccountScopedAPIView
 from common.fields import is_valid_ulid
 from listeners.api import ListenerScopedAPIView
 from listeners.registry import load_semantic_config
-from openmagpie_schema.wire import ListenerListResponse
+from openmagpie_schema.wire import ListenerListResponse, NotifierPayload, PayloadSampleResponse
 
 from .policy import PolicyError
 from .serializers import (
@@ -294,10 +294,8 @@ class ListenerPayloadSampleView(ListenerScopedAPIView):
             result = build_preview(self.listener, config, account_id=request.account_id)
         except CannotPreviewSource as exc:
             raise NoObservationForSource() from exc
-        return Response(
-            {
-                "synthetic": result.synthetic,
-                "notifiers": [{"kind": n.kind, "target": n.target, "rendered": n.rendered} for n in result.notifiers],
-            },
-            status=status.HTTP_200_OK,
+        body = PayloadSampleResponse(
+            synthetic=result.synthetic,
+            notifiers=[NotifierPayload(kind=n.kind, target=n.target, rendered=n.rendered) for n in result.notifiers],
         )
+        return Response(body.model_dump(mode="json"), status=status.HTTP_200_OK)

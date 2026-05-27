@@ -16,6 +16,7 @@ API_VERSION = "v1"
 _AUTH = f"/{API_VERSION}/auth"
 _LISTENERS = f"/{API_VERSION}/listeners"
 _FEEDS = f"/{API_VERSION}/feeds"
+_ENGINES = f"/{API_VERSION}/engines"
 
 
 class auth:
@@ -62,3 +63,9 @@ class feeds:
     @staticmethod
     def detail(feed_id: str) -> str:
         return f"{_FEEDS}/{feed_id}"
+
+
+class engines:
+    """`/v1/engines/*` routes the CLI consumes."""
+
+    collection = _ENGINES

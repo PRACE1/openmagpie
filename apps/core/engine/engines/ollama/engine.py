@@ -7,9 +7,11 @@ that verifies a pinned `engine.model` is actually loaded.
 import time
 
 import httpx
+from pydantic import ValidationError
 
 from events.observations import Observation
 from listeners.models import Listener
+from openmagpie_schema.engine import EngineStatus
 
 from ..base import EngineModelInvalid, JudgmentJSON, JudgmentResult
 from .prompts import CONTENT_TRUNCATE, SYSTEM_PROMPT, USER_PROMPT_TEMPLATE
@@ -21,9 +23,13 @@ class OllamaEngine:
 
     kind = "ollama"
 
-    def __init__(self, url: str, model: str) -> None:
+    def __init__(self, url: str, default_model: str) -> None:
         self.url = url.rstrip("/")
-        self.model = model
+        # `default_model` is the fallback when a Listener's config leaves
+        # `engine.model` empty. Named "default_model" (not "model") because
+        # judge() also takes a per-call `model` override; calling the instance
+        # attribute `self.model` made `model or self.model` read ambiguously.
+        self.default_model = default_model
 
     def judge(
         self,
@@ -34,8 +40,8 @@ class OllamaEngine:
     ) -> JudgmentResult:
         # Per-call model override: listener's `SemanticListenerConfig.engine.model`
         # threads through judgment.py; None means "use this OllamaEngine
-        # instance's default" (settings.OLLAMA_MODEL from env).
-        use_model = model or self.model
+        # instance's default" (settings.OLLAMA_DEFAULT_MODEL from env).
+        use_model = model or self.default_model
         user_prompt = USER_PROMPT_TEMPLATE.format(
             listener_instructions=str(listener.instructions),
             source=observation.source,
@@ -91,6 +97,45 @@ class OllamaEngine:
         response.raise_for_status()
         tags = OllamaTagsResponse.model_validate_json(response.text)
         return [m.name for m in tags.models]
+
+    def status(self) -> EngineStatus:
+        """Probe /api/tags once; map success or any failure into an
+        `EngineStatus`. Never raises — callers (the /v1/engines view,
+        the quickstart wizard) render `unreachable_reason` and
+        `how_to_fix` directly, so a probe error here is not the same
+        as a server error."""
+        try:
+            loaded = self.available_models()
+        except httpx.HTTPError as exc:
+            return EngineStatus(
+                kind=self.kind,
+                default_model=self.default_model,
+                available=False,
+                unreachable_reason=f"Ollama at {self.url} unreachable ({type(exc).__name__}: {exc})",
+                how_to_fix=(
+                    f"Start Ollama (`ollama serve` or open the desktop app) and confirm it's "
+                    f"reachable at {self.url}. If the URL is wrong, update `OLLAMA_URL` in the "
+                    f"server's env and restart."
+                ),
+            )
+        except ValidationError as exc:
+            return EngineStatus(
+                kind=self.kind,
+                default_model=self.default_model,
+                available=False,
+                unreachable_reason=f"Ollama at {self.url} returned an unexpected /api/tags shape ({exc.error_count()} error(s))",
+                how_to_fix=(
+                    "Ollama's API likely drifted from what this server parses. Update Ollama "
+                    "to a recent version, or open an issue against openmagpie so the parser "
+                    "catches up."
+                ),
+            )
+        return EngineStatus(
+            kind=self.kind,
+            default_model=self.default_model,
+            available=True,
+            available_models=sorted(loaded),
+        )
 
     def validate_model(self, model: str) -> None:
         """Confirm `model` is loaded on this Ollama server. Engine-policy

@@ -41,6 +41,7 @@ from ..context import AppContext, app_ctx
 from ._shared import (
     _handle_api_errors,
     _open_editor_or_abort,
+    _print_payload_sample,
     _read_file_or_abort,
 )
 
@@ -277,35 +278,14 @@ def payload_sample(
     `--json` for the structured envelope when scripting.
     Pure preview — fires nothing.
     """
-    import json
-
     ac = app_ctx()
     result = ac.api.listener.payload_sample(listener_id)
 
     if json_out:
-        typer.echo(json.dumps(result, indent=2, default=str))
+        typer.echo(result.model_dump_json(indent=2))
         return
 
-    if result.get("synthetic"):
-        console.warn("(synthetic sample — listener has no hit events yet)")
-
-    notifiers = result.get("notifiers", [])
-    if not notifiers:
-        console.warn("(no notifiers configured — this listener fires nothing)")
-        return
-
-    for i, entry in enumerate(notifiers):
-        if i > 0:
-            typer.echo("")
-        kind = entry["kind"]
-        target = entry.get("target")
-        header = f"{kind} | {target}" if target else kind
-        console.header(header)
-        rendered = entry["rendered"]
-        if isinstance(rendered, dict):
-            typer.echo(json.dumps(rendered, indent=2, default=str))
-        else:
-            typer.echo(str(rendered))
+    _print_payload_sample(result)
 
 
 # ── List ───────────────────────────────────────────────────────────────
