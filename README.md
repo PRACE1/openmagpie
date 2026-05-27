@@ -14,7 +14,7 @@
 
 ## What is OpenMagpie?
 
-OpenMagpie is a self-hostable listening tool. Point it at any stream — Reddit, GitHub, Slack, Google Docs, anything that emits events — describe in plain English what you care about, and it surfaces the matches that matter. It gets better at hearing you over time as you give feedback on its picks.
+OpenMagpie is a self-hostable listening tool. Point it at any stream (Reddit, GitHub, Slack, Google Docs, anything that emits events) and describe in plain English what you care about, and it surfaces the matches that matter. It gets better at hearing you over time as you give feedback on its picks.
 
 It is **only** a listener: it watches, judges, learns, and notifies. It does not auto-reply, post back to sources, run workflows, or generate reports. Saying no to those keeps the product sharp.
 
@@ -64,20 +64,20 @@ graph TD
 
 ## Features
 
-- **Feed → Listener primitive** — `Feed`s are reusable, curated streams (e.g. `r/ClaudeAI` + `r/AI_Agents`). `Listener`s subscribe to a Feed and apply a plain-English filter via your engine. One feed, many listeners — pay for source polling once.
-- **Source-agnostic** — every connector yields a typed `Observation`; engines and notifiers operate on the same shape no matter the source.
-- **Plain-English listeners** — describe what you care about; no filter chains, no DSL.
-- **Bring your own LLM** — Ollama (local) today; the `Engine` Protocol + `validate_model` hook makes adding Anthropic/OpenAI/others a four-file change with no listener-layer churn.
-- **Hit-only persistence** — `Event`s exist in the DB only when a Listener's engine judged the observation relevant. Misses live and die in memory.
-- **Instant or digest delivery** — fire notifiers per-hit, or batch them on a cadence.
-- **Pluggable notifiers** — webhook + log out of the box; same `Notifier` Protocol for adding Slack/email/etc.
-- **Per-receiver payload preview** — `magpie listener payload-sample <id>` runs the same `render()` your real webhook would, so you can wire and test receivers without firing real hits.
-- **Cursor rewind** — `magpie listener rewind <id>` re-judges the retention window after you refine instructions or lower a threshold.
-- **Self-hostable** — Django + SQLite; Docker Compose dev loop; your data and credentials stay yours.
+- **Feed → Listener primitive**: `Feed`s are reusable, curated streams (e.g. `r/ClaudeAI` + `r/AI_Agents`). `Listener`s subscribe to a Feed and apply a plain-English filter via your engine. One feed, many listeners; pay for source polling once.
+- **Source-agnostic**: every connector yields a typed `Observation`; engines and notifiers operate on the same shape no matter the source.
+- **Plain-English listeners**: describe what you care about; no filter chains, no DSL.
+- **Bring your own LLM**: Ollama (local) today; the `Engine` Protocol + `validate_model` hook makes adding Anthropic/OpenAI/others a four-file change with no listener-layer churn.
+- **Hit-only persistence**: `Event`s exist in the DB only when a Listener's engine judged the observation relevant. Misses live and die in memory.
+- **Instant or digest delivery**: fire notifiers per-hit, or batch them on a cadence.
+- **Pluggable notifiers**: webhook + log out of the box; same `Notifier` Protocol for adding Slack/email/etc.
+- **Per-receiver payload preview**: `magpie listener payload-sample <id>` runs the same `render()` your real webhook would, so you can wire and test receivers without firing real hits.
+- **Cursor rewind**: `magpie listener rewind <id>` re-judges the retention window after you refine instructions or lower a threshold.
+- **Self-hostable**: Django + SQLite; Docker Compose dev loop; your data and credentials stay yours.
 
 ### Planned (not yet shipped)
 
-- **Learns from feedback** — ✅/❌ on past hits become few-shot examples for the next pass. Engine layer is in place; the feedback ingest + retrieval loop is the open piece.
+- **Learns from feedback**: ✅/❌ on past hits become few-shot examples for the next pass. Engine layer is in place; the feedback ingest + retrieval loop is the open piece.
 
 ### What's implemented today
 
@@ -101,16 +101,19 @@ make dev-migrate     # run migrations, create cache table, bootstrap the CLI OAu
 
 Then either:
 
-**Browser**: visit http://localhost:3001 — create an account, you'll be signed in.
+**Browser**: visit http://localhost:3001 and create an account; you'll be signed in.
 
-**CLI**: install + sign in.
+**CLI**: install + sign in, then run the wizard.
 
 ```bash
 make dev-cli-sync                       # uv sync into the workspace .venv
 make dev-cli ARGS="auth login"          # opens browser device flow
 # Sign in, click Authorize, return to the terminal.
-make dev-cli ARGS="auth status"
+make dev-cli ARGS="quickstart"          # two questions, one working listener
+make dev-tick                           # poll + judge once now (vs waiting for the scheduler)
 ```
+
+`magpie quickstart` creates a feed + listener pair with sensible defaults and offers an optional backfill window so the first poll has real posts to score. Pick the demo path and you'll see actual hits scored against your criteria in ~30 seconds.
 
 Or invoke directly: `cd apps/cli && uv run magpie auth login`. Run `uv tool install ./apps/cli` to put `magpie` on your `PATH` globally.
 
@@ -145,7 +148,7 @@ apps/
     engine/                   Engine Protocol + OllamaEngine package + registry
     notifications/            Notifier Protocol (Webhook, Log) + instant/digest delivery + render() preview
     conf/                     settings (base/local), urls, wsgi
-  cli/                        magpie CLI (Typer + httpx + Pydantic) — distributed as a standalone wheel
+  cli/                        magpie CLI (Typer + httpx + Pydantic); distributed as a standalone wheel
 packages/
   openmagpie-schema/          Pure Pydantic models shared by core + cli (configs, wire types, feed shapes)
 web/                          pnpm workspace: apps/app (Next.js) + packages/{ui,api-utils,auth,tailwind-config}
