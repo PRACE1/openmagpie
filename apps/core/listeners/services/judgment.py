@@ -63,19 +63,115 @@ class JudgeResult:
 
 
 @dataclass(frozen=True)
-class JudgeProgress:
-    """Per-item progress signal. The engine is the slow leg (multi-second
-    LLM call per item), so callers wanting live feedback wire an
-    `on_progress` callback. `score`/`hit` are None when `error` is set."""
+class JudgeCycleStarted:
+    """Fired once at the top of a cycle that has work to do, AFTER the
+    cursor/latest snapshot is taken. `pending` is the exact item count
+    the loop will iterate. `est_seconds` is `pending * (per-listener
+    EWMA of recent judge latency)`, so a cycle on a slow model or busy
+    host shows a realistic ETA rather than the seed-default 2s/item.
+    Not fired when the snapshot has no new items; that's the cheap
+    empty-cycle path."""
 
     listener: Listener
-    obs: Observation
+    pending: int
+    est_seconds: int
+
+
+@dataclass(frozen=True)
+class JudgeItemDone:
+    """Per-item progress signal. The engine is the slow leg (multi-second
+    LLM call per item), so callers wanting live feedback wire an
+    `on_progress` callback. Fires on success AND on per-item failures
+    (un-hydrateable observation, recoverable engine/connector error)
+    so the operator sees errors in the live console, not just in logs.
+
+    `error` is set on failures (with `obs` None for an un-hydrateable
+    item, populated otherwise); `score`/`hit` are None on errors.
+    `external_id` is the FeedItem's denormalized source id, populated
+    on every event so the error path has a render-able identity even
+    when `obs` couldn't be hydrated.
+
+    `latency_ms` is the engine's measured judge time for THIS item
+    (0 on error). `done` / `total` / `eta_seconds` are the running
+    cycle stats AFTER this item, with `eta_seconds` computed from the
+    in-cycle mean latency (more accurate than the cross-cycle EWMA
+    once a couple items have actually landed)."""
+
+    listener: Listener
+    external_id: str = ""
+    obs: Observation | None = None
     score: float | None = None
     hit: bool = False
     error: str | None = None
+    latency_ms: int = 0
+    done: int = 0
+    total: int = 0
+    eta_seconds: int = 0
 
 
-JudgeProgressCallback = Callable[[JudgeProgress], None]
+JudgeEvent = JudgeCycleStarted | JudgeItemDone
+JudgeProgressCallback = Callable[[JudgeEvent], None]
+
+
+@dataclass(frozen=True)
+class _ItemOutcome:
+    """Internal carrier from `_judge_item` to `run()`. The orchestrator
+    needs the engine result to update running stats before emitting the
+    `JudgeItemDone` event, so the per-item method returns data instead
+    of emitting directly."""
+
+    obs: Observation
+    score: float
+    hit: bool
+    latency_ms: int
+
+
+# Per-listener EWMA of judge latency (seconds). Process-local in-memory
+# state: lost on container restart, converges within a few items on the
+# next cycle. Avoids a schema migration for what's a UI nicety. The seed
+# default is on the low side of typical local-Ollama 7B latency so the
+# first cycle's ETA looks honest (and the EWMA quickly outgrows it once
+# real numbers land).
+_LATENCY_EWMA_ALPHA = 0.3
+_LATENCY_SEED_SECONDS = 2.0
+_listener_latency_ewma: dict[str, float] = {}
+
+
+def _est_seconds_per_item(listener: Listener) -> float:
+    """Per-listener mean of recent judge latencies (EWMA), or the seed
+    default when no history exists yet (fresh process / first cycle)."""
+    return _listener_latency_ewma.get(str(listener.id), _LATENCY_SEED_SECONDS)
+
+
+def _record_judge_latency(listener: Listener, latency_ms: int) -> None:
+    """Fold one observed latency into the listener's EWMA."""
+    key = str(listener.id)
+    seconds = latency_ms / 1000.0
+    prev = _listener_latency_ewma.get(key)
+    _listener_latency_ewma[key] = (
+        seconds if prev is None else _LATENCY_EWMA_ALPHA * seconds + (1 - _LATENCY_EWMA_ALPHA) * prev
+    )
+
+
+def _running_eta_seconds(
+    pending: int,
+    processed: int,
+    judged: int,
+    cycle_latency_ms: int,
+    listener: Listener,
+) -> int:
+    """ETA in seconds for the rest of the current cycle.
+
+    Uses the in-cycle mean per successful judge when we have data
+    (`judged > 0`); falls back to the listener's cross-cycle EWMA for
+    the all-errors-so-far edge case. Cost is `remaining * mean`, with
+    `remaining = pending - processed` so error items don't inflate
+    the remaining count."""
+    remaining = max(0, pending - processed)
+    if remaining == 0:
+        return 0
+    mean_seconds = (cycle_latency_ms / judged / 1000.0) if judged > 0 else _est_seconds_per_item(listener)
+    return max(0, round(remaining * mean_seconds))
 
 
 class JudgeListenerOperation:
@@ -131,34 +227,63 @@ class JudgeListenerOperation:
         # instead, so the failed item and everything after it retry next
         # cycle rather than being skipped. FeedItems are persisted, so retry
         # is possible (the old in-memory pipeline couldn't). Trade-off: a
-        # permanently-failing item blocks progress past it — loud + rare;
+        # permanently-failing item blocks progress past it (loud + rare);
         # bounded retry is a follow-up.
         latest = self.feed_svc.newest_item_id(feed)
         if latest is None or latest <= cursor:
             return JudgeResult(judged=0, hits=0)
 
+        # Size up the cycle before the slow leg. One cheap COUNT against
+        # the same `(cursor, latest]` window the loop will iterate, so
+        # callers can render "judging N items (~Ns)" up front. ETA uses
+        # the per-listener EWMA so the number tracks reality across runs.
+        pending = self.feed_svc.count_items_in_window(feed, after_id=cursor, through_id=latest)
+        if pending > 0:
+            est_seconds = max(1, round(pending * _est_seconds_per_item(self.listener)))
+            self.on_progress(JudgeCycleStarted(listener=self.listener, pending=pending, est_seconds=est_seconds))
+
         judged = 0
         hits = 0
+        processed = 0  # success-or-error count; drives the progress display
         last_success = cursor
         failed = False
+        # Running in-cycle latency. Used to refine the ETA off the actual
+        # mean for THIS cycle (more accurate than the cross-cycle EWMA
+        # once any data lands; accounts for model warm-up, host load, etc).
+        cycle_latency_ms = 0
         for item in self.feed_svc.iter_items_in_window(feed, after_id=cursor, through_id=latest):
+            # Hydrate up front so the error reporting below has obs when
+            # possible and falls back to item.external_id when not.
             try:
-                if self._judge_item(item):
-                    hits += 1
-                judged += 1
-                last_success = str(item.id)
+                obs = hydrate_data(item.data)
             except UnhydrateableObservation as exc:
                 # PERMANENT skip: a renamed/removed connector can't ever
                 # hydrate this item. Advance past it so we don't loop on
-                # the same poison row forever; log loud so it's visible.
+                # the same poison row forever; surface it on-screen so
+                # the operator sees the dead row without grepping logs.
                 logger.warning(
                     "skipping un-hydrateable item listener=%s feed_item=%s: %s",
                     self.listener.id,
                     item.id,
                     exc,
                 )
+                processed += 1
                 last_success = str(item.id)
+                self.on_progress(
+                    JudgeItemDone(
+                        listener=self.listener,
+                        external_id=item.external_id,
+                        obs=None,
+                        error=f"un-hydrateable: {exc}",
+                        done=processed,
+                        total=pending,
+                        eta_seconds=_running_eta_seconds(pending, processed, judged, cycle_latency_ms, self.listener),
+                    )
+                )
                 continue
+
+            try:
+                outcome = self._judge_item(item, obs)
             except _RECOVERABLE_ERRORS as exc:
                 logger.warning(
                     "item judgment failed listener=%s feed_item=%s err=%s: %s; "
@@ -168,8 +293,41 @@ class JudgeListenerOperation:
                     type(exc).__name__,
                     exc,
                 )
+                processed += 1
+                self.on_progress(
+                    JudgeItemDone(
+                        listener=self.listener,
+                        external_id=item.external_id,
+                        obs=obs,
+                        error=f"{type(exc).__name__}: {exc}",
+                        done=processed,
+                        total=pending,
+                        eta_seconds=_running_eta_seconds(pending, processed, judged, cycle_latency_ms, self.listener),
+                    )
+                )
                 failed = True
                 break
+
+            if outcome.hit:
+                hits += 1
+            judged += 1
+            processed += 1
+            cycle_latency_ms += outcome.latency_ms
+            last_success = str(item.id)
+            _record_judge_latency(self.listener, outcome.latency_ms)
+            self.on_progress(
+                JudgeItemDone(
+                    listener=self.listener,
+                    external_id=item.external_id,
+                    obs=outcome.obs,
+                    score=outcome.score,
+                    hit=outcome.hit,
+                    latency_ms=outcome.latency_ms,
+                    done=processed,
+                    total=pending,
+                    eta_seconds=_running_eta_seconds(pending, processed, judged, cycle_latency_ms, self.listener),
+                )
+            )
 
         cursor_target = last_success if failed else str(latest)
         if cursor_target != cursor:
@@ -202,20 +360,25 @@ class JudgeListenerOperation:
                     exc,
                 )
 
-    def _judge_item(self, item: FeedItem) -> bool:
-        """Judge one FeedItem; persist + (if instant) deliver on a hit.
-        Returns True if a NEW hit Event was persisted.
+    def _judge_item(self, item: FeedItem, obs: Observation) -> "_ItemOutcome":
+        """Judge one already-hydrated observation; persist + (if instant)
+        deliver on a hit.
 
-        `on_progress` fires AFTER persist so its `hit` flag means "a new
-        Event landed," not "the engine scored above threshold." When the
-        unique constraint refuses a dedup re-emit, the per-item progress
-        line shouldn't claim HIT — the cycle's hits counter, the on_progress
-        HIT markers, and the new Event rows would otherwise disagree.
-        """
-        obs = hydrate_data(item.data)
+        Takes `obs` from the caller so `run()` can hydrate up front and
+        report errors uniformly when hydration fails vs when the engine
+        call fails. Returns the data the caller needs to update running
+        cycle stats and emit progress; doesn't fire `on_progress`
+        itself (run() does, so the progress line carries done / total /
+        ETA computed against the running cumulative latency).
+
+        The `hit` field means "a new Event landed," not just "the
+        engine scored above threshold." When the unique constraint
+        refuses a dedup re-emit the line shouldn't claim HIT, otherwise
+        the cycle's hits counter, the HIT markers, and the new Event
+        rows would disagree."""
         # `config.engine.model or None`: empty string in the listener config
         # means "use the engine's server-side default" (settings.OLLAMA_DEFAULT_MODEL),
-        # so collapse "" → None before handing to the engine.
+        # so collapse "" -> None before handing to the engine.
         result = self.engine.judge(obs, self.listener, model=self.config.engine.model or None)
         is_hit = result.score >= self.config.hit_threshold
 
@@ -227,8 +390,7 @@ class JudgeListenerOperation:
                 if self.is_instant and self.config.notifiers:
                     self.delivery_svc.deliver_instant(event, obs, self.listener, self.config)
 
-        self.on_progress(JudgeProgress(listener=self.listener, obs=obs, score=result.score, hit=new_event_persisted))
-        return new_event_persisted
+        return _ItemOutcome(obs=obs, score=result.score, hit=new_event_persisted, latency_ms=result.latency_ms)
 
 
 def judge_listener(

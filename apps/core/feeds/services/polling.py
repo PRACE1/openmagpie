@@ -3,10 +3,13 @@
 The Feed owns polling (Listeners judge the resulting items). For each
 stream in the feed's config this fetches via the source connector,
 persists new items as FeedItems (idempotent), advances the per-stream
-watermark, and prunes the item log to the retention window. Live-only:
-a cold-start stream (last_event_at=None) snapshots its watermark to now
-and fetches nothing (no historical backfill), mirroring the old listener
-poll behavior.
+watermark, and prunes the item log to the retention window.
+
+Per-stream `last_event_at` is non-None by invariant: feed-config policy
+fills it with wall-clock now at save time so the first poll fetches
+real items (no cold-start "set watermark, fetch nothing" trip). An
+operator who wants historical context passes an explicit past datetime
+at create.
 
 `FeedPollOperation` is a one-shot operation; build with a Feed and call
 `.run()` once.
@@ -53,7 +56,6 @@ class StreamPolled:
     stream_display: str
     observed: int
     recorded: int
-    cold_start: bool = False
 
 
 FeedPollProgressCallback = Callable[[StreamPolled], None]
@@ -184,20 +186,11 @@ class FeedPollOperation:
         return FeedPollResult(observed=observed, recorded=recorded, pruned=pruned)
 
     def _poll_stream(self, watch) -> tuple[int, int]:
-        """Poll one stream. Returns (observed, recorded)."""
-        if watch.last_event_at is None:
-            # Forward-looking cold start: snapshot the watermark to now and
-            # fetch nothing. Items before this are out of scope (no backfill).
-            watch.last_event_at = timezone.now()
-            logger.info(
-                "cold-start: feed=%s stream=%s watermark set to %s; items before this are out of scope",
-                self.feed.id,
-                watch.spec.display(),
-                watch.last_event_at.isoformat(),
-            )
-            self.on_progress(StreamPolled(self.feed, watch.spec.display(), 0, 0, cold_start=True))
-            return 0, 0
+        """Poll one stream. Returns (observed, recorded).
 
+        `watch.last_event_at` is non-None by invariant (feed-config
+        policy fills it at save time). The connector treats it as a
+        since-cursor; items with `occurred_at <= since` are skipped."""
         # Stream the connector iterator straight into record_items so a busy
         # stream doesn't pile every observation into memory before any write.
         # `_ObservedStream` tallies the count + max occurred_at as items flow.

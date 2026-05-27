@@ -2,9 +2,10 @@ from typing import Any
 
 from django.core.management.base import BaseCommand, CommandParser
 
+from common.humanize import ellipsize, humanize_seconds
 from listeners.models import Listener
 from listeners.services import ListenerService
-from listeners.services.judgment import JudgeListenerOperation, JudgeProgress
+from listeners.services.judgment import JudgeCycleStarted, JudgeEvent, JudgeListenerOperation
 
 
 class Command(BaseCommand):
@@ -22,13 +23,22 @@ class Command(BaseCommand):
 
         self.stdout.write(f"{listener.name} | {listener.id}")
 
-        def on_progress(ev: JudgeProgress) -> None:
-            if ev.error:
-                self.stdout.write(f"  ERR  {ev.obs.external_id}: {ev.error}")
+        def on_progress(ev: JudgeEvent) -> None:
+            if isinstance(ev, JudgeCycleStarted):
+                self.stdout.write(f"judging {ev.pending} item(s) (~{humanize_seconds(ev.est_seconds)})")
+                # Header row so columns label themselves; widths match
+                # the per-item format below (score:>5.2f, title:<60).
+                self.stdout.write(f"       score  {'title':<60}  progress")
                 return
-            mark = "HIT " if ev.hit else "..."
-            title = (ev.obs.title or "")[:60]
-            self.stdout.write(f"  {mark} {ev.score:.2f} {title}")
+            # JudgeItemDone
+            if ev.error:
+                label = ev.external_id or "?"
+                self.stdout.write(f"  ERR   {label}: {ev.error}")
+                return
+            mark = "HIT " if ev.hit else "... "
+            title = ellipsize(ev.obs.title or "", 60)
+            progress = f"{ev.done}/{ev.total}, ~{humanize_seconds(ev.eta_seconds)} left" if ev.total else ""
+            self.stdout.write(f"  {mark} {ev.score:>5.2f}  {title:<60}  {progress}")
 
         result = JudgeListenerOperation(listener, on_progress=on_progress).run()
         self.stdout.write(f"\nresult: {result.hits} hit(s) in {result.judged} judged")

@@ -31,10 +31,7 @@ class Command(BaseCommand):
         def on_progress(ev: StreamPolled) -> None:
             if quiet:
                 return
-            if ev.cold_start:
-                self.stdout.write(f"  {ev.stream_display}: cold-start (watermark set, no backfill)")
-            else:
-                self.stdout.write(f"  {ev.stream_display}: {ev.observed} observed, {ev.recorded} new")
+            self.stdout.write(f"  {ev.stream_display}: {ev.observed} observed, {ev.recorded} new")
 
         total_failed = 0
         for feed in FeedService.Global.list_due_for_poll(now=now):
