@@ -1,10 +1,12 @@
 """events.services, public surface.
 
-from events.services import EventService
+from events.services import EventService, EventKind
 svc = EventService(account_id=X)
-svc.persist_hit(observation, listener)
+svc.persist(feed_item, listener, kind=EventKind.HIT, score=...)
 """
+
+from events.models import EventKind
 
 from .events import EventService
 
-__all__ = ["EventService"]
+__all__ = ["EventKind", "EventService"]

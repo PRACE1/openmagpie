@@ -67,10 +67,12 @@ StreamSpec = Annotated[
 
 
 class StreamWatch(BaseModel):
-    """A stream this Listener is watching, identity + per-stream poll state.
+    """A stream in a Feed: identity + per-stream poll state.
 
-    The "no future watermark" guard is server policy (it needs the
-    wall clock); see `core` `listeners.policy`."""
+    Owned by a Feed (the Feed polls; Listeners subscribe to the Feed and
+    receive items from every stream in it). The "no future watermark"
+    guard is server policy (it needs the wall clock); see core
+    `feeds.policy`."""
 
     spec: StreamSpec
     last_event_at: datetime | None = None  # high-water mark for incremental polling
@@ -188,7 +190,9 @@ class ListenerConfigSummary(BaseModel):
     no shadow schema on the client. Strings are presentation, not a
     contract; the CLI owns final layout."""
 
-    streams: list[str] = []
+    # The Feed this listener subscribes to. The pure schema exposes the
+    # feed_id; the serializer may enrich it to the feed's name.
+    feed: str = ""
     notifiers: list[str] = []
     engine: str = ""
 
@@ -223,18 +227,27 @@ class ListenerConfig(BaseModel):
 
 
 class SemanticListenerConfig(ListenerConfig):
-    """Schema for Listener.data when Listener.kind == 'semantic'."""
+    """Schema for Listener.data when Listener.kind == 'semantic'.
+
+    A listener is an ATTENTION over a Feed: it does not own streams (the
+    Feed does). It subscribes to a Feed by id and judges every item the
+    Feed produces (across all of the Feed's streams) with its engine +
+    instructions."""
 
     LISTENER_KIND: ClassVar[str] = "semantic"
 
-    streams: list[StreamWatch] = []
+    # The Feed this listener subscribes to (required). Policy checks it
+    # exists in the same account (server-side; the pure schema can't).
+    feed_id: str
     refined_instructions: str = ""
     # default = EngineSpec(kind=""); the server fills the real default
     # kind from settings + validates it (policy).
     engine: EngineSpec = Field(default_factory=EngineSpec)
-    # An Observation is a hit when engine.judge(...).score >= hit_threshold.
-    # 0.8 Pareto default: most value, little noise.
-    hit_threshold: float = Field(default=0.8, ge=0.0, le=1.0)
+    # A FeedItem is a hit when engine.judge(...).score >= hit_threshold.
+    # 0.8 Pareto default: most value, little noise. Strict `gt=0.0` so a
+    # threshold of 0 can't fire on every item — an engine that returns 0
+    # for "completely irrelevant" would otherwise hit on every miss.
+    hit_threshold: float = Field(default=0.8, gt=0.0, le=1.0)
     notifiers: list[NotifierSpec] = []
     # only consumed when listener.delivery_mode == DeliveryMode.DIGEST
     digest_interval_seconds: int = 3600
@@ -249,45 +262,34 @@ class SemanticListenerConfig(ListenerConfig):
         return scrubbed.model_dump(mode="json")
 
     def summary(self) -> ListenerConfigSummary:
-        """Each stream rendered by its own `spec.display()`, notifiers by
-        kind, engine as `kind | model`. No secrets."""
+        """feed_id (serializer may enrich to feed name), notifiers by
+        kind, engine as `kind | model`. No secrets, no streams (the Feed
+        owns those)."""
         engine = f"{self.engine.kind} | {self.engine.model}" if self.engine.model else self.engine.kind
         return ListenerConfigSummary(
-            streams=[w.spec.display() for w in self.streams],
+            feed=self.feed_id,
             notifiers=[n.kind for n in self.notifiers],
             engine=engine,
         )
 
     def merge_preserving(self, prior: "ListenerConfig") -> "SemanticListenerConfig":
         """Carry forward, from `prior`, the config state an edit must not
-        reset (id/created_at/poll-state COLUMNS are the service's job):
+        reset: redacted secrets the operator left as `***`. There are NO
+        per-stream watermarks here anymore - the Feed owns those - so the
+        only round-trip concern is notifier secrets. `feed_id` is
+        operator-editable; the submitted value wins.
 
-        - per-stream `last_event_at`, keyed by spec identity, so editing
-          unrelated fields doesn't cold-start a stream;
-        - redacted secrets the operator left as `***`.
-
-        Lookups precomputed once (O(n) build, O(1) per item)."""
-        prior_streams = getattr(prior, "streams", [])
+        Notifiers have no non-secret identity to key on (a webhook's url
+        + headers ARE the secret), so a masked secret is restored by
+        position WITHIN its kind: the i-th submitted webhook pairs with
+        the i-th prior webhook. Kind-filtering (not raw list index) means
+        adding/removing a non-webhook notifier - the common edit - can't
+        shift a webhook onto a non-webhook slot and silently drop its
+        secret. If a masked secret still can't be matched (webhook count
+        changed, or a reorder the mask hides), REFUSE: persisting '***'
+        as the live URL/header is silent secret loss. The operator
+        re-enters the secret explicitly (server maps this to a 400)."""
         prior_notifiers = getattr(prior, "notifiers", [])
-
-        watermarks = {w.spec.model_dump_json(): w.last_event_at for w in prior_streams}
-        streams = [
-            w.model_copy(update={"last_event_at": watermarks[key]})
-            if (key := w.spec.model_dump_json()) in watermarks
-            else w  # new stream (no prior match): keep submitted (None=cold-start)
-            for w in self.streams
-        ]
-        # Notifiers have no non-secret identity to key on (a webhook's
-        # url + headers ARE the secret), so a masked secret is restored
-        # by position WITHIN its kind: the i-th submitted webhook pairs
-        # with the i-th prior webhook. Kind-filtering (not raw list
-        # index) means adding/removing a non-webhook notifier - the
-        # common edit - can't shift a webhook onto a non-webhook slot
-        # and silently drop its secret. If a masked secret still can't
-        # be matched (webhook count changed, or a reorder the mask
-        # hides), REFUSE: persisting '***' as the live URL/header is
-        # silent secret loss, the worst outcome. The operator re-enters
-        # the secret explicitly (server maps this to a 400).
         prior_webhooks = [n for n in prior_notifiers if isinstance(n, WebhookNotifierSpec)]
         restored = []
         webhook_i = 0
@@ -303,4 +305,4 @@ class SemanticListenerConfig(ListenerConfig):
                         "re-enter the webhook URL and any secret header values explicitly"
                     )
             restored.append(n)
-        return self.model_copy(update={"streams": streams, "notifiers": restored})
+        return self.model_copy(update={"notifiers": restored})

@@ -31,7 +31,8 @@ graph TD
     end
 
     subgraph OpenMagpie
-        LISTENER[Listener<br/>typed config + streams + notifiers]
+        FEED[Feed<br/>curated streams + item log]
+        LISTENER[Listener<br/>attention: feed + filter + engine]
         ENGINE[Relevance Engine<br/>BYO LLM]
         EVENTS[(Events<br/>hit-only)]
     end
@@ -42,12 +43,13 @@ graph TD
         FUTURE[email / Slack / ...]
     end
 
-    REDDIT --> LISTENER
-    GH --> LISTENER
-    SLACK --> LISTENER
-    GDOCS --> LISTENER
-    OTHER --> LISTENER
+    REDDIT --> FEED
+    GH --> FEED
+    SLACK --> FEED
+    GDOCS --> FEED
+    OTHER --> FEED
 
+    FEED -- "subscribe + filter" --> LISTENER
     LISTENER --> ENGINE
     ENGINE -. "your LLM" .-> LLM["Ollama / Anthropic /
     OpenAI / ..."]
@@ -118,8 +120,9 @@ core/
   common/          BaseModel (ULID PK + timestamps), ULIDField, /healthz
   accounts/        User / Account / UserProfile + services
   auth_api/        signup / login / logout / me + tokens/* + device-flow handshake (DRF)
-  listeners/       Listener model + Pydantic config + polling orchestrator
-  events/          Event model + Observation hierarchy + registry
+  feeds/           Feed + FeedItem models + poll orchestrator + item log
+  listeners/       Listener model + Pydantic config + judgment orchestrator
+  events/          Event model (hit = a kind of event) + Observation hierarchy
   sources/         Connectors (Reddit subreddit, ...) + observation classes
   engine/          Engine Protocol + OllamaEngine + registry
   notifications/   Notifier Protocol (Webhook, Log) + instant/digest delivery

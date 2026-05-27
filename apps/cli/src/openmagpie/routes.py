@@ -15,6 +15,7 @@ from __future__ import annotations
 API_VERSION = "v1"
 _AUTH = f"/{API_VERSION}/auth"
 _LISTENERS = f"/{API_VERSION}/listeners"
+_FEEDS = f"/{API_VERSION}/feeds"
 
 
 class auth:
@@ -43,3 +44,13 @@ class listeners:
     @staticmethod
     def detail(listener_id: str) -> str:
         return f"{_LISTENERS}/{listener_id}"
+
+
+class feeds:
+    """`/v1/feeds/*` routes the CLI consumes."""
+
+    collection = _FEEDS
+
+    @staticmethod
+    def detail(feed_id: str) -> str:
+        return f"{_FEEDS}/{feed_id}"

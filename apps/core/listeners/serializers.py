@@ -20,17 +20,17 @@ from typing import Any
 from pydantic import ValidationError as PydanticValidationError
 from rest_framework import serializers
 
+from common.pydantic_errors import pydantic_errors_to_drf
 from listeners.models import Listener
 from listeners.policy import PolicyError
 from listeners.registry import get_config_class, load_config, validate_config
+from listeners.stats import DEFAULT_WINDOW_DAYS, compute_hit_rates
 from openmagpie_schema.configs import ListenerConfigSummary
 from openmagpie_schema.wire import (
     ListenerMutationResponse,
     ListenerView,
     ListenerWire,
 )
-
-from .models.listener import MIN_POLL_INTERVAL_SECONDS
 
 logger = logging.getLogger("listeners")
 
@@ -56,10 +56,6 @@ class ListenerCreateSerializer(serializers.Serializer):
         choices=[m.value for m in Listener.DeliveryMode],
         default=Listener.DeliveryMode.INSTANT.value,
     )
-    poll_interval_seconds = serializers.IntegerField(
-        min_value=MIN_POLL_INTERVAL_SECONDS,
-        default=300,
-    )
     data = serializers.DictField(child=serializers.JSONField())
 
     def validate_kind(self, value: str) -> str:
@@ -82,7 +78,7 @@ class ListenerCreateSerializer(serializers.Serializer):
         try:
             validated = validate_config(attrs["kind"], attrs["data"])
         except PydanticValidationError as exc:
-            raise serializers.ValidationError({"data": _pydantic_errors_to_drf(exc)}) from exc
+            raise serializers.ValidationError({"data": pydantic_errors_to_drf(exc)}) from exc
         except PolicyError as exc:
             raise serializers.ValidationError({"data": [str(exc)]}) from exc
         # Replace the raw dict with the normalized Pydantic dump so the
@@ -90,37 +86,6 @@ class ListenerCreateSerializer(serializers.Serializer):
         # ordering or omitted defaults.
         attrs["data"] = validated.model_dump(mode="json")
         return attrs
-
-
-def _loc_to_path(loc: tuple[Any, ...]) -> str:
-    """Render a Pydantic `loc` tuple as a flat field path.
-
-    `('streams', 0, 'spec', 'kind')` -> `streams[0].spec.kind`. Integer
-    segments are list indices and become `[i]`; named segments are
-    dot-joined. This is the exact shape `cli/AGENTS.md` documents and the
-    CLI error printer expects, one key per leaf, no nested dicts (so
-    sibling errors under the same parent can't collide and array-element
-    paths render as `streams[0]...`, not `streams.0...`).
-    """
-    parts: list[str] = []
-    for seg in loc:
-        if isinstance(seg, int):
-            parts.append(f"[{seg}]")
-        else:
-            parts.append(str(seg) if not parts else f".{seg}")
-    return "".join(parts) or "__root__"
-
-
-def _pydantic_errors_to_drf(exc: PydanticValidationError) -> dict[str, Any]:
-    """Re-shape Pydantic's error list into DRF's `{path: [messages]}` dict.
-
-    Flat, one key per leaf path (see `_loc_to_path`). Multiple messages
-    for the same path accumulate in the list.
-    """
-    out: dict[str, list[str]] = {}
-    for err in exc.errors():
-        out.setdefault(_loc_to_path(tuple(err["loc"])), []).append(err["msg"])
-    return out
 
 
 # ── Output ─────────────────────────────────────────────────────────────
@@ -171,17 +136,27 @@ def _listener_summary(listener: Listener) -> ListenerConfigSummary:
         return _EMPTY_SUMMARY
 
 
-def listener_wire(listener: Listener) -> ListenerWire:
+def listener_wire(
+    listener: Listener,
+    *,
+    recent: tuple[int, int] = (0, 0),
+    window_days: int = DEFAULT_WINDOW_DAYS,
+) -> ListenerWire:
     """The single source for a Listener's kind-independent wire envelope.
     list / create / dry-run / get / edit all build from here (via
     `listener_view` / `listener_mutation`), so the response can't drift
     between endpoints.
+
+    `recent` is (hits, items) over the trailing `window_days` for the rolling
+    hit rate; callers that have it (list/detail) pass it batched, others
+    (mutation previews) leave the (0, 0) default.
 
     Datetimes stay real `datetime`; the renderer ISO-encodes them.
     Tolerates an unsaved instance (dry-run): `created_at` is None
     pre-save (auto_now_add), `id` is the empty-string ULID placeholder
     (the create dry-run view drops it; edit keeps the real id).
     """
+    recent_hits, recent_items = recent
     return ListenerWire(
         id=str(listener.id),
         name=listener.name,
@@ -189,9 +164,10 @@ def listener_wire(listener: Listener) -> ListenerWire:
         kind=str(listener.kind),
         delivery_mode=str(listener.delivery_mode),
         is_active=listener.is_active,
-        poll_interval_seconds=listener.poll_interval_seconds,
-        last_polled_at=listener.last_polled_at,
-        next_poll_at=listener.next_poll_at,
+        last_judged_item_id=str(listener.last_judged_item_id or ""),
+        recent_window_days=window_days,
+        recent_hits=recent_hits,
+        recent_items=recent_items,
         last_digest_at=listener.last_digest_at,
         next_digest_at=listener.next_digest_at,
         user_id=str(listener.user_id),
@@ -202,9 +178,10 @@ def listener_wire(listener: Listener) -> ListenerWire:
 
 def listener_view(listener: Listener) -> ListenerView:
     """GET-detail response: the envelope + the server-built display
-    `summary`. Single builder so detail can't drift from list."""
+    `summary` + the rolling hit rate (computed for this one listener)."""
+    recent = compute_hit_rates([listener]).get(str(listener.id), (0, 0))
     return ListenerView(
-        **listener_wire(listener).model_dump(),
+        **listener_wire(listener, recent=recent).model_dump(),
         summary=_listener_summary(listener),
     )
 

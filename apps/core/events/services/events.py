@@ -1,8 +1,10 @@
 """Event service. Only module that touches Event.objects directly.
 
-The pipeline is hit-only: an Event row exists if and only if a Listener's engine
-judged its observation relevant. `EventService.persist_hit` is the single write
-path. Each Event is owned by exactly one Listener (`Event.listener_id`).
+The pipeline is hit-only today: an Event row exists if and only if a Listener's
+engine judged its observation relevant. The service surface is kind-generic
+(`persist`, `list_pending_for_listener`, `list_recent_for_listener` all take
+`kind=`) so a second event kind (`feed_change`, `delivery`, ...) doesn't grow
+a parallel method-per-kind. Callers pass `kind=EventKind.HIT` for hits today.
 
 EventService is account-scoped: construct with `EventService(account_id=X)` and
 every query / write is automatically filtered to that account. Cross-account
@@ -19,7 +21,7 @@ from datetime import datetime
 from django.db import IntegrityError, transaction
 
 from events.models import Event
-from events.observations import Observation
+from feeds.models import FeedItem
 from listeners.models import Listener
 
 from ._events_global import EventGlobal
@@ -41,57 +43,70 @@ class EventService:
         if account_id != self.account_id:
             raise ValueError(f"{what} account_id mismatch: {account_id!r} not in scope {self.account_id!r}")
 
-    def persist_hit(self, observation: Observation, listener: Listener) -> Event | None:
-        """Persist a confirmed hit, idempotently.
+    def persist(
+        self,
+        feed_item: FeedItem,
+        listener: Listener,
+        *,
+        kind: str,
+        score: float | None = None,
+    ) -> Event | None:
+        """Persist an event, idempotently.
 
-        Returns the newly created Event, or None if (listener_id, source, external_id)
-        already has an Event row. The unique constraint enforces dedup at the DB; we
-        catch the IntegrityError so re-polled observations don't abort the caller.
+        Returns the newly created Event, or None if this listener already
+        recorded an event of this kind for this FeedItem. The unique
+        constraint (kind, listener_id, feed_item_id) enforces dedup at the
+        DB; we catch the IntegrityError so re-running doesn't abort the
+        caller.
 
-        The INSERT is wrapped in an explicit `transaction.atomic()` (with savepoint
-        semantics) so the IntegrityError catch doesn't leave a broken transaction
-        on PostgreSQL. Commit happens *before* return so callers (notably the
-        instant-mode delivery path) see a durable row before firing webhooks.
+        The Event keeps its own `data` snapshot of the FeedItem so
+        delivery survives FeedItem retention pruning. INSERT is wrapped in
+        `transaction.atomic()` so the IntegrityError catch doesn't leave a
+        broken transaction on PostgreSQL; commit happens before return so
+        the instant-delivery path sees a durable row before firing.
         """
-        self._assert_scope(observation.account_id, "observation")
         self._assert_scope(str(listener.account_id), "listener")
+        self._assert_scope(str(feed_item.account_id), "feed_item")
 
         event = Event(
-            user_id=observation.user_id,
+            user_id=str(listener.user_id),
             account_id=self.account_id,
             listener_id=str(listener.id),
-            source=observation.source,
-            kind=observation.kind,
-            external_id=observation.external_id,
-            occurred_at=observation.occurred_at,
-            data=observation.model_dump(mode="json"),
+            kind=kind,
+            source=str(feed_item.source),
+            external_id=str(feed_item.external_id),
+            feed_item_id=str(feed_item.id),
+            score=score,
+            data=feed_item.data,
         )
         try:
             with transaction.atomic():
                 event.save()
         except IntegrityError:
             logger.info(
-                "persist_hit dedup listener=%s source=%s external_id=%s",
+                "persist dedup kind=%s listener=%s source=%s external_id=%s",
+                kind,
                 listener.id,
-                observation.source,
-                observation.external_id,
+                feed_item.source,
+                feed_item.external_id,
             )
             return None
         return event
 
-    def list_pending_for_listener(self, *, listener_id: str, chunk_size: int = 100) -> Iterator[Event]:
-        """Undelivered Events for a listener (digest scheduler uses this)."""
+    def list_pending_for_listener(self, *, kind: str, listener_id: str, chunk_size: int = 100) -> Iterator[Event]:
+        """Undelivered events of `kind` for a listener (digest scheduler uses this)."""
         return Event.objects.filter(
             account_id=self.account_id,
             listener_id=listener_id,
+            kind=kind,
             delivered_at__isnull=True,
         ).iterator(chunk_size=chunk_size)
 
-    def list_recent_for_listener(self, *, listener_id: str, limit: int = 25) -> list[Event]:
-        """Most recent Events for a listener, ordered by occurred_at desc.
-        Materialized as a list (capped), ad-hoc spot-check use only."""
+    def list_recent_for_listener(self, *, kind: str, listener_id: str, limit: int = 25) -> list[Event]:
+        """Most recent events of `kind` for a listener, newest-first by ULID pk.
+        Materialized (capped), ad-hoc spot-check use only."""
         return list(
-            Event.objects.filter(account_id=self.account_id, listener_id=listener_id).order_by("-occurred_at")[:limit]
+            Event.objects.filter(account_id=self.account_id, listener_id=listener_id, kind=kind).order_by("-id")[:limit]
         )
 
     def mark_delivered(self, *, event_ids: list[str], delivered_at: datetime) -> None:

@@ -1,4 +1,4 @@
-.PHONY: up build down logs logs-core logs-web dev-exec dev-manage dev-test dev-makemigrations dev-dbshell dev-migrate dev-bootstrap dev-lint dev-lint-fix dev-types dev-check dev-web dev-web-shell dev-cli-sync dev-cli
+.PHONY: up build down logs logs-core logs-web dev-exec dev-manage dev-test dev-makemigrations dev-dbshell dev-migrate dev-bootstrap dev-tick dev-lint dev-lint-fix dev-types dev-check dev-web dev-web-shell dev-cli-sync dev-cli hooks
 
 up: ## Start local Docker dev environment
 	docker compose up -d
@@ -41,6 +41,11 @@ dev-migrate: ## Run Django database migrations + ensure cache table exists + boo
 dev-bootstrap: ## Alias for dev-migrate (first-run setup)
 	$(MAKE) dev-migrate
 
+dev-tick: ## Run one pipeline pass: poll feeds -> judge listeners -> deliver due digests
+	$(MAKE) dev-manage CMD="poll_due_feeds"
+	$(MAKE) dev-manage CMD="judge_listeners"
+	$(MAKE) dev-manage CMD="deliver_due_digests"
+
 dev-web: ## Start (or restart) just the Next.js dev container and tail its logs
 	docker compose up -d web
 	docker compose logs -f web
@@ -72,3 +77,6 @@ dev-check: ## Run lint + types + tests (pre-commit habit)
 	$(MAKE) dev-lint
 	$(MAKE) dev-types
 	$(MAKE) dev-test
+
+hooks: ## Install git pre-commit hooks (.pre-commit-config.yaml)
+	uvx pre-commit install

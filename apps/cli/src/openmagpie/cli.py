@@ -5,6 +5,7 @@ from __future__ import annotations
 import typer
 
 from .commands.auth import auth_app
+from .commands.feed import feed_app
 from .commands.listener import listener_app
 from .context import AppContext, bind_app_ctx, unbind_app_ctx
 
@@ -35,6 +36,11 @@ def main(
 
 
 app.add_typer(auth_app, name="auth", help="Sign in / out and inspect identity.")
+app.add_typer(
+    feed_app,
+    name="feed",
+    help="Curate + read feeds (the source set listeners subscribe to).",
+)
 app.add_typer(
     listener_app,
     name="listener",

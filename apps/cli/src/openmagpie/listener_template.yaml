@@ -1,5 +1,10 @@
 # Magpie listener config.
 #
+# A listener is an attention over a Feed: it judges the Feed's items with
+# your instructions + engine and notifies you on hits. Create the Feed
+# first (`magpie feed template` / `magpie feed create`), then point this
+# listener at it by id.
+#
 # Save and run:
 #   magpie listener create -f listener.yaml
 #
@@ -14,18 +19,15 @@ instructions: |
 
 kind: semantic
 delivery_mode: digest      # 'instant' = fire per hit; 'digest' = batch
-poll_interval_seconds: 300
 
 data:
+  # The Feed this listener subscribes to (run `magpie feed list` for ids).
+  # The listener judges every item the Feed produces across all its streams.
+  feed_id: REPLACE_WITH_FEED_ID
+
   engine:
     kind: ollama
     model: qwen2.5:7b
-
-  streams:
-    - spec:
-        kind: reddit_subreddit
-        subreddit: MachineLearning
-      # last_event_at: 2026-04-14T00:00:00Z   # optional; default = "from now forward"
 
   notifiers:
     - kind: log

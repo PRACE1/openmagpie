@@ -33,6 +33,7 @@ LOCAL_APPS = [
     "auth_api",
     "events",
     "sources",
+    "feeds",
     "listeners",
     "engine",
     "notifications",

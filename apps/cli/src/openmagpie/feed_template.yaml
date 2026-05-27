@@ -1,0 +1,26 @@
+# Magpie feed config.
+#
+# A feed is a curated set of streams the server polls on a cadence; its
+# items are what you read (`magpie feed view <id>`) and what listeners
+# subscribe to. Save and run:
+#   magpie feed create -f feed.yaml
+#
+# Or pipe through stdin (--yes required, no TTY to confirm on):
+#   magpie feed template | magpie feed create -f - --yes
+
+name: my-feed
+kind: curated
+poll_interval_seconds: 300
+
+data:
+  # The streams this feed polls. Listeners subscribed to this feed
+  # receive items from every stream below.
+  streams:
+    - spec:
+        kind: reddit_subreddit
+        subreddit: MachineLearning
+    # - spec:
+    #     kind: reddit_subreddit
+    #     subreddit: LocalLLaMA
+
+  retention_days: 30   # how long polled items are kept for reading

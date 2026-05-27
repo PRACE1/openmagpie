@@ -1,0 +1,26 @@
+# Run on every `git commit`. Install via `make hooks` (or
+# `pre-commit install` directly). The hooks run on STAGED files only,
+# so they're fast — typical commit = sub-second.
+#
+# To run against the whole tree manually:
+#   uvx pre-commit run --all-files
+
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.14
+    hooks:
+      - id: ruff           # lint
+        args: [--fix]
+      - id: ruff-format    # format
+
+  - repo: local
+    hooks:
+      - id: check-whitespace
+        name: trailing whitespace + final newlines
+        # The repo's existing checker — scans tracked text files via git.
+        # `--fix` would mutate without staging the fix; keep check-only
+        # in the hook so the commit fails loudly.
+        entry: ./scripts/check-whitespace.sh
+        language: system
+        pass_filenames: false
+        always_run: true

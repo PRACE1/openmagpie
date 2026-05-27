@@ -3,8 +3,7 @@ from datetime import datetime
 from typing import Protocol
 
 from events.observations import Observation
-from listeners.configs import StreamSpec
-from listeners.models import Listener
+from openmagpie_schema.configs import StreamSpec
 
 
 class ConnectorParseError(Exception):
@@ -25,8 +24,11 @@ class Connector(Protocol):
     Each implementation:
       - declares its `kind` (matches `StreamSpec.kind`),
       - declares its `observations` (Observation subclasses it produces, used
-        by `events.registry` to hydrate `Event.data` back to typed Observations),
-      - yields typed Observations for a given (stream_spec, listener) pair.
+        by `events.registry` to hydrate stored data back to typed Observations),
+      - yields typed Observations for a given stream_spec.
+
+    Connectors are tenant-agnostic: the Feed drives polling, so `poll` takes
+    only the stream spec + watermark (no listener/account).
     """
 
     kind: str
@@ -35,7 +37,6 @@ class Connector(Protocol):
     def poll(
         self,
         spec: StreamSpec,
-        listener: Listener,
         since: datetime | None,
     ) -> Iterator[Observation]:
         """Yield typed Observations for one stream, newer than `since`."""
@@ -44,7 +45,6 @@ class Connector(Protocol):
     def count(
         self,
         spec: StreamSpec,
-        listener: Listener,
         since: datetime | None,
     ) -> int:
         """Exact count of observations newer than `since`. Used by the
@@ -76,15 +76,13 @@ class BaseConnector:
     def count(
         self,
         spec: StreamSpec,
-        listener: Listener,
         since: datetime | None,
     ) -> int:
-        return sum(1 for _ in self.poll(spec, listener, since=since))
+        return sum(1 for _ in self.poll(spec, since=since))
 
     def poll(
         self,
         spec: StreamSpec,
-        listener: Listener,
         since: datetime | None,
     ) -> Iterator[Observation]:  # pragma: no cover - subclass responsibility
         raise NotImplementedError

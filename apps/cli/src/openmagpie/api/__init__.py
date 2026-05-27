@@ -17,6 +17,7 @@ from functools import cached_property
 
 from ..http import MagpieClient
 from .auth import AuthApi
+from .feed import FeedApi
 from .listener import ListenerApi
 
 
@@ -29,8 +30,12 @@ class Api:
         return AuthApi(self._http)
 
     @cached_property
+    def feed(self) -> FeedApi:
+        return FeedApi(self._http)
+
+    @cached_property
     def listener(self) -> ListenerApi:
         return ListenerApi(self._http)
 
 
-__all__ = ["Api", "AuthApi", "ListenerApi"]
+__all__ = ["Api", "AuthApi", "FeedApi", "ListenerApi"]

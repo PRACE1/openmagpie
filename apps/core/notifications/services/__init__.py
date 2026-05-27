@@ -5,6 +5,6 @@ svc = DeliveryService(account_id=X)
 svc.deliver_instant(event, observation, listener, config)
 """
 
-from .delivery import DeliveryService
+from .delivery import DeliveryService, DigestResult
 
-__all__ = ["DeliveryService"]
+__all__ = ["DeliveryService", "DigestResult"]

@@ -1,0 +1,91 @@
+"""Feeds API resource client.
+
+Wraps the `/v1/feeds` endpoints. Mirrors `api/listener.py`: response
+models live ONCE in the shared `openmagpie_schema.feed` package
+(populated by the server, imported verbatim here). Only `FeedEnvelope`
+(the request envelope the CLI *constructs*) is CLI-owned.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from pydantic import BaseModel
+
+from openmagpie_schema.feed import (
+    FeedListResponse,
+    FeedMutationResponse,
+    FeedView,
+    FeedWire,
+)
+from openmagpie_schema.wire import ConfigBlob
+
+from .. import routes
+from ..http import MagpieClient
+
+__all__ = [
+    "FeedApi",
+    "FeedEnvelope",
+    "FeedListResponse",
+    "FeedMutationResponse",
+    "FeedView",
+    "FeedWire",
+]
+
+
+class FeedEnvelope(BaseModel):
+    """The envelope the CLI constructs for a feed write (request side).
+    CLI-owned, distinct from the server-emitted models. `data` carries
+    the kind-specific config (streams + retention), opaque here; the
+    server validates it. Extra keys ignored (so the edit seed's read-only
+    fields drop on round-trip)."""
+
+    name: str
+    kind: str = "curated"
+    poll_interval_seconds: int = 300
+    data: ConfigBlob = {}
+
+    model_config = {"extra": "ignore"}
+
+
+class FeedApi:
+    """Resource client for `/v1/feeds`."""
+
+    def __init__(self, http: MagpieClient) -> None:
+        self._http = http
+
+    def create(self, body: dict[str, Any], *, dry_run: bool = False) -> FeedMutationResponse:
+        params = {"dry_run": "true"} if dry_run else None
+        raw = self._http.post(routes.feeds.collection, json_body=body, params=params)
+        return FeedMutationResponse.model_validate(raw)
+
+    def list(self, *, after: str | None = None, limit: int | None = None) -> FeedListResponse:
+        """One page of feeds (cursor-paginated, newest-first by ULID pk).
+        `after` = id of the last feed from the previous page; omit on first
+        call. The returned `next_cursor` is None when there are no more rows.
+        """
+        params: dict[str, Any] = {}
+        if after:
+            params["after"] = after
+        if limit is not None:
+            params["limit"] = limit
+        raw = self._http.get(routes.feeds.collection, params=params or None)
+        return FeedListResponse.model_validate(raw)
+
+    def get(self, feed_id: str, *, limit: int | None = None) -> FeedView:
+        """GET one feed (account-scoped). The detail response is the
+        'sort by new and go' reader: it carries the feed's recent items.
+        `limit` caps the item list."""
+        params: dict[str, Any] = {}
+        if limit is not None:
+            params["limit"] = limit
+        raw = self._http.get(routes.feeds.detail(feed_id), params=params or None)
+        return FeedView.model_validate(raw)
+
+    def update(self, feed_id: str, body: dict[str, Any], *, dry_run: bool = False) -> FeedMutationResponse:
+        params = {"dry_run": "true"} if dry_run else None
+        raw = self._http.put(routes.feeds.detail(feed_id), json_body=body, params=params)
+        return FeedMutationResponse.model_validate(raw)
+
+    def delete(self, feed_id: str) -> None:
+        self._http.delete(routes.feeds.detail(feed_id))

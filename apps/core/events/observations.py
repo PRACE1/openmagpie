@@ -19,8 +19,6 @@ class Observation(BaseModel):
     kind: str  # equals EVENT_KIND of the concrete subclass
     occurred_at: datetime
     source: str  # connector kind, e.g. "reddit_subreddit"
-    user_id: str
-    account_id: str
 
     # Canonical engine input fields (subclasses map source-native fields → these)
     title: str = ""
