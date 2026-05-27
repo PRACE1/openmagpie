@@ -22,4 +22,5 @@ urlpatterns = [
     api_include(f"{_V1}/auth", "auth_api.urls"),
     api_include(f"{_V1}/feeds", "feeds.urls"),
     api_include(f"{_V1}/listeners", "listeners.urls"),
+    api_include(f"{_V1}/engines", "engine.urls"),
 ]

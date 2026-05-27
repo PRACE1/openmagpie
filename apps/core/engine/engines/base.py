@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field
 
 from events.observations import Observation
 from listeners.models import Listener
+from openmagpie_schema.engine import EngineStatus
 
 
 class JudgmentJSON(BaseModel):
@@ -76,5 +77,16 @@ class Engine(Protocol):
         with no meaningful per-model check (e.g. providers whose model
         choice can't be pre-verified without sending real traffic)
         implement this as a no-op `pass` — explicit, not hasattr-checked.
+        """
+        ...
+
+    def status(self) -> EngineStatus:
+        """Reachability snapshot for `/v1/engines` and pre-flight UIs.
+
+        Implementations probe the upstream (or whatever counts as
+        "reachable" for the provider) and return a populated
+        `EngineStatus`. Never raises: unreachable / shape-drift errors
+        must be reported as `available=False` with an operator-facing
+        `unreachable_reason` so a CLI consumer can render it directly.
         """
         ...

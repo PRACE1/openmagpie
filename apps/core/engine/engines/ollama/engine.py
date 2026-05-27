@@ -7,9 +7,11 @@ that verifies a pinned `engine.model` is actually loaded.
 import time
 
 import httpx
+from pydantic import ValidationError
 
 from events.observations import Observation
 from listeners.models import Listener
+from openmagpie_schema.engine import EngineStatus
 
 from ..base import EngineModelInvalid, JudgmentJSON, JudgmentResult
 from .prompts import CONTENT_TRUNCATE, SYSTEM_PROMPT, USER_PROMPT_TEMPLATE
@@ -91,6 +93,34 @@ class OllamaEngine:
         response.raise_for_status()
         tags = OllamaTagsResponse.model_validate_json(response.text)
         return [m.name for m in tags.models]
+
+    def status(self) -> EngineStatus:
+        """Probe /api/tags once; map success or any failure into an
+        `EngineStatus`. Never raises — callers (the /v1/engines view,
+        the quickstart wizard) render `unreachable_reason` directly,
+        so a probe error here is not the same as a server error."""
+        try:
+            loaded = self.available_models()
+        except httpx.HTTPError as exc:
+            return EngineStatus(
+                kind=self.kind,
+                default_model=self.model,
+                available=False,
+                unreachable_reason=f"Ollama at {self.url} unreachable ({type(exc).__name__}: {exc})",
+            )
+        except ValidationError as exc:
+            return EngineStatus(
+                kind=self.kind,
+                default_model=self.model,
+                available=False,
+                unreachable_reason=f"Ollama at {self.url} returned an unexpected /api/tags shape ({exc.error_count()} error(s))",
+            )
+        return EngineStatus(
+            kind=self.kind,
+            default_model=self.model,
+            available=True,
+            available_models=sorted(loaded),
+        )
 
     def validate_model(self, model: str) -> None:
         """Confirm `model` is loaded on this Ollama server. Engine-policy

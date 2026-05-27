@@ -7,6 +7,7 @@ import typer
 from .commands.auth import auth_app
 from .commands.feed import feed_app
 from .commands.listener import listener_app
+from .commands.quickstart import quickstart
 from .context import AppContext, bind_app_ctx, unbind_app_ctx
 
 app = typer.Typer(
@@ -46,3 +47,6 @@ app.add_typer(
     name="listener",
     help="Create + list listeners.",
 )
+# Single-verb command at the root (no sub-app) — quickstart is one
+# opinionated flow, not a noun with multiple verbs.
+app.command("quickstart", help="Interactive setup: one command to a working listener.")(quickstart)
