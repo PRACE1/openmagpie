@@ -213,7 +213,10 @@ class JudgeListenerOperation:
         HIT markers, and the new Event rows would otherwise disagree.
         """
         obs = hydrate_data(item.data)
-        result = self.engine.judge(obs, self.listener)
+        # `config.engine.model or None`: empty string in the listener config
+        # means "use the engine's server-side default" (settings.OLLAMA_MODEL),
+        # so collapse "" → None before handing to the engine.
+        result = self.engine.judge(obs, self.listener, model=self.config.engine.model or None)
         is_hit = result.score >= self.config.hit_threshold
 
         new_event_persisted = False
