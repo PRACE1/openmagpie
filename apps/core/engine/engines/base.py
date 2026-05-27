@@ -34,11 +34,47 @@ class JudgmentResult:
     raw_response: str
 
 
+class EngineModelInvalid(ValueError):
+    """The model a listener pinned can't be used by this engine
+    instance — not loaded on the upstream server, doesn't match the
+    provider's name pattern, etc. Raised by `Engine.validate_model`;
+    listener policy translates to a PolicyError at the save boundary.
+
+    Lives in the engine layer (not in listeners.policy) because the
+    engine knows the failure modes; the listener layer just runs the
+    check and maps the result to HTTP-shaped errors."""
+
+
 class Engine(Protocol):
     """A pluggable relevance engine. Implementations live in this package."""
 
     kind: str
 
-    def judge(self, observation: Observation, listener: Listener) -> JudgmentResult:
-        """Score how relevant the observation is to the listener's interest."""
+    def judge(
+        self,
+        observation: Observation,
+        listener: Listener,
+        *,
+        model: str | None = None,
+    ) -> JudgmentResult:
+        """Score how relevant the observation is to the listener's interest.
+
+        `model` lets the caller override the engine's default model on a
+        per-listener basis (so `SemanticListenerConfig.engine.model` isn't
+        a no-op). None means "use the engine instance's configured default."
+        """
+        ...
+
+    def validate_model(self, model: str) -> None:
+        """Confirm `model` is usable by this engine instance. Called by
+        listener config policy at save time when the listener pins a
+        non-empty `engine.model`, so the operator finds out at create/
+        update if their choice can't be served (vs every judge cycle
+        500ing).
+
+        Raises `EngineModelInvalid` if the model can't be used. Engines
+        with no meaningful per-model check (e.g. providers whose model
+        choice can't be pre-verified without sending real traffic)
+        implement this as a no-op `pass` — explicit, not hasattr-checked.
+        """
         ...

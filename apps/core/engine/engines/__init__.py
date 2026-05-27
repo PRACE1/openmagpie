@@ -1,4 +1,4 @@
-from .base import Engine, JudgmentJSON, JudgmentResult
+from .base import Engine, EngineModelInvalid, JudgmentJSON, JudgmentResult
 from .ollama import OllamaEngine
 
-__all__ = ["Engine", "JudgmentJSON", "JudgmentResult", "OllamaEngine"]
+__all__ = ["Engine", "EngineModelInvalid", "JudgmentJSON", "JudgmentResult", "OllamaEngine"]

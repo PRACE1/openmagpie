@@ -47,8 +47,11 @@ class PolicyError(ValueError):
 
 def _enforce_engine(config: ListenerConfig) -> ListenerConfig:
     """Fill an empty engine kind from settings, then require it to be a
-    registered engine. Returns config (engine normalized if it was
-    empty)."""
+    registered engine. When the listener pins a non-empty `engine.model`,
+    delegate to the engine's own `validate_model` — each engine knows
+    its own failure modes (Ollama: model loaded on server; future
+    Claude/OpenAI: name pattern + API key etc.) so this function stays
+    engine-agnostic. Returns config (engine normalized if it was empty)."""
     engine = getattr(config, "engine", None)
     if engine is None:
         return config
@@ -61,10 +64,17 @@ def _enforce_engine(config: ListenerConfig) -> ListenerConfig:
     # Lazy import: engine.registry instantiates engines from settings at
     # import; importing at call time avoids an app-load cycle.
     from engine import registry as engine_registry
+    from engine.engines import EngineModelInvalid
 
     valid = engine_registry.kinds()
     if kind not in valid:
         raise PolicyError(f"unknown engine kind {kind!r}; expected one of {valid}")
+
+    if engine.model:
+        try:
+            engine_registry.get(kind).validate_model(engine.model)
+        except EngineModelInvalid as exc:
+            raise PolicyError(str(exc)) from exc
     return config
 
 
