@@ -90,6 +90,17 @@ graph TD
 
 ## Quick start
 
+### Prereq: an Ollama instance to talk to
+
+OpenMagpie is BYO LLM. The dev stack doesn't bundle one; you point at an Ollama instance you control. Two common shapes:
+
+- **Local Ollama (the default).** `OLLAMA_URL=http://host.docker.internal:11434` already points at your local Ollama. If you don't have one: `brew install ollama` (macOS, or [linux install](https://ollama.com/download)), `ollama pull qwen2.5:7b`, `ollama serve`.
+- **Remote Ollama (LAN box, GPU server, cloud).** Set `OLLAMA_URL=http://your-host:11434` in `apps/core/.env`. Useful if your dev machine is CPU-only and you've got a GPU box elsewhere.
+
+Pull whichever model you want to judge with; set `OLLAMA_DEFAULT_MODEL` to its name. Latency on a 7B model is ~1-3s per judge on Apple Silicon and similar on a recent NVIDIA GPU; CPU-only is workable but slower.
+
+### Run the stack
+
 ```bash
 git clone git@github.com:obris-dev/openmagpie.git
 cd openmagpie
