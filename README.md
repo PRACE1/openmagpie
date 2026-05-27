@@ -64,21 +64,36 @@ graph TD
 
 ## Features
 
-- **Source-agnostic** — every connector yields a typed `Observation`; engines and notifiers operate on the same shape no matter the source
-- **Plain-English listeners** — describe what you care about; no filter chains, no DSL
-- **Bring your own LLM** — Ollama (local), or future Anthropic/OpenAI/etc. via the engine plugin protocol
-- **Hit-only persistence** — Events exist in the DB only when a Listener's engine judged the observation relevant. Misses live and die in memory.
-- **Learns from feedback** — ✅/❌ on past hits become few-shot examples for the next pass (planned; engine layer is in place)
-- **Instant or digest delivery** — fire notifiers per-hit, or batch them on a cadence
-- **Pluggable notifiers** — webhook out of the box; more to come
-- **Self-hostable** — Django + SQLite for v0; Docker Compose dev loop; your data and credentials stay yours
+- **Feed → Listener primitive** — `Feed`s are reusable, curated streams (e.g. `r/ClaudeAI` + `r/AI_Agents`). `Listener`s subscribe to a Feed and apply a plain-English filter via your engine. One feed, many listeners — pay for source polling once.
+- **Source-agnostic** — every connector yields a typed `Observation`; engines and notifiers operate on the same shape no matter the source.
+- **Plain-English listeners** — describe what you care about; no filter chains, no DSL.
+- **Bring your own LLM** — Ollama (local) today; the `Engine` Protocol + `validate_model` hook makes adding Anthropic/OpenAI/others a four-file change with no listener-layer churn.
+- **Hit-only persistence** — `Event`s exist in the DB only when a Listener's engine judged the observation relevant. Misses live and die in memory.
+- **Instant or digest delivery** — fire notifiers per-hit, or batch them on a cadence.
+- **Pluggable notifiers** — webhook + log out of the box; same `Notifier` Protocol for adding Slack/email/etc.
+- **Per-receiver payload preview** — `magpie listener payload-sample <id>` runs the same `render()` your real webhook would, so you can wire and test receivers without firing real hits.
+- **Cursor rewind** — `magpie listener rewind <id>` re-judges the retention window after you refine instructions or lower a threshold.
+- **Self-hostable** — Django + SQLite; Docker Compose dev loop; your data and credentials stay yours.
+
+### Planned (not yet shipped)
+
+- **Learns from feedback** — ✅/❌ on past hits become few-shot examples for the next pass. Engine layer is in place; the feedback ingest + retrieval loop is the open piece.
+
+### What's implemented today
+
+| Layer | Shipped |
+|---|---|
+| Connectors | Reddit (`reddit_subreddit`) |
+| Engines | Ollama (`ollama`) |
+| Notifiers | Webhook, Log |
+| Listener kinds | Semantic (LLM-judged) |
 
 ## Quick start
 
 ```bash
 git clone git@github.com:obris-dev/openmagpie.git
 cd openmagpie
-cp core/.env.example core/.env
+cp apps/core/.env.example apps/core/.env
 
 make build           # build and start Django + the web app
 make dev-migrate     # run migrations, create cache table, bootstrap the CLI OAuth app
@@ -91,13 +106,13 @@ Then either:
 **CLI**: install + sign in.
 
 ```bash
-make dev-cli-sync                       # uv sync into cli/.venv
+make dev-cli-sync                       # uv sync into the workspace .venv
 make dev-cli ARGS="auth login"          # opens browser device flow
 # Sign in, click Authorize, return to the terminal.
 make dev-cli ARGS="auth status"
 ```
 
-Or invoke directly: `cd cli && uv run magpie auth login`. Run `uv tool install ./cli` to put `magpie` on your `PATH` globally.
+Or invoke directly: `cd apps/cli && uv run magpie auth login`. Run `uv tool install ./apps/cli` to put `magpie` on your `PATH` globally.
 
 Useful targets (run `make help` for the full list):
 
@@ -115,26 +130,31 @@ make dev-check       # lint + types + tests
 
 ## Project structure
 
+uv workspace; one root `uv.lock` for everything Python.
+
 ```
-core/
-  common/          BaseModel (ULID PK + timestamps), ULIDField, /healthz
-  accounts/        User / Account / UserProfile + services
-  auth_api/        signup / login / logout / me + tokens/* + device-flow handshake (DRF)
-  feeds/           Feed + FeedItem models + poll orchestrator + item log
-  listeners/       Listener model + Pydantic config + judgment orchestrator
-  events/          Event model (hit = a kind of event) + Observation hierarchy
-  sources/         Connectors (Reddit subreddit, ...) + observation classes
-  engine/          Engine Protocol + OllamaEngine + registry
-  notifications/   Notifier Protocol (Webhook, Log) + instant/digest delivery
-  conf/            settings (base/local), urls, wsgi
-web/               pnpm workspace: apps/app (Next.js) + packages/{ui,api-utils,auth,tailwind-config}
-cli/               magpie CLI (Typer + httpx + Pydantic)
-make/              Per-concern Makefile targets
-scripts/           Helper scripts (whitespace check, make-help)
+apps/
+  core/                       Django backend (deployable)
+    common/                   BaseModel (ULID PK + timestamps), ULIDField, /healthz
+    accounts/                 User / Account / UserProfile + services + AccountScopedAPIView mixin
+    auth_api/                 signup / login / logout / me + tokens/* + device-flow handshake (DRF)
+    feeds/                    Feed + FeedItem models + poll orchestrator + item log
+    listeners/                Listener model + Pydantic config + judgment + preview services
+    events/                   Event model (hit = a kind of event) + Observation hierarchy + registry
+    sources/                  Connectors (Reddit subreddit, ...) + observation classes
+    engine/                   Engine Protocol + OllamaEngine package + registry
+    notifications/            Notifier Protocol (Webhook, Log) + instant/digest delivery + render() preview
+    conf/                     settings (base/local), urls, wsgi
+  cli/                        magpie CLI (Typer + httpx + Pydantic) — distributed as a standalone wheel
+packages/
+  openmagpie-schema/          Pure Pydantic models shared by core + cli (configs, wire types, feed shapes)
+web/                          pnpm workspace: apps/app (Next.js) + packages/{ui,api-utils,auth,tailwind-config}
+make/                         Per-concern Makefile targets
+scripts/                      Helper scripts (whitespace check, make-help)
 ```
 
 See [AGENTS.md](AGENTS.md) for design conventions (char pointers, typed-blob pattern, hit-only persistence, etc.).
 
 ## License
 
-OpenMagpie is open source under the [Apache License 2.0](LICENSE), with an optional enterprise directory (`ee/`) reserved for future commercial features.
+OpenMagpie is open source under the [Apache License 2.0](LICENSE), with optional enterprise directories (`**/ee/`) reserved for future commercial features.
