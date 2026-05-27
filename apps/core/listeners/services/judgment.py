@@ -214,7 +214,7 @@ class JudgeListenerOperation:
         """
         obs = hydrate_data(item.data)
         # `config.engine.model or None`: empty string in the listener config
-        # means "use the engine's server-side default" (settings.OLLAMA_MODEL),
+        # means "use the engine's server-side default" (settings.OLLAMA_DEFAULT_MODEL),
         # so collapse "" → None before handing to the engine.
         result = self.engine.judge(obs, self.listener, model=self.config.engine.model or None)
         is_hit = result.score >= self.config.hit_threshold

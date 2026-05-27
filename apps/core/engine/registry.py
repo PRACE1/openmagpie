@@ -7,7 +7,7 @@ from .engines import Engine, OllamaEngine
 _REGISTRY: dict[str, Engine] = {
     OllamaEngine.kind: OllamaEngine(
         url=settings.OLLAMA_URL,
-        model=settings.OLLAMA_MODEL,
+        default_model=settings.OLLAMA_DEFAULT_MODEL,
     ),
 }
 

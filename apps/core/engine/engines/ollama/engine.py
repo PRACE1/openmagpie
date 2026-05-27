@@ -23,9 +23,13 @@ class OllamaEngine:
 
     kind = "ollama"
 
-    def __init__(self, url: str, model: str) -> None:
+    def __init__(self, url: str, default_model: str) -> None:
         self.url = url.rstrip("/")
-        self.model = model
+        # `default_model` is the fallback when a Listener's config leaves
+        # `engine.model` empty. Named "default_model" (not "model") because
+        # judge() also takes a per-call `model` override; calling the instance
+        # attribute `self.model` made `model or self.model` read ambiguously.
+        self.default_model = default_model
 
     def judge(
         self,
@@ -36,8 +40,8 @@ class OllamaEngine:
     ) -> JudgmentResult:
         # Per-call model override: listener's `SemanticListenerConfig.engine.model`
         # threads through judgment.py; None means "use this OllamaEngine
-        # instance's default" (settings.OLLAMA_MODEL from env).
-        use_model = model or self.model
+        # instance's default" (settings.OLLAMA_DEFAULT_MODEL from env).
+        use_model = model or self.default_model
         user_prompt = USER_PROMPT_TEMPLATE.format(
             listener_instructions=str(listener.instructions),
             source=observation.source,
@@ -104,20 +108,20 @@ class OllamaEngine:
         except httpx.HTTPError as exc:
             return EngineStatus(
                 kind=self.kind,
-                default_model=self.model,
+                default_model=self.default_model,
                 available=False,
                 unreachable_reason=f"Ollama at {self.url} unreachable ({type(exc).__name__}: {exc})",
             )
         except ValidationError as exc:
             return EngineStatus(
                 kind=self.kind,
-                default_model=self.model,
+                default_model=self.default_model,
                 available=False,
                 unreachable_reason=f"Ollama at {self.url} returned an unexpected /api/tags shape ({exc.error_count()} error(s))",
             )
         return EngineStatus(
             kind=self.kind,
-            default_model=self.model,
+            default_model=self.default_model,
             available=True,
             available_models=sorted(loaded),
         )

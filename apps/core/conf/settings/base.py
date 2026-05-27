@@ -184,9 +184,12 @@ REFRESH_TOKEN_LOCK_TIMEOUT_SECONDS = int(os.environ.get("REFRESH_TOKEN_LOCK_TIME
 ENGINE_DEFAULT_KIND = os.environ.get("ENGINE_DEFAULT_KIND", "ollama")
 
 # Ollama (relevance engine). Required when ENGINE_DEFAULT_KIND="ollama", fail
-# fast at startup if unset. See core/.env.example for example values.
+# fast at startup if unset. `OLLAMA_DEFAULT_MODEL` is the fallback when a
+# Listener's config leaves `engine.model` empty; named "default" (not
+# "model") so it doesn't read like "the" model when the system supports
+# per-Listener overrides. See core/.env.example for example values.
 OLLAMA_URL = os.environ["OLLAMA_URL"]
-OLLAMA_MODEL = os.environ["OLLAMA_MODEL"]
+OLLAMA_DEFAULT_MODEL = os.environ["OLLAMA_DEFAULT_MODEL"]
 
 # WebhookNotifier security gates. Defaults assume single-tenant self-host with
 # possible internal targets (e.g. an OpenClaw instance on the same box). Set
