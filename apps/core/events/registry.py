@@ -35,8 +35,39 @@ class InvalidObservationData(UnhydrateableObservation):
 
 
 def register(source: str, observation_classes: list[type[Observation]]) -> None:
+    """Register concrete Observation classes for a source kind.
+
+    Enforces the `sample()` override here (not at class-definition time
+    via `__init_subclass__`) so connector authors can declare abstract
+    intermediate bases (e.g. `RedditObservationBase` for shared fields
+    across post/comment Observations) without tripping the guard at
+    import. Only classes that actually get registered are required to
+    have a real `sample()`; intermediates pass through untouched.
+    """
     for cls in observation_classes:
+        if "sample" not in cls.__dict__:
+            raise TypeError(
+                f"{cls.__name__} is registered but does not override Observation.sample() — "
+                "payload-sample would 500 on listeners using this kind. Implement sample()."
+            )
         _REGISTRY[(source, cls.EVENT_KIND)] = cls
+
+
+def class_for_source(source: str) -> type[Observation] | None:
+    """First registered Observation class for the given source-connector
+    kind (e.g. `"reddit_subreddit"`). None if nothing is registered for
+    that source. When a source has multiple event kinds (e.g. future:
+    `new_post` + `new_comment`), returns the first registered.
+
+    TODO: ambiguous when a source ships multiple event kinds — payload-
+    sample would render whichever was registered first regardless of
+    the listener's actual kind. No triggering case today (one kind per
+    source); revisit when a second is added (needs a design decision:
+    take an explicit kind hint, or expose the choice via feed spec)."""
+    for (registered_source, _kind), cls in _REGISTRY.items():
+        if registered_source == source:
+            return cls
+    return None
 
 
 def hydrate_data(data: dict) -> Observation:

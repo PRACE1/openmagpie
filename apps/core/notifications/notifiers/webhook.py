@@ -50,6 +50,18 @@ def _check_destination(url: str) -> str | None:
 class WebhookNotifier:
     kind = "webhook"
 
+    def render(self, batch: HitBatch, spec: WebhookNotifierSpec) -> dict:
+        """The JSON body this webhook WOULD POST for the batch.
+        payload-sample calls this; `deliver` calls it too so previews
+        can't drift from production."""
+        return build_payload(batch, include_fields=spec.include_fields)
+
+    def target_for(self, spec: WebhookNotifierSpec) -> str:
+        # Redact secrets in the URL — Slack/Discord/HMAC tokens live in the
+        # path/query, and payload-sample output ends up in tickets/screenshots.
+        # Mirrors the redaction the detail/list views apply via redacted_dump.
+        return spec.redacted().url
+
     def deliver(self, batch: HitBatch, spec: WebhookNotifierSpec) -> NotificationResult:
         blocked = _check_destination(spec.url)
         if blocked is not None:
@@ -60,7 +72,7 @@ class WebhookNotifier:
                 error=f"blocked: {blocked}",
             )
 
-        payload = build_payload(batch, include_fields=spec.include_fields)
+        payload = self.render(batch, spec)
         started = time.perf_counter()
         try:
             response = httpx.post(spec.url, json=payload, headers=spec.headers, timeout=30.0)

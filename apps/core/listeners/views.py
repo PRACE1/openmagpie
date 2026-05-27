@@ -13,15 +13,16 @@ from __future__ import annotations
 
 import logging
 
-from rest_framework import permissions, status
-from rest_framework.exceptions import ValidationError
+from rest_framework import status
+from rest_framework.exceptions import APIException, ValidationError
 from rest_framework.response import Response
-from rest_framework.views import APIView
 
-from accounts.services import AccountService
+from accounts.api import AccountScopedAPIView
+from common.fields import is_valid_ulid
+from listeners.api import ListenerScopedAPIView
+from listeners.registry import load_semantic_config
 from openmagpie_schema.wire import ListenerListResponse
 
-from .models import Listener
 from .policy import PolicyError
 from .serializers import (
     ListenerCreateSerializer,
@@ -30,6 +31,7 @@ from .serializers import (
     listener_wire,
 )
 from .services.listeners import ListenerService, SeedCursor
+from .services.preview import CannotPreviewSource, build_preview
 from .stats import compute_hit_rates
 
 logger = logging.getLogger("listeners")
@@ -43,42 +45,17 @@ def _is_truthy(value: str | None) -> bool:
     return value is not None and value.strip().lower() in _TRUTHY
 
 
-def _no_primary_account_response(user_id: str) -> Response:
-    """Shared 500 for the 'user has no primary account' invariant.
-
-    Signup invariants should have created one; its absence is account
-    corruption, not a normal empty state. POST and GET both return THIS
-    (identical body + status) so the two endpoints can't drift - GET
-    masking it as `{"items": []}` would turn a corruption into a silent
-    'you have no listeners' data-loss report.
-    """
-    logger.error("user %s has no primary account", user_id)
-    return Response(
-        {
-            "error": "no_primary_account",
-            "detail": "current user has no primary account",
-        },
-        status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-    )
-
-
-class ListenerListCreateView(APIView):
+class ListenerListCreateView(AccountScopedAPIView):
     """POST  /v1/listeners,  create a new listener for the caller's account.
     GET   /v1/listeners,  list listeners in the caller's account.
     """
-
-    permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request):
         serializer = ListenerCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         d = serializer.validated_data
 
-        account_id = AccountService.Global.primary_account_id_for(user_id=str(request.user.id))
-        if account_id is None:
-            return _no_primary_account_response(str(request.user.id))
-
-        svc = ListenerService(account_id=account_id)
+        svc = ListenerService(account_id=request.account_id)
 
         # ?seed_cursor=<value>: validate against SeedCursor up-front so a
         # typo / unknown token (e.g. "lastest", "newest") 400s instead of
@@ -138,27 +115,14 @@ class ListenerListCreateView(APIView):
         )
 
     def get(self, request):
-        account_id = AccountService.Global.primary_account_id_for(user_id=str(request.user.id))
-        if account_id is None:
-            return _no_primary_account_response(str(request.user.id))
-        listeners = ListenerService(account_id=account_id).list()
+        listeners = ListenerService(account_id=request.account_id).list()
         # Batched rolling hit rates (constant queries, no N+1).
         rates = compute_hit_rates(listeners)
         items = [listener_wire(o, recent=rates.get(str(o.id), (0, 0))) for o in listeners]
         return Response(ListenerListResponse(items=items).model_dump(mode="json"))
 
 
-def _not_found_response(listener_id: str) -> Response:
-    """404 for a listener absent from the caller's account. Same body
-    whether it never existed or belongs to another account - not
-    distinguishing IS the account-scoping guarantee."""
-    return Response(
-        {"error": "not_found", "detail": f"no listener {listener_id}"},
-        status=status.HTTP_404_NOT_FOUND,
-    )
-
-
-class ListenerDetailView(APIView):
+class ListenerDetailView(ListenerScopedAPIView):
     """GET / PUT / DELETE /v1/listeners/<id>, all account-scoped.
 
     PUT is full-replace edit and mirrors create's contract: same
@@ -168,35 +132,15 @@ class ListenerDetailView(APIView):
     / user_id / poll-state columns never change.
     """
 
-    permission_classes = [permissions.IsAuthenticated]
-
-    def _resolve(self, request, listener_id: str):
-        """`(svc, listener)` or an error `Response`. Centralizes the
-        account-scope + existence checks all three verbs share."""
-        account_id = AccountService.Global.primary_account_id_for(user_id=str(request.user.id))
-        if account_id is None:
-            return _no_primary_account_response(str(request.user.id))
-        svc = ListenerService(account_id=account_id)
-        try:
-            return svc, svc.get(listener_id)
-        except Listener.DoesNotExist:
-            return _not_found_response(listener_id)
-
     def get(self, request, listener_id: str):
-        resolved = self._resolve(request, listener_id)
-        if isinstance(resolved, Response):
-            return resolved
-        _, listener = resolved
         return Response(
-            listener_view(listener).model_dump(mode="json"),
+            listener_view(self.listener).model_dump(mode="json"),
             status=status.HTTP_200_OK,
         )
 
     def put(self, request, listener_id: str):
-        resolved = self._resolve(request, listener_id)
-        if isinstance(resolved, Response):
-            return resolved
-        svc, listener = resolved
+        listener = self.listener
+        svc = self.listener_svc
 
         serializer = ListenerCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -246,9 +190,114 @@ class ListenerDetailView(APIView):
             return Response({"data": [str(exc)]}, status=status.HTTP_400_BAD_REQUEST)
 
     def delete(self, request, listener_id: str):
-        resolved = self._resolve(request, listener_id)
-        if isinstance(resolved, Response):
-            return resolved
-        svc, listener = resolved
-        svc.delete(listener)
+        self.listener_svc.delete(self.listener)
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class ListenerRewindView(ListenerScopedAPIView):
+    """POST /v1/listeners/<id>/rewind, an operator-issued cursor reset.
+
+    Body: optional `{"to": "<ULID>"}` — defaults to "" (re-judge the full
+    retention window on next cycle). `to` may be any well-formed ULID
+    (real FeedItem id, or one synthesized from a timestamp via
+    `min_ulid_at`); it does NOT need to match an existing row. A
+    malformed ULID returns 400 — without this guard, a typo would
+    silently brick the cursor (no item id__gt=typo matches → listener
+    appears dead).
+
+    Cost: LLM tokens per re-judged item; the CLI confirms before sending.
+    Returns the updated listener_view so the caller can confirm the new
+    cursor.
+    """
+
+    def post(self, request, listener_id: str):
+        # `to` may be null (or missing) to mean "reset to start of
+        # retention", or a 26-char ULID string. Anything else (numbers,
+        # bools, arrays, objects) is malformed and rejected — the old
+        # `str(raw) if raw else ""` form silently treated 0/false/[]/{}
+        # as "reset", which on a destructive op (re-judges retention
+        # window, burns LLM tokens) is the wrong default.
+        raw = request.data.get("to") if isinstance(request.data, dict) else None
+        if raw is None:
+            to = ""
+        elif isinstance(raw, str):
+            to = raw
+        else:
+            raise ValidationError({"to": [f"must be a string or null, got {type(raw).__name__}"]})
+        if to and not is_valid_ulid(to):
+            raise ValidationError({"to": [f"expected a 26-char ULID or empty string, got {to!r}"]})
+        self.listener_svc.rewind_judge_cursor(self.listener, to=to)
+        return Response(
+            listener_view(self.listener).model_dump(mode="json"),
+            status=status.HTTP_200_OK,
+        )
+
+
+class NoObservationForSource(APIException):
+    """409 raised when payload-sample can't honestly resolve an
+    Observation class for the listener's feed source — feed missing,
+    feed config drifted out of schema, or none of the feed's stream
+    kinds have a registered connector in this deployment.
+
+    HTTP-shaped translation of `CannotPreviewSource` from
+    `services/preview.py`. Kept in the view layer so the service stays
+    HTTP-agnostic."""
+
+    status_code = status.HTTP_409_CONFLICT
+    default_code = "no_observation_for_source"
+    default_detail = {
+        "error": "no_observation_for_source",
+        "detail": (
+            "no registered Observation class matches this listener's feed source. "
+            "Either the feed is missing/drifted, or the connector for any of the "
+            "feed's stream kinds isn't loaded in this deployment. The logs identify "
+            "which case."
+        ),
+    }
+
+
+class UnsupportedListenerKind(APIException):
+    """422 raised when payload-sample is invoked on a listener whose
+    kind isn't Semantic (only Semantic is supported today) or whose
+    kind isn't registered at all (drift between a DB row and the
+    current registry). Both surface as a structured error instead of
+    a bare 500 — payload-sample's whole point is to diagnose listener
+    setup, so the diagnostic itself shouldn't crash on a broken row."""
+
+    status_code = status.HTTP_422_UNPROCESSABLE_ENTITY
+    default_code = "unsupported_listener_kind"
+    default_detail = {
+        "error": "unsupported_listener_kind",
+        "detail": "this listener's kind isn't supported by payload-sample (Semantic-only today, or kind not registered)",
+    }
+
+
+class ListenerPayloadSampleView(ListenerScopedAPIView):
+    """GET /v1/listeners/<id>/payload-sample.
+
+    Thin HTTP wrapper around `services.preview.build_preview` — the
+    dry-run delivery service does all the work (composes EventService,
+    Observation registry, every configured notifier's render()). This
+    view just translates domain exceptions to HTTP-shaped ones.
+    """
+
+    def get(self, request, listener_id: str):
+        try:
+            config = load_semantic_config(self.listener)
+        except (NotImplementedError, KeyError) as exc:
+            # load_semantic_config raises NotImplementedError on a
+            # non-Semantic kind, and the underlying registry raises
+            # KeyError on an unknown kind. Both = "this listener's kind
+            # can't be previewed."
+            raise UnsupportedListenerKind() from exc
+        try:
+            result = build_preview(self.listener, config, account_id=request.account_id)
+        except CannotPreviewSource as exc:
+            raise NoObservationForSource() from exc
+        return Response(
+            {
+                "synthetic": result.synthetic,
+                "notifiers": [{"kind": n.kind, "target": n.target, "rendered": n.rendered} for n in result.notifiers],
+            },
+            status=status.HTTP_200_OK,
+        )

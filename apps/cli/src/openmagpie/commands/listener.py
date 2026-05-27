@@ -216,6 +216,98 @@ def delete(
     console.success(f"Deleted listener {detail.name} ({detail.id})")
 
 
+@listener_app.command("rewind")
+@_handle_api_errors
+def rewind(
+    listener_id: str = typer.Argument(..., help="Listener id."),
+    to: str | None = typer.Option(
+        None,
+        "--to",
+        help="Rewind cursor to this ULID. Omit to rewind to the start of the retention window.",
+    ),
+    yes: bool = typer.Option(
+        False,
+        "--yes",
+        "-y",
+        help="Skip the confirmation prompt. Required for non-interactive input.",
+    ),
+) -> None:
+    """Rewind the listener's judge cursor.
+
+    By default (no `--to`) the cursor resets to empty — the next judge
+    cycle re-judges every item still in the feed's retention window.
+    Pass `--to <ULID>` to rewind to a specific point (re-judge items
+    after that). Costs LLM tokens per re-judged item; confirm before
+    running on a large backlog.
+    """
+    ac = app_ctx()
+    detail = ac.api.listener.get(listener_id)
+    target_desc = f"to {to}" if to else "to the start of the retention window"
+
+    if not yes:
+        if not sys.stdin.isatty():
+            console.warn(f"Piped input: can't prompt. Re-run with --yes to rewind {detail.name} ({detail.id}).")
+            raise typer.Exit(code=1)
+        console.warn(
+            f"Rewind listener {detail.name} ({detail.id}) {target_desc}? "
+            "Items past the new cursor will be re-judged on the next cycle (LLM cost)."
+        )
+        if not typer.confirm("Rewind?"):
+            console.warn("Aborted.")
+            raise typer.Exit(code=1)
+
+    updated = ac.api.listener.rewind(listener_id, to=to)
+    console.success(f"Rewound listener {detail.name} ({detail.id}) — cursor now {updated.last_judged_item_id!r}")
+
+
+@listener_app.command("payload-sample")
+@_handle_api_errors
+def payload_sample(
+    listener_id: str = typer.Argument(..., help="Listener id."),
+    json_out: bool = typer.Option(False, "--json", help="Dump the raw API envelope as JSON."),
+) -> None:
+    """Show what each of this listener's notifiers WOULD emit for the
+    next batch — same code path delivery takes, just without the ship
+    step. One block per configured notifier; an operator wiring `webhook
+    + log` sees the JSON their webhook receives alongside the text
+    written to server logs for the same hits.
+
+    Default output is human-formatted (header per notifier, payload as
+    a JSON block or text block depending on notifier kind). Pass
+    `--json` for the structured envelope when scripting.
+    Pure preview — fires nothing.
+    """
+    import json
+
+    ac = app_ctx()
+    result = ac.api.listener.payload_sample(listener_id)
+
+    if json_out:
+        typer.echo(json.dumps(result, indent=2, default=str))
+        return
+
+    if result.get("synthetic"):
+        console.warn("(synthetic sample — listener has no hit events yet)")
+
+    notifiers = result.get("notifiers", [])
+    if not notifiers:
+        console.warn("(no notifiers configured — this listener fires nothing)")
+        return
+
+    for i, entry in enumerate(notifiers):
+        if i > 0:
+            typer.echo("")
+        kind = entry["kind"]
+        target = entry.get("target")
+        header = f"{kind} | {target}" if target else kind
+        console.header(header)
+        rendered = entry["rendered"]
+        if isinstance(rendered, dict):
+            typer.echo(json.dumps(rendered, indent=2, default=str))
+        else:
+            typer.echo(str(rendered))
+
+
 # ── List ───────────────────────────────────────────────────────────────
 
 

@@ -39,7 +39,6 @@ from events.services import EventKind, EventService
 from feeds.models import Feed, FeedItem
 from feeds.services import FeedService
 from listeners import registry as listeners_registry
-from listeners.configs import SemanticListenerConfig
 from listeners.models import Listener
 from notifications.services import DeliveryService
 
@@ -83,12 +82,8 @@ class JudgeListenerOperation:
     """One-shot: judge a single Listener's new FeedItems, persist, deliver."""
 
     def __init__(self, listener: Listener, *, on_progress: JudgeProgressCallback | None = None) -> None:
-        config = listeners_registry.load_config(listener)
-        if not isinstance(config, SemanticListenerConfig):
-            raise NotImplementedError(f"Unsupported listener kind: {listener.kind}")
-
         self.listener = listener
-        self.config = config
+        self.config = listeners_registry.load_semantic_config(listener)
         self.account_id = str(listener.account_id)
         self.is_instant = listener.delivery_mode == Listener.DeliveryMode.INSTANT
         self.on_progress: JudgeProgressCallback = on_progress or (lambda _: None)

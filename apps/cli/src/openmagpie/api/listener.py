@@ -120,6 +120,36 @@ class ListenerApi:
         raw = self._http.put(routes.listeners.detail(listener_id), json_body=body, params=params)
         return ListenerMutationResponse.model_validate(raw)
 
+    def payload_sample(self, listener_id: str) -> dict[str, Any]:
+        """GET what each of the listener's notifiers would emit for the
+        next batch — same code path delivery takes, just without the
+        ship step. Honors per-notifier `include_fields` and the
+        listener's `delivery_mode`. Uses real hit Events if any exist;
+        otherwise synthetic Observations fill in.
+
+        Returns:
+            {
+              "synthetic": bool,
+              "notifiers": [
+                {"kind": "webhook", "target": "<url>", "rendered": <dict>},
+                {"kind": "log",     "target": null,    "rendered": "<text>"},
+                ...
+              ]
+            }
+        """
+        return self._http.get(routes.listeners.payload_sample(listener_id))
+
+    def rewind(self, listener_id: str, *, to: str | None = None) -> ListenerView:
+        """Reset the listener's judge cursor.
+
+        `to=None` (default) rewinds to "" — re-judge the full retention
+        window on the next cycle. `to=<ULID>` rewinds to a specific
+        point — re-judge items after that. Returns the updated listener.
+        """
+        body = {"to": to or ""}
+        raw = self._http.post(routes.listeners.rewind(listener_id), json_body=body)
+        return ListenerView.model_validate(raw)
+
     def delete(self, listener_id: str) -> None:
         """DELETE one listener. 204 on success; 404 -> ApiError."""
         self._http.delete(routes.listeners.detail(listener_id))

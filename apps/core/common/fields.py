@@ -1,8 +1,24 @@
+import re
 from datetime import datetime
 
 import ulid
 from django.db import models
 from django.utils.translation import gettext_lazy as _
+
+# 26-char Crockford-Base32 (digits + uppercase letters, excluding I, L, O, U).
+# Matches what `ulid.ulid()` produces and what ULIDField stores.
+_ULID_RE = re.compile(r"^[0-9A-HJ-KM-NP-TV-Z]{26}$")
+
+
+def is_valid_ulid(value: str) -> bool:
+    """True iff `value` matches the canonical ULID shape (26 chars,
+    Crockford-Base32 alphabet).
+
+    `fullmatch` (not `match`) so a trailing newline can't sneak through —
+    in default re mode `$` matches before a final `\\n`, which would
+    persist `"ULID\\n"` as a cursor and silently desync the listener.
+    """
+    return bool(_ULID_RE.fullmatch(value))
 
 
 def min_ulid_at(dt: datetime) -> str:

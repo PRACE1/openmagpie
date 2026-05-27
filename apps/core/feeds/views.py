@@ -10,11 +10,10 @@ from __future__ import annotations
 
 import logging
 
-from rest_framework import permissions, status
+from rest_framework import status
 from rest_framework.response import Response
-from rest_framework.views import APIView
 
-from accounts.services import AccountService
+from accounts.api import AccountScopedAPIView
 from openmagpie_schema.feed import FeedListResponse
 
 from .models import Feed
@@ -38,14 +37,6 @@ def _is_truthy(value: str | None) -> bool:
     return value is not None and value.strip().lower() in _TRUTHY
 
 
-def _no_primary_account_response(user_id: str) -> Response:
-    logger.error("user %s has no primary account", user_id)
-    return Response(
-        {"error": "no_primary_account", "detail": "current user has no primary account"},
-        status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-    )
-
-
 def _not_found_response(feed_id: str) -> Response:
     return Response(
         {"error": "not_found", "detail": f"no feed {feed_id}"},
@@ -63,20 +54,15 @@ def _parse_limit(request) -> int:
         return _DEFAULT_ITEM_LIMIT
 
 
-class FeedListCreateView(APIView):
+class FeedListCreateView(AccountScopedAPIView):
     """POST /v1/feeds (create), GET /v1/feeds (list)."""
-
-    permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request):
         serializer = FeedCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         d = serializer.validated_data
 
-        account_id = AccountService.Global.primary_account_id_for(user_id=str(request.user.id))
-        if account_id is None:
-            return _no_primary_account_response(str(request.user.id))
-        svc = FeedService(account_id=account_id)
+        svc = FeedService(account_id=request.account_id)
 
         if _is_truthy(request.query_params.get("dry_run")):
             preview = svc.build(
@@ -103,12 +89,9 @@ class FeedListCreateView(APIView):
         )
 
     def get(self, request):
-        account_id = AccountService.Global.primary_account_id_for(user_id=str(request.user.id))
-        if account_id is None:
-            return _no_primary_account_response(str(request.user.id))
         limit = _parse_limit(request)
         after = request.query_params.get("after") or None
-        feeds = FeedService(account_id=account_id).list(after=after, limit=limit)
+        feeds = FeedService(account_id=request.account_id).list(after=after, limit=limit)
         # Page is "full" iff we got `limit` rows; if so, more pages may exist
         # and the last row's id is the cursor for the next page.
         next_cursor = str(feeds[-1].id) if len(feeds) == limit else None
@@ -117,17 +100,12 @@ class FeedListCreateView(APIView):
         )
 
 
-class FeedDetailView(APIView):
+class FeedDetailView(AccountScopedAPIView):
     """GET / PUT / DELETE /v1/feeds/<id>, all account-scoped. GET is the
     'sort by new and go' reader (feed + recent items, ?limit)."""
 
-    permission_classes = [permissions.IsAuthenticated]
-
     def _resolve(self, request, feed_id: str):
-        account_id = AccountService.Global.primary_account_id_for(user_id=str(request.user.id))
-        if account_id is None:
-            return _no_primary_account_response(str(request.user.id))
-        svc = FeedService(account_id=account_id)
+        svc = FeedService(account_id=request.account_id)
         try:
             return svc, svc.get(feed_id)
         except Feed.DoesNotExist:
