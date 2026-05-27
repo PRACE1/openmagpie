@@ -101,8 +101,9 @@ class OllamaEngine:
     def status(self) -> EngineStatus:
         """Probe /api/tags once; map success or any failure into an
         `EngineStatus`. Never raises — callers (the /v1/engines view,
-        the quickstart wizard) render `unreachable_reason` directly,
-        so a probe error here is not the same as a server error."""
+        the quickstart wizard) render `unreachable_reason` and
+        `how_to_fix` directly, so a probe error here is not the same
+        as a server error."""
         try:
             loaded = self.available_models()
         except httpx.HTTPError as exc:
@@ -111,6 +112,11 @@ class OllamaEngine:
                 default_model=self.default_model,
                 available=False,
                 unreachable_reason=f"Ollama at {self.url} unreachable ({type(exc).__name__}: {exc})",
+                how_to_fix=(
+                    f"Start Ollama (`ollama serve` or open the desktop app) and confirm it's "
+                    f"reachable at {self.url}. If the URL is wrong, update `OLLAMA_URL` in the "
+                    f"server's env and restart."
+                ),
             )
         except ValidationError as exc:
             return EngineStatus(
@@ -118,6 +124,11 @@ class OllamaEngine:
                 default_model=self.default_model,
                 available=False,
                 unreachable_reason=f"Ollama at {self.url} returned an unexpected /api/tags shape ({exc.error_count()} error(s))",
+                how_to_fix=(
+                    "Ollama's API likely drifted from what this server parses. Update Ollama "
+                    "to a recent version, or open an issue against openmagpie so the parser "
+                    "catches up."
+                ),
             )
         return EngineStatus(
             kind=self.kind,

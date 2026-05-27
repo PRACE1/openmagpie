@@ -33,6 +33,12 @@ class EngineStatus(BaseModel):
     available: bool
     available_models: list[str] = []
     unreachable_reason: str | None = None
+    # Operator-facing recovery hint, kind-specific (and may be
+    # failure-mode-specific within a kind). None when no actionable
+    # advice applies — the renderer just skips it. Knowledge lives next
+    # to the engine; the CLI renders verbatim so adding an engine
+    # doesn't drag the wizard along.
+    how_to_fix: str | None = None
 
 
 class EngineListResponse(BaseModel):

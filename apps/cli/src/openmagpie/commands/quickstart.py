@@ -162,7 +162,10 @@ def _require_available_engine(ac: AppContext) -> EngineStatus:
     """
     engines = ac.api.engine.list()
     if not engines:
-        console.error("Server has no scoring model configured. Can't tell what's interesting without one.")
+        console.error(
+            "The server has no scoring engine registered. "
+            "Check `OLLAMA_URL` and `OLLAMA_DEFAULT_MODEL` in the server's env, then restart."
+        )
         raise typer.Exit(code=1)
 
     for engine in engines:
@@ -171,12 +174,14 @@ def _require_available_engine(ac: AppContext) -> EngineStatus:
             console.log(f"Scoring with: {engine.kind} | {model_label}")
             return engine
 
-    console.error("No scoring model is reachable. Posts can't be ranked without one — start it and re-run.")
+    console.error("No scoring engine is reachable. Posts can't be ranked without one:")
     for engine in engines:
         if engine.unreachable_reason:
             console.error(f"  {engine.kind}: {engine.unreachable_reason}")
         else:
             console.error(f"  {engine.kind}: unavailable")
+        if engine.how_to_fix:
+            console.error(f"    → {engine.how_to_fix}")
     raise typer.Exit(code=1)
 
 
