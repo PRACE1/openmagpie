@@ -314,6 +314,18 @@ class ListenerService:
         listener.last_judged_item_id = item_id
         listener.save(update_fields=["last_judged_item_id", "updated_at"])
 
+    def rewind_judge_cursor(self, listener: Listener, /, *, to: str = "") -> None:
+        """Operator action: rewind the listener's judgment cursor.
+
+        Empty `to` (default) = re-judge every item in the feed's retention
+        window on the next cycle. A specific ULID = re-judge items after
+        that point. Use after an outage, after refining `instructions`, or
+        for forensic re-runs. Costs LLM tokens for every re-judged item,
+        so the caller (CLI) confirms before invoking by default."""
+        self._assert_scope(str(listener.account_id), "listener")
+        listener.last_judged_item_id = to
+        listener.save(update_fields=["last_judged_item_id", "updated_at"])
+
     def update_digest_state(
         self,
         listener: Listener,

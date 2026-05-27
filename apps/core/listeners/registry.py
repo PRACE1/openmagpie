@@ -54,3 +54,26 @@ def load_config(listener: Listener) -> ListenerConfig:
     possibly-changed settings (e.g. WEBHOOK_REQUIRE_HTTPS flipped on
     after creation) could spuriously fail a pure read."""
     return parse_config(str(listener.kind), listener.data or {})
+
+
+def load_semantic_config(listener: Listener) -> SemanticListenerConfig:
+    """load_config narrowed to SemanticListenerConfig, with a loud raise
+    when a listener's kind resolves to a different config type.
+
+    Today every operational path (judge, deliver, payload-sample) only
+    supports Semantic; a half-shipped new kind would otherwise need each
+    callsite to remember its own isinstance + raise. Routing through
+    this one helper means adding a new kind surfaces here, not at the
+    N downstream assumers.
+
+    Soft-skip callers (e.g. the digest scheduler that needs to keep
+    processing other listeners after hitting an unsupported one) should
+    use `load_config` + their own isinstance check instead — they want
+    "continue", not "abort"."""
+    config = load_config(listener)
+    if not isinstance(config, SemanticListenerConfig):
+        raise NotImplementedError(
+            f"Listener {listener.id} kind={listener.kind!r} resolves to "
+            f"{type(config).__name__}, expected SemanticListenerConfig"
+        )
+    return config

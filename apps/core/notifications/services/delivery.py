@@ -22,7 +22,7 @@ from events.services import EventKind, EventService
 from listeners.configs import SemanticListenerConfig
 from listeners.models import Listener
 from notifications import registry as notifiers_registry
-from notifications.notifiers.base import HitBatch, NotificationResult
+from notifications.notifiers.base import Hit, HitBatch, NotificationResult
 
 from ._delivery_global import DeliveryGlobal
 
@@ -127,7 +127,7 @@ class DeliveryService:
         self._assert_scope(str(listener.account_id), "listener")
         batch = HitBatch(
             listener=listener,
-            hits=[observation],
+            hits=[Hit(obs=observation, relevance_score=event.score)],
             period_start=None,
             period_end=timezone.now(),
         )
@@ -179,13 +179,12 @@ class DeliveryService:
         same poison row. Mirrors the per-item skip the judgment path
         applies via `UnhydrateableObservation`.
         """
-        observations: list[Observation] = []
+        hits: list[Hit] = []
         deliverable: list[Event] = []
         poisoned: list[str] = []
         for e in events:
             try:
-                observations.append(hydrate_event(e))
-                deliverable.append(e)
+                obs = hydrate_event(e)
             except UnhydrateableObservation as exc:
                 logger.warning(
                     "digest skipping un-hydrateable event listener=%s event=%s: %s",
@@ -194,6 +193,9 @@ class DeliveryService:
                     exc,
                 )
                 poisoned.append(str(e.id))
+                continue
+            hits.append(Hit(obs=obs, relevance_score=e.score))
+            deliverable.append(e)
         # Quarantine the un-hydrateable rows so they don't return next
         # cycle as still-pending and re-poison the batch every time.
         if poisoned:
@@ -202,7 +204,7 @@ class DeliveryService:
             return 0
         batch = HitBatch(
             listener=listener,
-            hits=observations,
+            hits=hits,
             period_start=listener.last_digest_at,
             period_end=now,
         )

@@ -32,6 +32,33 @@ class NewRedditPostObservation(Observation):
         return self.subreddit
 
     @classmethod
+    def sample(cls, variant: int = 0) -> "NewRedditPostObservation":
+        # 1-indexed for the operator-visible id/url/title (so `variant=0`
+        # reads as "post 1", `variant=1` as "post 2"). Keeps every field
+        # that the receiver might key on (external_id, url, permalink,
+        # title) honestly distinct across variants.
+        n = variant + 1
+        slug = f"1example{n}"
+        return cls(
+            external_id=slug,
+            kind=cls.EVENT_KIND,
+            occurred_at=datetime(2026, 5, 27, 12, 0, tzinfo=UTC),
+            source="reddit_subreddit",
+            title=f"Example post {n}: matched this listener",
+            content="(Observation.content — included in payload only if `include_fields` lists it.)",
+            url=f"https://www.reddit.com/r/example/comments/{slug}/example_post_{n}/",
+            parent_external_id="",
+            subreddit="example",
+            permalink=f"/r/example/comments/{slug}/example_post_{n}/",
+            author="example_user",
+            score=42,  # Reddit upvotes; distinct from engine relevance_score
+            num_comments=7,
+            upvote_ratio=0.95,
+            is_self=True,
+            over_18=False,
+        )
+
+    @classmethod
     def from_reddit_blob(
         cls,
         raw: "RedditPostPayload",
