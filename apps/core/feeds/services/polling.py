@@ -34,7 +34,7 @@ from listeners.services import ListenerService
 from sources import registry as source_registry
 from sources.connectors.base import ConnectorParseError
 
-from .feeds import FeedService
+from .feeds import FeedItemService, FeedService
 
 logger = logging.getLogger("feeds")
 
@@ -126,6 +126,10 @@ class FeedPollOperation:
     def feed_svc(self) -> FeedService:
         return FeedService(account_id=self.account_id)
 
+    @cached_property
+    def feed_item_svc(self) -> FeedItemService:
+        return FeedItemService(account_id=self.account_id)
+
     def run(self) -> FeedPollResult:
         started_at = timezone.now()
         observed = 0
@@ -177,7 +181,7 @@ class FeedPollOperation:
             # lagging listener can't silently lose items pruned out from
             # under it. None = no active subscribers (prune at retention).
             min_cursor = ListenerService.Global.min_cursor_for_feed(self.feed)
-            pruned = self.feed_svc.prune_items(
+            pruned = self.feed_item_svc.prune_items(
                 self.feed,
                 retention_days=self.config.retention_days,
                 now=started_at,
@@ -199,7 +203,7 @@ class FeedPollOperation:
             connector.poll(watch.spec, since=watch.last_event_at),
             initial_newest=watch.last_event_at,
         )
-        recorded = self.feed_svc.record_items(
+        recorded = self.feed_item_svc.record_items(
             self.feed,
             stream_label=watch.spec.display(),
             observations=stream,
