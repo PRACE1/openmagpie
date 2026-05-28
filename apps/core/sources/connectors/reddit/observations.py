@@ -1,3 +1,5 @@
+import html
+import re
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, ClassVar
 
@@ -6,7 +8,29 @@ from events.observations import Observation
 if TYPE_CHECKING:
     from openmagpie_schema.configs import RedditSubredditStreamSpec
 
-    from .payloads import RedditPostPayload
+    from .payloads import RedditAtomEntry
+
+
+# Reddit wraps the post body in `<!-- SC_OFF --> ... <!-- SC_ON -->` and
+# appends a "submitted by ... [link] [comments]" trailer. We want just the
+# body; the trailer is noise to the engine.
+_SC_BLOCK_RE = re.compile(r"<!--\s*SC_OFF\s*-->(.*?)<!--\s*SC_ON\s*-->", re.DOTALL)
+_TAG_RE = re.compile(r"<[^>]+>")
+_WS_RE = re.compile(r"\s+")
+
+
+def _atom_content_to_text(content_html: str) -> str:
+    """Pull the user's body out of an Atom `<content type="html">` payload.
+
+    Returns `""` for link posts (no SC_OFF block, just media markup) so the
+    engine sees title-only and doesn't get confused by image-embed boilerplate.
+    """
+    match = _SC_BLOCK_RE.search(content_html)
+    if not match:
+        return ""
+    body_html = match.group(1)
+    body = _TAG_RE.sub(" ", body_html)
+    return _WS_RE.sub(" ", html.unescape(body)).strip()
 
 
 class NewRedditPostObservation(Observation):
@@ -16,15 +40,11 @@ class NewRedditPostObservation(Observation):
 
     # Reddit-specific fields. `author` lives here (not on Observation base) because
     # "who emitted this" is a source-shaped concept, Slack has `user`, scheduled
-    # jobs have nothing, etc.
+    # jobs have nothing, etc. score/comments/ratio are not on the Atom feed; add
+    # them back when this connector switches to authenticated oauth.reddit.com.
     author: str = ""
     permalink: str
     subreddit: str = ""
-    score: int = 0
-    num_comments: int = 0
-    upvote_ratio: float = 1.0
-    is_self: bool = True
-    over_18: bool = False
 
     model_config = {"frozen": True, "extra": "ignore"}
 
@@ -51,33 +71,31 @@ class NewRedditPostObservation(Observation):
             subreddit="example",
             permalink=f"/r/example/comments/{slug}/example_post_{n}/",
             author="example_user",
-            score=42,  # Reddit upvotes; distinct from engine relevance_score
-            num_comments=7,
-            upvote_ratio=0.95,
-            is_self=True,
-            over_18=False,
         )
 
     @classmethod
-    def from_reddit_blob(
+    def from_atom_entry(
         cls,
-        raw: "RedditPostPayload",
+        entry: "RedditAtomEntry",
         spec: "RedditSubredditStreamSpec",
     ) -> "NewRedditPostObservation":
+        # Atom id is `t3_<post-id>`; the post id alone matches what the JSON
+        # endpoint returned, so existing FeedItems keyed on the bare id stay
+        # de-duped across the connector swap.
+        post_id = entry.atom_id.removeprefix("t3_")
+        # `/u/username` → `username`. Deleted users come back as `/u/[deleted]`.
+        author = entry.author_name.removeprefix("/u/")
+        # `link` is the absolute comments URL; the permalink is the path part.
+        permalink = entry.link.removeprefix("https://www.reddit.com") or "/"
         return cls(
-            external_id=raw.id,
+            external_id=post_id,
             kind=cls.EVENT_KIND,
-            occurred_at=datetime.fromtimestamp(raw.created_utc, tz=UTC),
+            occurred_at=datetime.fromisoformat(entry.published),
             source=spec.kind,
-            title=raw.title,
-            content=raw.selftext,
-            author=raw.author or "",  # Reddit returns null for deleted users
-            url=f"https://www.reddit.com{raw.permalink}",
-            permalink=raw.permalink,
-            subreddit=raw.subreddit,
-            score=raw.score,
-            num_comments=raw.num_comments,
-            upvote_ratio=raw.upvote_ratio,
-            is_self=raw.is_self,
-            over_18=raw.over_18,
+            title=entry.title,
+            content=_atom_content_to_text(entry.content_html),
+            author=author,
+            url=entry.link,
+            permalink=permalink,
+            subreddit=entry.subreddit or spec.subreddit,
         )

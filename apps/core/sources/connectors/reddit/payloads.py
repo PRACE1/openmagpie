@@ -1,63 +1,33 @@
-"""Pydantic shapes for Reddit's wire format (the JSON returned by /r/<sub>/new.json).
+"""Projection of one Atom `<entry>` from Reddit's `.rss` endpoint.
 
-These describe what Reddit sends us, the *transport* layer. Distinct from
-`reddit_observations.py`, which describes our internal `Observation` shape
-that the engine + persistence layer reads.
+Reddit's anonymous `.json` is gated by a TLS-fingerprint / HTTP-2 check that
+Python clients can't pass (cookies, UA, Referer, and `Sec-Fetch-*` headers are
+all insufficient, only a real browser handshake gets through). The `.rss`
+endpoint serves the same /new listing as Atom XML, with no fingerprint check,
+so we use it as the anon transport.
 
-`extra="ignore"` everywhere so Reddit adding new fields doesn't break us;
-only the subset we read is validated.
+What we lose vs `.json`: `score`, `num_comments`, `upvote_ratio`, `is_self`,
+`over_18`. Those fields are not present in the Atom feed. The long-term fix
+for richer payloads is authenticated PRAW against oauth.reddit.com.
 """
 
 from pydantic import BaseModel
 
 
-class RedditPostPayload(BaseModel):
-    """The `data` blob inside a `t3` (post) listing child. Subset of Reddit's
-    per-post fields, only what we project into NewRedditPostObservation."""
+class RedditAtomEntry(BaseModel):
+    """One `<entry>` from the Reddit `.rss` Atom feed, projected to the fields
+    we actually read. `atom_id` is Reddit's thing-id (e.g. `t3_1tqbykk`);
+    `link` is the absolute comments URL; `content_html` is the post body as
+    HTML inside an `<!-- SC_OFF --> ... <!-- SC_ON -->` envelope (or media
+    boilerplate for link posts)."""
 
-    id: str
-    created_utc: float  # unix seconds
-    permalink: str
+    atom_id: str
     title: str = ""
-    selftext: str = ""
-    # Reddit returns null for deleted users, coerce at the call site (`or ""`).
-    author: str | None = None
+    published: str  # ISO 8601, e.g. "2026-05-28T18:26:14+00:00"
+    content_html: str = ""
+    link: str
+    # Author is `/u/<name>` in the Atom feed; the connector strips the prefix.
+    author_name: str = ""
     subreddit: str = ""
-    score: int = 0
-    num_comments: int = 0
-    upvote_ratio: float = 1.0
-    is_self: bool = True
-    over_18: bool = False
-
-    model_config = {"extra": "ignore"}
-
-
-class RedditListingChild(BaseModel):
-    """One entry in a Reddit listing. `kind` is the "thing prefix", `t3` for
-    posts, `t1` for comments, etc. /new/.json should only return t3; we don't
-    validate the prefix here, trusting the endpoint."""
-
-    kind: str
-    data: RedditPostPayload
-
-    model_config = {"extra": "ignore"}
-
-
-class RedditListingData(BaseModel):
-    """The `data` envelope of a listing. `after` is the pagination cursor;
-    null at end of feed."""
-
-    after: str | None = None
-    before: str | None = None
-    children: list[RedditListingChild]
-
-    model_config = {"extra": "ignore"}
-
-
-class RedditListing(BaseModel):
-    """Top-level Reddit listing response: `{kind: "Listing", data: {...}}`."""
-
-    kind: str
-    data: RedditListingData
 
     model_config = {"extra": "ignore"}
