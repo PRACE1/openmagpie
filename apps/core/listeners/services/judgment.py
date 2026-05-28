@@ -174,6 +174,58 @@ def _running_eta_seconds(
     return max(0, round(remaining * mean_seconds))
 
 
+# How often (in items advanced) `_CursorSaver` writes back to the DB.
+# Keeps progress durable through Ctrl-C / SIGINT / crash without
+# write-amplifying on every item. At 10, a 50-item cycle persists 5
+# times; a Ctrl-C loses at most 9 items of re-judge work.
+_CURSOR_SAVE_EVERY = 10
+
+
+class _CursorSaver:
+    """Batches `Listener.last_judged_item_id` writes so an interrupted
+    cycle keeps the work it has already done.
+
+    `advance(item_id)` records the new high-water mark and persists it
+    every `every` calls. `flush()` writes whatever is pending and is
+    called from `run()`'s `finally` block so Ctrl-C, recoverable
+    errors, and natural cycle completion all converge through one
+    save point.
+
+    Idempotent: re-calling `advance` with the same id or `flush` with
+    no pending advance is a no-op. The wrapper compares against the
+    listener's in-memory `last_judged_item_id` before issuing the
+    UPDATE, so a no-op cycle (no items judged) doesn't touch the row.
+    """
+
+    def __init__(self, svc: ListenerService, listener: Listener, *, every: int = _CURSOR_SAVE_EVERY) -> None:
+        self.svc = svc
+        self.listener = listener
+        self.every = max(1, every)
+        self._pending_id: str | None = None
+        self._since_flush = 0
+
+    def advance(self, item_id: str) -> None:
+        """Record that `item_id` is the new high-water mark. Persists
+        if we've accumulated `every` advances since the last save."""
+        if not item_id or item_id == self._pending_id:
+            return
+        self._pending_id = item_id
+        self._since_flush += 1
+        if self._since_flush >= self.every:
+            self.flush()
+
+    def flush(self) -> None:
+        """Persist the pending high-water mark if anything's unsaved.
+        Safe to call multiple times; safe to call with no pending work."""
+        if self._pending_id is None or self._since_flush == 0:
+            return
+        if self._pending_id == (self.listener.last_judged_item_id or ""):
+            self._since_flush = 0
+            return
+        self.svc.advance_judge_cursor(self.listener, item_id=self._pending_id)
+        self._since_flush = 0
+
+
 class JudgeListenerOperation:
     """One-shot: judge a single Listener's new FeedItems, persist, deliver."""
 
@@ -251,87 +303,103 @@ class JudgeListenerOperation:
         # mean for THIS cycle (more accurate than the cross-cycle EWMA
         # once any data lands; accounts for model warm-up, host load, etc).
         cycle_latency_ms = 0
-        for item in self.feed_svc.iter_items_in_window(feed, after_id=cursor, through_id=latest):
-            # Hydrate up front so the error reporting below has obs when
-            # possible and falls back to item.external_id when not.
-            try:
-                obs = hydrate_data(item.data)
-            except UnhydrateableObservation as exc:
-                # PERMANENT skip: a renamed/removed connector can't ever
-                # hydrate this item. Advance past it so we don't loop on
-                # the same poison row forever; surface it on-screen so
-                # the operator sees the dead row without grepping logs.
-                logger.warning(
-                    "skipping un-hydrateable item listener=%s feed_item=%s: %s",
-                    self.listener.id,
-                    item.id,
-                    exc,
-                )
+        # Batched cursor saves so Ctrl-C / SIGINT / mid-cycle crash keeps
+        # the work it has already done. The `finally` below flushes the
+        # high-water mark regardless of how the loop exits.
+        saver = _CursorSaver(self.listener_svc, self.listener)
+        try:
+            for item in self.feed_svc.iter_items_in_window(feed, after_id=cursor, through_id=latest):
+                # Hydrate up front so the error reporting below has obs when
+                # possible and falls back to item.external_id when not.
+                try:
+                    obs = hydrate_data(item.data)
+                except UnhydrateableObservation as exc:
+                    # PERMANENT skip: a renamed/removed connector can't ever
+                    # hydrate this item. Advance past it so we don't loop on
+                    # the same poison row forever; surface it on-screen so
+                    # the operator sees the dead row without grepping logs.
+                    logger.warning(
+                        "skipping un-hydrateable item listener=%s feed_item=%s: %s",
+                        self.listener.id,
+                        item.id,
+                        exc,
+                    )
+                    processed += 1
+                    last_success = str(item.id)
+                    saver.advance(last_success)
+                    self.on_progress(
+                        JudgeItemDone(
+                            listener=self.listener,
+                            external_id=item.external_id,
+                            obs=None,
+                            error=f"un-hydrateable: {exc}",
+                            done=processed,
+                            total=pending,
+                            eta_seconds=_running_eta_seconds(
+                                pending, processed, judged, cycle_latency_ms, self.listener
+                            ),
+                        )
+                    )
+                    continue
+
+                try:
+                    outcome = self._judge_item(item, obs)
+                except _RECOVERABLE_ERRORS as exc:
+                    logger.warning(
+                        "item judgment failed listener=%s feed_item=%s err=%s: %s; "
+                        "holding cursor, will retry from here next cycle",
+                        self.listener.id,
+                        item.id,
+                        type(exc).__name__,
+                        exc,
+                    )
+                    processed += 1
+                    self.on_progress(
+                        JudgeItemDone(
+                            listener=self.listener,
+                            external_id=item.external_id,
+                            obs=obs,
+                            error=f"{type(exc).__name__}: {exc}",
+                            done=processed,
+                            total=pending,
+                            eta_seconds=_running_eta_seconds(
+                                pending, processed, judged, cycle_latency_ms, self.listener
+                            ),
+                        )
+                    )
+                    failed = True
+                    break
+
+                if outcome.hit:
+                    hits += 1
+                judged += 1
                 processed += 1
+                cycle_latency_ms += outcome.latency_ms
                 last_success = str(item.id)
+                saver.advance(last_success)
+                _record_judge_latency(self.listener, outcome.latency_ms)
                 self.on_progress(
                     JudgeItemDone(
                         listener=self.listener,
                         external_id=item.external_id,
-                        obs=None,
-                        error=f"un-hydrateable: {exc}",
+                        obs=outcome.obs,
+                        score=outcome.score,
+                        hit=outcome.hit,
+                        latency_ms=outcome.latency_ms,
                         done=processed,
                         total=pending,
                         eta_seconds=_running_eta_seconds(pending, processed, judged, cycle_latency_ms, self.listener),
                     )
                 )
-                continue
 
-            try:
-                outcome = self._judge_item(item, obs)
-            except _RECOVERABLE_ERRORS as exc:
-                logger.warning(
-                    "item judgment failed listener=%s feed_item=%s err=%s: %s; "
-                    "holding cursor, will retry from here next cycle",
-                    self.listener.id,
-                    item.id,
-                    type(exc).__name__,
-                    exc,
-                )
-                processed += 1
-                self.on_progress(
-                    JudgeItemDone(
-                        listener=self.listener,
-                        external_id=item.external_id,
-                        obs=obs,
-                        error=f"{type(exc).__name__}: {exc}",
-                        done=processed,
-                        total=pending,
-                        eta_seconds=_running_eta_seconds(pending, processed, judged, cycle_latency_ms, self.listener),
-                    )
-                )
-                failed = True
-                break
-
-            if outcome.hit:
-                hits += 1
-            judged += 1
-            processed += 1
-            cycle_latency_ms += outcome.latency_ms
-            last_success = str(item.id)
-            _record_judge_latency(self.listener, outcome.latency_ms)
-            self.on_progress(
-                JudgeItemDone(
-                    listener=self.listener,
-                    external_id=item.external_id,
-                    obs=outcome.obs,
-                    score=outcome.score,
-                    hit=outcome.hit,
-                    latency_ms=outcome.latency_ms,
-                    done=processed,
-                    total=pending,
-                    eta_seconds=_running_eta_seconds(pending, processed, judged, cycle_latency_ms, self.listener),
-                )
-            )
-
-        cursor_target = last_success if failed else str(latest)
-        if cursor_target != cursor:
-            self.listener_svc.advance_judge_cursor(self.listener, item_id=cursor_target)
+            # Natural cycle completion without recoverable error: jump
+            # cursor to the snapshotted `latest` so cycles with no
+            # in-window items (cursor already trailed past everything
+            # judgeable) still bring the cursor up to date.
+            if not failed:
+                saver.advance(str(latest))
+        finally:
+            saver.flush()
         return JudgeResult(judged=judged, hits=hits)
 
     def _retry_stuck_pending(self) -> None:
