@@ -1,28 +1,12 @@
-"""Judgment orchestrator: a Listener judges new FeedItems with its engine.
+"""JudgeListenerOperation: the one-shot cycle that judges new FeedItems
+for a Listener, persists hits, fires instant delivery, and advances
+the cursor.
 
-The Feed polls and persists every item; the Listener is an attention over
-that Feed. This drives the listener leg: read FeedItems the listener
-hasn't judged yet (id > its cursor) across every stream in the Feed,
-judge each with the engine, and on a hit persist an Event (kind="hit")
-and (for instant-mode listeners) fire the notifier.
-
-A per-listener cursor (`Listener.last_judged_item_id`, a ULID) is what
-keeps misses from being re-judged: items are processed in id order and the
-cursor advances to the snapshot max each cycle. Judgment has no cadence of
-its own - it rides the Feed's poll cadence (new items appear when the Feed
-polls); a cycle with no new items is a cheap cursor query, no LLM calls.
-
-Each `judge_listener` cycle starts with a stuck-pending retry for
-instant-mode listeners (re-fire delivery for any hit left undelivered by a
-prior failed cycle). Per-item failures are isolated so one bad payload or
-a transient engine/webhook error can't abort the whole cycle.
-
-`JudgeListenerOperation` is a one-shot operation object; build with a
-Listener and call `.run()` once.
+Locked entry point is `judge_listener(listener, on_progress=...)`;
+tests bypass the lock via `JudgeListenerOperation(...).run()`.
 """
 
 import logging
-from collections.abc import Callable
 from dataclasses import dataclass
 from functools import cached_property
 
@@ -37,80 +21,26 @@ from events.registry import UnhydrateableObservation, hydrate_data
 from events.registry import hydrate as hydrate_event
 from events.services import EventKind, EventService
 from feeds.models import Feed, FeedItem
-from feeds.services import FeedService
+from feeds.services import FeedItemService, FeedService
 from listeners import registry as listeners_registry
 from listeners.models import Listener
 from notifications.services import DeliveryService
 
-from .listeners import ListenerService
+from ..listeners import ListenerService
+from ._cursor import _CursorSaver
+from ._eta import _est_seconds_per_item, _record_judge_latency, _running_eta_seconds
+from ._events import JudgeCycleStarted, JudgeItemDone, JudgeProgressCallback, JudgeResult
 
 logger = logging.getLogger("listeners")
 
 # Operational failures we expect and recover from. Anything outside this set
-# is a programming bug and should propagate. (No connector calls here - the
-# Feed does the fetching - so the set is hydrate/judge/deliver failures.)
+# is a programming bug and should propagate. (No connector calls here; the
+# Feed does the fetching, so the set is hydrate/judge/deliver failures.)
 _RECOVERABLE_ERRORS = (
     httpx.HTTPError,
     ValidationError,
     ConnectionError,
 )
-
-
-@dataclass(frozen=True)
-class JudgeResult:
-    judged: int
-    hits: int
-
-
-@dataclass(frozen=True)
-class JudgeCycleStarted:
-    """Fired once at the top of a cycle that has work to do, AFTER the
-    cursor/latest snapshot is taken. `pending` is the exact item count
-    the loop will iterate. `est_seconds` is `pending * (per-listener
-    EWMA of recent judge latency)`, so a cycle on a slow model or busy
-    host shows a realistic ETA rather than the seed-default 2s/item.
-    Not fired when the snapshot has no new items; that's the cheap
-    empty-cycle path."""
-
-    listener: Listener
-    pending: int
-    est_seconds: int
-
-
-@dataclass(frozen=True)
-class JudgeItemDone:
-    """Per-item progress signal. The engine is the slow leg (multi-second
-    LLM call per item), so callers wanting live feedback wire an
-    `on_progress` callback. Fires on success AND on per-item failures
-    (un-hydrateable observation, recoverable engine/connector error)
-    so the operator sees errors in the live console, not just in logs.
-
-    `error` is set on failures (with `obs` None for an un-hydrateable
-    item, populated otherwise); `score`/`hit` are None on errors.
-    `external_id` is the FeedItem's denormalized source id, populated
-    on every event so the error path has a render-able identity even
-    when `obs` couldn't be hydrated.
-
-    `latency_ms` is the engine's measured judge time for THIS item
-    (0 on error). `done` / `total` / `eta_seconds` are the running
-    cycle stats AFTER this item, with `eta_seconds` computed from the
-    in-cycle mean latency (more accurate than the cross-cycle EWMA
-    once a couple items have actually landed)."""
-
-    listener: Listener
-    external_id: str = ""
-    obs: Observation | None = None
-    score: float | None = None
-    hit: bool = False
-    error: str | None = None
-    latency_ms: int = 0
-    done: int = 0
-    total: int = 0
-    eta_seconds: int = 0
-
-
-JudgeEvent = JudgeCycleStarted | JudgeItemDone
-JudgeProgressCallback = Callable[[JudgeEvent], None]
 
 
 @dataclass(frozen=True)
@@ -124,106 +54,6 @@ class _ItemOutcome:
     score: float
     hit: bool
     latency_ms: int
-
-
-# Per-listener EWMA of judge latency (seconds). Process-local in-memory
-# state: lost on container restart, converges within a few items on the
-# next cycle. Avoids a schema migration for what's a UI nicety. The seed
-# default is on the low side of typical local-Ollama 7B latency so the
-# first cycle's ETA looks honest (and the EWMA quickly outgrows it once
-# real numbers land).
-_LATENCY_EWMA_ALPHA = 0.3
-_LATENCY_SEED_SECONDS = 2.0
-_listener_latency_ewma: dict[str, float] = {}
-
-
-def _est_seconds_per_item(listener: Listener) -> float:
-    """Per-listener mean of recent judge latencies (EWMA), or the seed
-    default when no history exists yet (fresh process / first cycle)."""
-    return _listener_latency_ewma.get(str(listener.id), _LATENCY_SEED_SECONDS)
-
-
-def _record_judge_latency(listener: Listener, latency_ms: int) -> None:
-    """Fold one observed latency into the listener's EWMA."""
-    key = str(listener.id)
-    seconds = latency_ms / 1000.0
-    prev = _listener_latency_ewma.get(key)
-    _listener_latency_ewma[key] = (
-        seconds if prev is None else _LATENCY_EWMA_ALPHA * seconds + (1 - _LATENCY_EWMA_ALPHA) * prev
-    )
-
-
-def _running_eta_seconds(
-    pending: int,
-    processed: int,
-    judged: int,
-    cycle_latency_ms: int,
-    listener: Listener,
-) -> int:
-    """ETA in seconds for the rest of the current cycle.
-
-    Uses the in-cycle mean per successful judge when we have data
-    (`judged > 0`); falls back to the listener's cross-cycle EWMA for
-    the all-errors-so-far edge case. Cost is `remaining * mean`, with
-    `remaining = pending - processed` so error items don't inflate
-    the remaining count."""
-    remaining = max(0, pending - processed)
-    if remaining == 0:
-        return 0
-    mean_seconds = (cycle_latency_ms / judged / 1000.0) if judged > 0 else _est_seconds_per_item(listener)
-    return max(0, round(remaining * mean_seconds))
-
-
-# How often (in items advanced) `_CursorSaver` writes back to the DB.
-# Keeps progress durable through Ctrl-C / SIGINT / crash without
-# write-amplifying on every item. At 10, a 50-item cycle persists 5
-# times; a Ctrl-C loses at most 9 items of re-judge work.
-_CURSOR_SAVE_EVERY = 10
-
-
-class _CursorSaver:
-    """Batches `Listener.last_judged_item_id` writes so an interrupted
-    cycle keeps the work it has already done.
-
-    `advance(item_id)` records the new high-water mark and persists it
-    every `every` calls. `flush()` writes whatever is pending and is
-    called from `run()`'s `finally` block so Ctrl-C, recoverable
-    errors, and natural cycle completion all converge through one
-    save point.
-
-    Idempotent: re-calling `advance` with the same id or `flush` with
-    no pending advance is a no-op. The wrapper compares against the
-    listener's in-memory `last_judged_item_id` before issuing the
-    UPDATE, so a no-op cycle (no items judged) doesn't touch the row.
-    """
-
-    def __init__(self, svc: ListenerService, listener: Listener, *, every: int = _CURSOR_SAVE_EVERY) -> None:
-        self.svc = svc
-        self.listener = listener
-        self.every = max(1, every)
-        self._pending_id: str | None = None
-        self._since_flush = 0
-
-    def advance(self, item_id: str) -> None:
-        """Record that `item_id` is the new high-water mark. Persists
-        if we've accumulated `every` advances since the last save."""
-        if not item_id or item_id == self._pending_id:
-            return
-        self._pending_id = item_id
-        self._since_flush += 1
-        if self._since_flush >= self.every:
-            self.flush()
-
-    def flush(self) -> None:
-        """Persist the pending high-water mark if anything's unsaved.
-        Safe to call multiple times; safe to call with no pending work."""
-        if self._pending_id is None or self._since_flush == 0:
-            return
-        if self._pending_id == (self.listener.last_judged_item_id or ""):
-            self._since_flush = 0
-            return
-        self.svc.advance_judge_cursor(self.listener, item_id=self._pending_id)
-        self._since_flush = 0
 
 
 class JudgeListenerOperation:
@@ -243,6 +73,10 @@ class JudgeListenerOperation:
     @cached_property
     def feed_svc(self) -> FeedService:
         return FeedService(account_id=self.account_id)
+
+    @cached_property
+    def feed_item_svc(self) -> FeedItemService:
+        return FeedItemService(account_id=self.account_id)
 
     @cached_property
     def event_svc(self) -> EventService:
@@ -281,7 +115,7 @@ class JudgeListenerOperation:
         # is possible (the old in-memory pipeline couldn't). Trade-off: a
         # permanently-failing item blocks progress past it (loud + rare);
         # bounded retry is a follow-up.
-        latest = self.feed_svc.newest_item_id(feed)
+        latest = self.feed_item_svc.newest_item_id(feed)
         if latest is None or latest <= cursor:
             return JudgeResult(judged=0, hits=0)
 
@@ -289,7 +123,7 @@ class JudgeListenerOperation:
         # the same `(cursor, latest]` window the loop will iterate, so
         # callers can render "judging N items (~Ns)" up front. ETA uses
         # the per-listener EWMA so the number tracks reality across runs.
-        pending = self.feed_svc.count_items_in_window(feed, after_id=cursor, through_id=latest)
+        pending = self.feed_item_svc.count_items_in_window(feed, after_id=cursor, through_id=latest)
         if pending > 0:
             est_seconds = max(1, round(pending * _est_seconds_per_item(self.listener)))
             self.on_progress(JudgeCycleStarted(listener=self.listener, pending=pending, est_seconds=est_seconds))
@@ -308,7 +142,7 @@ class JudgeListenerOperation:
         # high-water mark regardless of how the loop exits.
         saver = _CursorSaver(self.listener_svc, self.listener)
         try:
-            for item in self.feed_svc.iter_items_in_window(feed, after_id=cursor, through_id=latest):
+            for item in self.feed_item_svc.iter_items_in_window(feed, after_id=cursor, through_id=latest):
                 # Hydrate up front so the error reporting below has obs when
                 # possible and falls back to item.external_id when not.
                 try:
@@ -428,7 +262,7 @@ class JudgeListenerOperation:
                     exc,
                 )
 
-    def _judge_item(self, item: FeedItem, obs: Observation) -> "_ItemOutcome":
+    def _judge_item(self, item: FeedItem, obs: Observation) -> _ItemOutcome:
         """Judge one already-hydrated observation; persist + (if instant)
         deliver on a hit.
 

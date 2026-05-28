@@ -1,3 +1,3 @@
-from .feeds import FeedService
+from .feeds import FeedItemService, FeedService
 
-__all__ = ["FeedService"]
+__all__ = ["FeedItemService", "FeedService"]

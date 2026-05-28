@@ -24,3 +24,13 @@ repos:
         language: system
         pass_filenames: false
         always_run: true
+
+      - id: check-file-length
+        name: file length (350-line max for .py)
+        # Aggressive line cap; the message points the LLM (or human)
+        # at the right fix: split distinct concerns, convert long
+        # files into directory packages.
+        entry: ./scripts/check-file-length.sh
+        language: system
+        pass_filenames: false
+        always_run: true

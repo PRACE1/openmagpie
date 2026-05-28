@@ -12,7 +12,7 @@ from enum import StrEnum
 from typing import Any
 
 from feeds.models import Feed
-from feeds.services import FeedService
+from feeds.services import FeedItemService, FeedService
 from listeners.models import Listener
 from listeners.policy import PolicyError, enforce_policy
 from listeners.registry import load_config, parse_config, validate_config
@@ -214,7 +214,7 @@ class ListenerService:
             # creating user gets a real error instead of a silently-dangling
             # listener with cursor='' pointing at a missing feed.
             raise PolicyError(f"feed {feed_id!r} was deleted before listener could be created") from exc
-        newest = feed_svc.newest_item_id(feed)
+        newest = FeedItemService(account_id=self.account_id).newest_item_id(feed)
         if newest:
             listener.last_judged_item_id = newest
 
