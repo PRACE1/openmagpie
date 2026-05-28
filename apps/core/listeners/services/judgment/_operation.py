@@ -30,6 +30,7 @@ from ..listeners import ListenerService
 from ._cursor import _CursorSaver
 from ._eta import _est_seconds_per_item, _record_judge_latency, _running_eta_seconds
 from ._events import JudgeCycleStarted, JudgeItemDone, JudgeProgressCallback, JudgeResult
+from ._retry import with_retry as _with_retry
 
 logger = logging.getLogger("listeners")
 
@@ -177,7 +178,13 @@ class JudgeListenerOperation:
                     continue
 
                 try:
-                    outcome = self._judge_item(item, obs)
+                    outcome = _with_retry(
+                        self._judge_item,
+                        item,
+                        obs,
+                        listener=self.listener,
+                        item_id=str(item.id),
+                    )
                 except _RECOVERABLE_ERRORS as exc:
                     logger.warning(
                         "item judgment failed listener=%s feed_item=%s err=%s: %s; "
