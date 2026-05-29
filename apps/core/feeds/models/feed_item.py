@@ -5,7 +5,7 @@ from common.models import BaseModel
 
 
 class FeedItem(BaseModel):
-    """One item a Feed pulled from a stream — the persisted, browsable log.
+    """One item a Feed pulled from a Source ; the persisted, browsable log.
 
     Holds ALL polled items (not hit-only): this is the "sort by new and
     go" surface and the input Listeners judge. `data` is the connector
@@ -18,7 +18,7 @@ class FeedItem(BaseModel):
     `created_at` filter.
 
     `account_id` is denormalized from Feed so every read query filters at
-    the DB on the account explicitly — no trusting "feed_id implies
+    the DB on the account explicitly ; no trusting "feed_id implies
     account_id." Set at record_items time from `feed.account_id`.
     """
 
@@ -27,14 +27,18 @@ class FeedItem(BaseModel):
     account_id = models.CharField(_("account id"), max_length=26)
     feed_id = models.CharField(_("feed id"), max_length=26)
     # Connector kind that produced this item (e.g. "reddit_subreddit").
-    source = models.CharField(_("source"), max_length=64)
+    source_kind = models.CharField(_("source kind"), max_length=64)
     # The item's identity within the source (e.g. Reddit post id).
     external_id = models.CharField(_("external id"), max_length=255)
-    # Display label of the producing stream (e.g. "r/foo"), set at record
-    # time from the StreamSpec's display(). Cheap per-row attribution for
-    # the feed-view UI; no role in filtering (listeners see every stream
+    # Display label of the producing source (e.g. "r/foo"), set at record
+    # time from the SourceSpec's display(). Cheap per-row attribution for
+    # the feed-view UI; no role in filtering (listeners see every source
     # in their Feed).
-    stream_label = models.CharField(_("stream label"), max_length=255, default="")
+    source_label = models.CharField(_("source label"), max_length=255, default="")
+    # Operator-supplied tags carried over from the producing Source's
+    # `meta` field at record time. Not indexed; UI filtering reads it
+    # on-demand.
+    source_meta = models.JSONField(_("source meta"), default=dict, blank=True)
     # Source timestamp (when the item was created at the source), for
     # display. NOT the ordering key (that's the ULID pk). Unindexed.
     occurred_at = models.DateTimeField(_("occurred at"), null=True, blank=True)
@@ -45,7 +49,7 @@ class FeedItem(BaseModel):
         verbose_name_plural = _("feed items")
         constraints = [
             models.UniqueConstraint(
-                fields=["feed_id", "source", "external_id"],
+                fields=["feed_id", "source_kind", "external_id"],
                 name="uniq_feeditem_per_feed_source_external",
             ),
         ]
@@ -54,4 +58,4 @@ class FeedItem(BaseModel):
         ]
 
     def __str__(self) -> str:
-        return f"{self.source}:{self.external_id} ({self.feed_id})"
+        return f"{self.source_kind}:{self.external_id} ({self.feed_id})"

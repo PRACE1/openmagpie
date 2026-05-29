@@ -1,6 +1,6 @@
 """`magpie feed ...` commands: template, create, list, get, view, edit, delete.
 
-A Feed is the curated set of streams the server polls; its items are the
+A Feed is the curated set of sources the server polls; its items are the
 "sort by new and go" surface (`feed view`) and what Listeners subscribe
 to. YAML is the on-disk format (same rationale as listeners). `create`
 and `edit` share the validate -> preview -> confirm -> apply flow.
@@ -8,6 +8,7 @@ and `edit` share the validate -> preview -> confirm -> apply flow.
 
 from __future__ import annotations
 
+import json
 import sys
 from importlib import resources
 
@@ -19,6 +20,7 @@ from .. import console
 from ..api.feed import FeedEnvelope, FeedMutationResponse, FeedView
 from ..context import AppContext, app_ctx
 from ._shared import (
+    _check_format,
     _handle_api_errors,
     _open_editor_or_abort,
     _read_file_or_abort,
@@ -35,10 +37,39 @@ _DEFAULT_LIST_LIMIT = 50
 # ── Template ───────────────────────────────────────────────────────────
 
 
+def _emit_doc(yaml_text: str, *, format: str, output: str | None) -> None:
+    """Write a documented YAML template either verbatim (preserving
+    comments) or projected through json. JSON output loses the inline
+    `# ...` annotations: explicit trade-off for the scripted-consumer
+    case where comments aren't load-bearing."""
+    text = yaml_text if format == "yaml" else json.dumps(yaml.safe_load(yaml_text), indent=2)
+    text = text if text.endswith("\n") else text + "\n"
+    if output is None:
+        sys.stdout.write(text)
+        return
+    try:
+        with open(output, "w") as fh:
+            fh.write(text)
+    except OSError as exc:
+        console.error(f"failed to write {output}: {exc}")
+        raise typer.Exit(code=1) from None
+    console.success(f"Wrote template to {output}")
+
+
 @feed_app.command("template")
-def template() -> None:
+def template(
+    format: str = typer.Option(
+        "yaml",
+        "--format",
+        "-F",
+        case_sensitive=False,
+        help="Output format: `yaml` (commented; default) or `json` (structural; no comments).",
+    ),
+    output: str | None = typer.Option(None, "--output", "-o", help="Write to a file instead of stdout."),
+) -> None:
     """Emit a starter feed config to stdout."""
-    sys.stdout.write(FEED_TEMPLATE_YAML)
+    fmt = _check_format(format)
+    _emit_doc(FEED_TEMPLATE_YAML, format=fmt, output=output)
 
 
 # ── Create ─────────────────────────────────────────────────────────────
@@ -87,10 +118,10 @@ def view(
     if not detail.recent_items:
         console.log("No items yet.")
         return
-    console.header(f"{detail.name} — {len(detail.recent_items)} recent item(s)")
+    console.header(f"{detail.name} ; {len(detail.recent_items)} recent item(s)")
     for item in detail.recent_items:
         title = str((item.data or {}).get("title") or item.external_id)
-        console.log(f"  {item.stream} | {title[:80]} | {item.external_id}")
+        console.log(f"  {item.source_label} | {title[:80]} | {item.external_id}")
 
 
 @feed_app.command("edit")
@@ -103,11 +134,20 @@ def edit(
     dry_run: bool = typer.Option(False, "--dry-run", "-n", help="Validate the edit and show the result, then stop."),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation prompt. Required for piped input."),
 ) -> None:
-    """Full-replace edit of one feed. `kind` is server-immutable;
-    per-stream watermarks are preserved server-side."""
+    """Full-replace edit of one feed's config (retention + default_field_map).
+    `kind` is server-immutable. Source list mutations go through the
+    dedicated verbs (`magpie feed set-sources` / `remove-source`); the
+    edit YAML deliberately covers only feed-level knobs."""
     ac = app_ctx()
     detail = ac.api.feed.get(feed_id)
-    seed = yaml.safe_dump(_edit_seed(detail).model_dump(mode="json"), sort_keys=False)
+    # `sources` is excluded from the dump even though it lives on
+    # FeedEnvelope (the create path uses it); the PUT server route
+    # silently discards it on edits, so the editor must not show
+    # an editable block for it.
+    seed = yaml.safe_dump(
+        _edit_seed(detail).model_dump(mode="json", exclude={"sources"}),
+        sort_keys=False,
+    )
     if file is None:
         body_text = _open_editor_or_abort(seed)
     elif file == "-":
@@ -261,23 +301,30 @@ def _run_mutation(ac: AppContext, body: FeedEnvelope, *, feed_id: str | None, dr
 
 def _edit_seed(detail: FeedView) -> FeedEnvelope:
     """The editable envelope for `edit`, projected from the current feed.
-    `extra=ignore` drops read-only fields; only the editable envelope
-    survives. Per-stream `last_event_at` watermarks are stripped: they're
-    internal poll state, not operator-editable. The server's
-    `merge_preserving` restores them by spec-identity for unchanged
-    streams; a changed spec must cold-start, not inherit the old watermark.
-    """
-    env = FeedEnvelope.model_validate(detail.model_dump())
-    for stream in env.data.get("streams", []):
-        stream.pop("last_event_at", None)
-    return env
+
+    `sources` is a declared field on `FeedEnvelope` (the create-time
+    write path uses it), so `extra=ignore` does NOT drop it on a
+    naive `model_validate(detail.model_dump())`. The seed YAML
+    rendered to $EDITOR would then carry a `sources:` block that the
+    server's PUT path silently discards (FeedService.update reads
+    only name / poll_interval_seconds / data). Explicit pop is the
+    right shape: source list changes go through `set-sources` /
+    `remove-source`, and the operator should never see an editable
+    sources block here."""
+    body = detail.model_dump()
+    # Pop server-managed / read-only / sub-resource fields.
+    for key in ("sources", "source_count", "recent_items", "summary"):
+        body.pop(key, None)
+    return FeedEnvelope.model_validate(body)
 
 
 def _print_feed(obj: FeedMutationResponse | FeedView, title: str) -> None:
-    """Render a feed's config for the operator off the server-built summary."""
-    s = obj.summary
+    """Render a feed's config + source list for the operator."""
     console.header(title)
     console.kv("name", obj.name)
     console.kv("kind", obj.kind)
     console.kv("poll interval", f"{obj.poll_interval_seconds}s")
-    console.kv("streams", f"({s.stream_count}) {', '.join(s.streams) or '(none)'}")
+    # SourceWire.spec is the typed SourceSpec union; use `.display()`
+    # (every variant implements it) ; `.get(...)` would AttributeError.
+    display = ", ".join(s.spec.display() for s in obj.sources)
+    console.kv("sources", f"({obj.source_count}) {display or '(none)'}")

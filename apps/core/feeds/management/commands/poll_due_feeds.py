@@ -5,7 +5,7 @@ from django.core.management.base import BaseCommand
 from django.utils import timezone
 
 from feeds.services import FeedService
-from feeds.services.polling import StreamPolled, poll_feed
+from feeds.services.polling import SourcePolled, poll_feed
 
 logger = logging.getLogger("feeds")
 
@@ -17,7 +17,7 @@ class Command(BaseCommand):
         parser.add_argument(
             "--quiet",
             action="store_true",
-            help="Suppress per-stream progress; print only the summary.",
+            help="Suppress per-source progress; print only the summary.",
         )
 
     def handle(self, *args: Any, **options: Any) -> None:
@@ -28,10 +28,10 @@ class Command(BaseCommand):
         total_recorded = 0
         total_skipped = 0
 
-        def on_progress(ev: StreamPolled) -> None:
+        def on_progress(ev: SourcePolled) -> None:
             if quiet:
                 return
-            self.stdout.write(f"  {ev.stream_display}: {ev.observed} observed, {ev.recorded} new")
+            self.stdout.write(f"  {ev.source_display}: {ev.observed} observed, {ev.recorded} new")
 
         total_failed = 0
         for feed in FeedService.Global.list_due_for_poll(now=now):

@@ -20,7 +20,7 @@ class Observation(BaseModel):
     occurred_at: datetime
     source: str  # connector kind, e.g. "reddit_subreddit"
 
-    # Canonical engine input fields (subclasses map source-native fields → these)
+    # Canonical engine input fields (subclasses map source-native fields -> these)
     title: str = ""
     content: str = ""
     url: str = ""
@@ -47,12 +47,13 @@ class Observation(BaseModel):
                 "Rename the source field."
             )
 
-    def stream_slug(self) -> str | None:
-        """The stream-within-source identifier for this observation.
+    def source_slug(self) -> str | None:
+        """The within-kind source identifier for this observation.
 
-        Subclasses override when their source has a meaningful per-stream
-        identifier (Reddit subreddit, GitHub `owner/repo`, Slack channel, ...).
-        Used by notifier batching to group hits by stream.
+        Subclasses override when their source kind has a meaningful
+        sub-identifier (Reddit subreddit, GitHub `owner/repo`, Slack
+        channel, ...). Used by notifier batching to group hits by
+        producing source.
         """
         return None
 
@@ -62,7 +63,7 @@ class Observation(BaseModel):
         (`magpie listener payload-sample`).
 
         `variant` lets digest-mode previews show N distinct hits in the
-        same stream group — each connector decides how to vary
+        same source group ; each connector decides how to vary
         observably (different external_id, url, title). Subclasses MUST
         produce a distinct observation for each variant index a caller
         passes; the payload-sample view today asks for variants 0 and 1.

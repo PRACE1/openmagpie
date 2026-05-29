@@ -2,7 +2,7 @@
 
 The Feed polls and persists every item; the Listener is an attention over
 that Feed. This drives the listener leg: read FeedItems the listener
-hasn't judged yet (id > its cursor) across every stream in the Feed,
+hasn't judged yet (id > its cursor) across every source in the Feed,
 judge each with the engine, and on a hit persist an Event (kind="hit")
 and (for instant-mode listeners) fire the notifier.
 
@@ -18,7 +18,7 @@ prior failed cycle). Per-item failures are isolated so one bad payload or
 a transient engine/webhook error can't abort the whole cycle.
 
 Package layout:
-  _events.py     dataclasses for the on_progress stream + JudgeResult
+  _events.py     dataclasses for the on_progress event stream + JudgeResult
   _eta.py        per-listener latency EWMA + in-cycle ETA math
   _cursor.py     batched durable cursor saves (Ctrl-C / SIGINT-safe)
   _operation.py  JudgeListenerOperation + judge_listener entry point

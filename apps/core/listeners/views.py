@@ -59,7 +59,7 @@ class ListenerListCreateView(AccountScopedAPIView):
 
         # ?seed_cursor=<value>: validate against SeedCursor up-front so a
         # typo / unknown token (e.g. "lastest", "newest") 400s instead of
-        # silently falling through to the empty-cursor default — that
+        # silently falling through to the empty-cursor default ; that
         # would re-judge the full retention window, the exact opposite of
         # the opt-out the operator just asked for. Validated even on
         # dry-run so the operator catches the typo before the real POST.
@@ -197,12 +197,12 @@ class ListenerDetailView(ListenerScopedAPIView):
 class ListenerRewindView(ListenerScopedAPIView):
     """POST /v1/listeners/<id>/rewind, an operator-issued cursor reset.
 
-    Body: optional `{"to": "<ULID>"}` — defaults to "" (re-judge the full
+    Body: optional `{"to": "<ULID>"}` ; defaults to "" (re-judge the full
     retention window on next cycle). `to` may be any well-formed ULID
     (real FeedItem id, or one synthesized from a timestamp via
     `min_ulid_at`); it does NOT need to match an existing row. A
-    malformed ULID returns 400 — without this guard, a typo would
-    silently brick the cursor (no item id__gt=typo matches → listener
+    malformed ULID returns 400 ; without this guard, a typo would
+    silently brick the cursor (no item id__gt=typo matches -> listener
     appears dead).
 
     Cost: LLM tokens per re-judged item; the CLI confirms before sending.
@@ -213,7 +213,7 @@ class ListenerRewindView(ListenerScopedAPIView):
     def post(self, request, listener_id: str):
         # `to` may be null (or missing) to mean "reset to start of
         # retention", or a 26-char ULID string. Anything else (numbers,
-        # bools, arrays, objects) is malformed and rejected — the old
+        # bools, arrays, objects) is malformed and rejected ; the old
         # `str(raw) if raw else ""` form silently treated 0/false/[]/{}
         # as "reset", which on a destructive op (re-judges retention
         # window, burns LLM tokens) is the wrong default.
@@ -235,8 +235,8 @@ class ListenerRewindView(ListenerScopedAPIView):
 
 class NoObservationForSource(APIException):
     """409 raised when payload-sample can't honestly resolve an
-    Observation class for the listener's feed source — feed missing,
-    feed config drifted out of schema, or none of the feed's stream
+    Observation class for the listener's feed source ; feed missing,
+    feed config drifted out of schema, or none of the feed's source
     kinds have a registered connector in this deployment.
 
     HTTP-shaped translation of `CannotPreviewSource` from
@@ -250,7 +250,7 @@ class NoObservationForSource(APIException):
         "detail": (
             "no registered Observation class matches this listener's feed source. "
             "Either the feed is missing/drifted, or the connector for any of the "
-            "feed's stream kinds isn't loaded in this deployment. The logs identify "
+            "feed's source kinds isn't loaded in this deployment. The logs identify "
             "which case."
         ),
     }
@@ -261,7 +261,7 @@ class UnsupportedListenerKind(APIException):
     kind isn't Semantic (only Semantic is supported today) or whose
     kind isn't registered at all (drift between a DB row and the
     current registry). Both surface as a structured error instead of
-    a bare 500 — payload-sample's whole point is to diagnose listener
+    a bare 500 ; payload-sample's whole point is to diagnose listener
     setup, so the diagnostic itself shouldn't crash on a broken row."""
 
     status_code = status.HTTP_422_UNPROCESSABLE_ENTITY
@@ -275,7 +275,7 @@ class UnsupportedListenerKind(APIException):
 class ListenerPayloadSampleView(ListenerScopedAPIView):
     """GET /v1/listeners/<id>/payload-sample.
 
-    Thin HTTP wrapper around `services.preview.build_preview` — the
+    Thin HTTP wrapper around `services.preview.build_preview` ; the
     dry-run delivery service does all the work (composes EventService,
     Observation registry, every configured notifier's render()). This
     view just translates domain exceptions to HTTP-shaped ones.

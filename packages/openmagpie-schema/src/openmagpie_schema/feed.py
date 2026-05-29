@@ -1,22 +1,24 @@
 """Pure typed config + wire schemas for a Feed.
 
 SHARED, zero-Django source of truth (imported by core *and* the magpie
-CLI). A Feed is the curated/discovered set of streams a Listener
-subscribes to: it owns the stream set + per-stream watermarks and (in
-core) the poll loop + a readable item log. This module carries only
-*shape* + pure transforms; the Django/settings-coupled *policy* (no
-future watermark, retention bounds) lives in core `feeds.policy`.
+CLI). A Feed is a curated set of Source rows a Listener subscribes to:
+the Feed owns the poll loop + a readable item log; per-source state
+(spec + watermark + meta + field_map) lives on `feeds.Source` rows.
+This module carries only *shape* + pure transforms; the
+Django/settings-coupled *policy* (no future watermark, retention
+bounds) lives in core `feeds.policy`.
 
 Mirrors `configs.py` (config base + concrete kind) and `wire.py`
 (response envelope quartet) for Listener, deliberately, so the two
 primitives are structurally identical.
 """
 
-from typing import Any, ClassVar
+from datetime import datetime
+from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel
 
-from .configs import StreamWatch
+from .configs import SourceSpec
 from .wire import ConfigBlob
 
 # ── Config (write-path `data` blob, keyed by kind) ────────────────────────
@@ -26,10 +28,11 @@ class FeedConfigSummary(BaseModel):
     """Display-only projection of a feed config for the CLI preview.
 
     Built server-side from the typed config (the only place that knows
-    the schema) so the CLI prints it without parsing the `data` blob."""
-
-    streams: list[str] = []
-    stream_count: int = 0
+    the schema) so the CLI prints it without parsing the `data` blob.
+    Curated feeds emit an empty summary because all per-source state
+    surfaces via FeedView.sources / source_count; the class stays as
+    a hook for future kinds that have non-source-shaped config to
+    project for the CLI."""
 
 
 class FeedConfig(BaseModel):
@@ -48,73 +51,107 @@ class FeedConfig(BaseModel):
         raise NotImplementedError(f"{type(self).__name__} must implement summary()")
 
     def merge_preserving(self, prior: "FeedConfig") -> "FeedConfig":
-        """Edit round-trip: return self with state that must NOT reset on
-        an edit carried over from `prior` (per-stream poll watermarks).
-        No safe default: a passthrough would cold-start every stream."""
-        raise NotImplementedError(
-            f"{type(self).__name__} must implement merge_preserving() (no safe default: would reset watermarks)"
-        )
+        """Edit round-trip: return self with state that must NOT reset
+        on an edit carried over from `prior`. Curated feeds carry no
+        such state at the config layer (per-source watermarks live on
+        Source rows), so they return `self`. Future secret-bearing
+        kinds override to restore masked values."""
+        raise NotImplementedError(f"{type(self).__name__} must implement merge_preserving()")
 
 
 class CuratedFeedConfig(FeedConfig):
     """Schema for Feed.data when Feed.kind == 'curated'.
 
-    Streams are user-maintained (vs the future 'discovered' kind, whose
-    streams are produced by a walk). Watermarks live per-stream on each
-    StreamWatch; the "no future watermark" + retention-bound guards are
-    server policy (see core `feeds.policy`)."""
+    Sources are user-maintained ; one Source row per place data comes
+    from, regardless of whether they were typed in by hand or generated
+    by an external script. Watermarks + per-source metadata live on the
+    Source rows; this config only carries feed-level knobs.
+
+    `default_field_map` is a connector-readable hint dictionary that
+    applies to every source in the feed; per-source overrides on a
+    Source row's `field_map` take precedence. Keys a connector doesn't
+    recognise are ignored."""
 
     FEED_KIND: ClassVar[str] = "curated"
 
-    streams: list[StreamWatch] = []
     # Item-log retention window. Bounds checked in policy ([1, 365]).
     retention_days: int = 30
+    # Connector-readable defaults; row-level `field_map` overrides per key.
+    default_field_map: dict[str, str] = {}
 
     model_config = {"extra": "ignore"}
 
     def redacted_dump(self) -> dict[str, Any]:
-        """Curated feeds carry no secrets (stream specs are public
-        identities), so this is a plain dump. The contract is here so a
-        future secret-bearing kind can't ship without implementing it."""
+        """Curated feeds carry no secrets at the config level (source
+        specs are public identities on their own rows). The contract is
+        here so a future secret-bearing kind can't ship without
+        implementing it."""
         return self.model_dump(mode="json")
 
     def summary(self) -> FeedConfigSummary:
-        displays = [w.spec.display() for w in self.streams]
-        return FeedConfigSummary(streams=displays, stream_count=len(displays))
+        """Empty stub. The server's feed serializer enriches with the
+        joined source count + display labels (this method is pure /
+        no DB access)."""
+        return FeedConfigSummary()
 
     def merge_preserving(self, prior: "FeedConfig") -> "CuratedFeedConfig":
-        """Carry forward per-stream `last_event_at`, keyed by spec
-        identity, so editing the stream set (or retention) doesn't
-        cold-start an unchanged stream. New streams (no prior match) keep
-        their submitted value (None = cold-start). retention_days is not
-        preserved: the submitted value wins (operator-editable)."""
-        prior_streams = getattr(prior, "streams", [])
-        watermarks = {w.spec.model_dump_json(): w.last_event_at for w in prior_streams}
-        streams = [
-            w.model_copy(update={"last_event_at": watermarks[key]})
-            if (key := w.spec.model_dump_json()) in watermarks
-            else w
-            for w in self.streams
-        ]
-        return self.model_copy(update={"streams": streams})
+        """Submitted retention_days + default_field_map win on edit; no
+        per-source state lives on this config (it's on Source rows, which
+        are mutated through the dedicated sub-resource)."""
+        return self
+
+
+# ── Source envelopes (referenced by FeedView / FeedMutationResponse) ──────
+
+
+class SourceInput(BaseModel):
+    """One source on a feed-create or set-sources payload.
+
+    `meta` is operator-supplied free-form tags; the recorder copies it
+    onto each FeedItem the source produces. `field_map` overrides the
+    feed-level `default_field_map` for a single source ; empty means
+    inherit. Connectors that don't read `field_map` ignore it.
+
+    `last_event_at` is the optional starting watermark. None means
+    "live mode from now" (server-policy defaulted at save time); a
+    past datetime means "fetch items newer than this" ; the operator's
+    backfill knob. Server policy rejects future values."""
+
+    spec: SourceSpec
+    meta: dict[str, str] = {}
+    field_map: dict[str, str] = {}
+    last_event_at: datetime | None = None
+
+
+class SourceWire(BaseModel):
+    """One Source row on the read path."""
+
+    id: str
+    spec: SourceSpec
+    meta: dict[str, str] = {}
+    field_map: dict[str, str] = {}
+    last_event_at: Any = None
+    created_at: Any = None
 
 
 # ── Wire (read-path response envelope) ────────────────────────────────────
 
 
 class FeedItemWire(BaseModel):
-    """One persisted FeedItem on the wire — the "sort by new and go" unit.
+    """One persisted FeedItem on the wire ; the "sort by new and go" unit.
 
     `data` is the connector Observation's dump (opaque to the CLI; the
     server owns the per-source schema). Datetimes stay real; the renderer
-    ISO-encodes them."""
+    ISO-encodes them.
+
+    `source_kind` is the connector kind (e.g. `"reddit_subreddit"`),
+    denormalized from the producing Source. `source_label` is the
+    operator-visible display string (e.g. `"r/ClaudeCowork"`), set on
+    the FeedItem row at record time from the SourceSpec's `.display()`."""
 
     id: str
-    source: str
-    # Display label of the producing sub-source (e.g. "r/ClaudeCowork"),
-    # set on the FeedItem row at record time from the StreamSpec's
-    # `.display()`. Read directly off the column — no parsing.
-    stream: str = ""
+    source_kind: str
+    source_label: str = ""
     external_id: str
     occurred_at: Any = None  # datetime | None; renderer encodes
     data: ConfigBlob = {}
@@ -156,12 +193,45 @@ class FeedView(FeedWire):
 
     summary: FeedConfigSummary = FeedConfigSummary()
     recent_items: list[FeedItemWire] = []
+    # The feed's currently-attached Source rows. Populated on GET-detail
+    # so a single call shows everything the operator wants to see; list
+    # pages keep their bare wire to avoid per-row joins.
+    sources: list[SourceWire] = []
+    source_count: int = 0
 
 
 class FeedMutationResponse(FeedWire):
     """Create / edit response (POST + PUT, real and `?dry_run=true`).
-    `id` absent on a create dry-run preview; `dry_run` True for preview."""
+    `id` absent on a create dry-run preview; `dry_run` True for preview.
+    Carries the same `sources` + `source_count` enrichment as FeedView
+    so the CLI's confirm-preview shows the operator the post-mutation
+    source list without an extra GET."""
 
     id: str | None = None
     summary: FeedConfigSummary = FeedConfigSummary()
+    sources: list[SourceWire] = []
+    source_count: int = 0
     dry_run: bool
+
+
+class SourceSetResult(BaseModel):
+    """POST /v1/feeds/{id}/sources (PUT collection) ; replace-mode reconcile result.
+
+    `added` / `removed` / `persisted` describe the diff this call
+    applied; `source_count` is the total after the diff. A no-op set
+    (nothing changed) reports `added=0, removed=0, persisted=total`."""
+
+    added: int
+    removed: int
+    persisted: int
+    source_count: int
+
+
+class SourceSetPayload(BaseModel):
+    """Round-trip file format for `magpie feed export-sources` /
+    `magpie feed set-sources`. Operators or their scrape scripts can
+    construct this directly; the bare `list[SourceInput]` shape is
+    also accepted on input for hand-rolled cases."""
+
+    version: Literal["v1"] = "v1"
+    sources: list[SourceInput] = []

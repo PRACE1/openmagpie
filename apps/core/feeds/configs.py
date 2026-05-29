@@ -9,7 +9,6 @@ bounds) is NOT here - it lives in `feeds.policy` and runs at the
 validation seam. Mirrors `listeners.configs`.
 """
 
-from openmagpie_schema.configs import StreamWatch
 from openmagpie_schema.feed import (
     CuratedFeedConfig,
     FeedConfig,
@@ -20,5 +19,4 @@ __all__ = [
     "CuratedFeedConfig",
     "FeedConfig",
     "FeedConfigSummary",
-    "StreamWatch",
 ]

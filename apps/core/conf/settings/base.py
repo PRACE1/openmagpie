@@ -173,6 +173,12 @@ CACHES = {"default": {"BACKEND": CACHE_BACKEND, "LOCATION": CACHE_LOCATION}}
 POLL_LOCK_TIMEOUT_SECONDS = int(os.environ.get("POLL_LOCK_TIMEOUT_SECONDS", "600"))
 DIGEST_LOCK_TIMEOUT_SECONDS = int(os.environ.get("DIGEST_LOCK_TIMEOUT_SECONDS", "120"))
 
+# Feed set-sources serialization lock. The critical section is the
+# diff + bulk insert/delete + per-row meta updates ; bounded by the
+# count of sources but not by network. 60s is well above a 1k-row
+# reconcile and tight enough that a stuck CLI run unblocks.
+FEED_SET_LOCK_TIMEOUT_SECONDS = int(os.environ.get("FEED_SET_LOCK_TIMEOUT_SECONDS", "60"))
+
 # Refresh-token rotation lock failsafe. The critical section is one row
 # read + revoke + mint, so milliseconds in practice; 30s leaves plenty
 # of headroom if the DB is briefly slow.

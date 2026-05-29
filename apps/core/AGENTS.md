@@ -83,26 +83,27 @@ result = judge_listener(listener)
 
 Each model carries queryable common fields top-level + a `data: JSONField` whose schema is owned by a Pydantic class (registered per `kind`).
 
-- **`Feed.data`** is validated by a Pydantic config keyed off `Feed.kind` (see `feeds.registry`). v1 kind is `"curated"` → `CuratedFeedConfig` (streams + per-stream watermarks + retention). The Feed owns the stream set and the poll loop.
-- **`Listener.data`** is validated by a Pydantic config keyed off `Listener.kind` (see `listeners.registry`). v1 kind is `"semantic"` → `SemanticListenerConfig` (feed_id + filter + engine + notifiers). A listener is an *attention over a Feed*; it does not own streams.
+- **`Feed.data`** is validated by a Pydantic config keyed off `Feed.kind` (see `feeds.registry`). v1 kind is `"curated"` → `CuratedFeedConfig` (retention + default_field_map). The actual source set lives on `feeds.Source` rows; each row owns its own watermark. The Feed owns the poll loop.
+- **`Listener.data`** is validated by a Pydantic config keyed off `Listener.kind` (see `listeners.registry`). v1 kind is `"semantic"` → `SemanticListenerConfig` (feed_id + filter + engine + notifiers). A listener is an *attention over a Feed*; it does not own sources.
 - **`Event.data`** is the FeedItem snapshot the hit was judged from (a full `Observation.model_dump()`). `events.registry.hydrate(event)` returns the typed Observation. `Event.kind` is the event-type discriminator (`"hit"` today); a hit is one kind of event.
-- **`FeedItem.data`** is the full `Observation.model_dump()` of a polled item (the browsable log; all items, not hit-only).
+- **`FeedItem.data`** is the full `Observation.model_dump()` of a polled item (the browsable log; all items, not hit-only). `FeedItem.source_kind` / `source_label` / `source_meta` denormalize the producing Source row for cheap read paths.
 - **Queryable fields stay top-level**: scoping, dedup keys, delivery state (`delivered_at`), the judgment cursor (`Listener.last_judged_item_id`).
-- **Stream-specific identifiers** (subreddit, repo) live inside `data`, accessed via `Observation.stream_slug()`; a FeedItem's originating stream is keyed by `FeedItem.stream_key` for Listener filtering.
+- **Within-kind source identifiers** (subreddit, repo) live inside `Observation.data`, accessed via `Observation.source_slug()`; notifier batching groups hits by `(source_kind, source_slug)`.
 
 ## Pipeline: the Feed polls, the Listener judges
 
-Two stages, two cadences. The **Feed** polls its streams and persists **every** item as a `FeedItem` (the browsable log, retention-windowed). The **Listener** judges new items; an `Event` (kind=`"hit"`) exists **only** when the engine judged an item relevant. Misses produce no Event and aren't re-judged (the listener's cursor advances past them).
+Two stages, two cadences. The **Feed** polls its sources and persists **every** item as a `FeedItem` (the browsable log, retention-windowed). The **Listener** judges new items; an `Event` (kind=`"hit"`) exists **only** when the engine judged an item relevant. Misses produce no Event and aren't re-judged (the listener's cursor advances past them).
 
 ```
 # stage 1 — the Feed polls (poll_due_feeds; per-feed lock)
 for feed in FeedService.Global.list_due_for_poll(now):
     config = feeds.registry.load_config(feed)            # CuratedFeedConfig
-    for watch in config.streams:
-        connector = sources.registry.get(watch.spec.kind)
-        obs = list(connector.poll(watch.spec, since=watch.last_event_at))
-        advance watch.last_event_at                       # high-water mark, in memory
-        feeds.services.record_items(feed, stream_key=..., observations=obs)   # idempotent
+    for source in SourceService(account_id=...).list(feed):
+        connector = sources.registry.get(source.kind)
+        spec = SourceSpec.model_validate(source.spec)
+        obs = list(connector.poll(spec, since=source.last_event_at))
+        SourceService(account_id=...).advance_watermark(source, newest)   # per-row
+        feeds.services.record_items(feed, source_label=..., source_meta=..., observations=obs)
     update_poll_state(feed) + prune_items(retention_days)
 
 # stage 2 — Listeners judge (judge_listeners; all active, per-listener lock)
@@ -117,9 +118,9 @@ for listener in ListenerService.Global.list_active():
     advance listener.last_judged_item_id                  # so misses aren't re-judged
 ```
 
-Forward-looking by default. A `StreamWatch` with `last_event_at=None` (the default for a fresh feed's stream) is "snapshot now": the feed poll op sets `last_event_at = timezone.now()` on the first cycle and records zero items. The next poll cadence catches whatever's accumulated since.
+Forward-looking by default. A `Source` row with `last_event_at=None` is rejected by policy at save time; the create / set path defaults it to wall-clock now, so the first poll records zero items and the next cadence catches whatever's accumulated since.
 
-Operators who want backfill set `last_event_at = now - timedelta(days=N)` explicitly at feed-create time. There is no implicit "scan all history" mode; if you want history, you ask for it by date.
+Operators who want backfill pass an explicit past `last_event_at` on the source row at create time. There is no implicit "scan all history" mode; if you want history, you ask for it by date.
 
 **No surprise multi-hour cold-starts.** Creating a feed never enqueues an hours-long fetch on day one; deep history would be a separate feature with its own state model, not smuggled into the watermark.
 
@@ -130,7 +131,7 @@ Operators who want backfill set `last_event_at = now - timedelta(days=N)` explic
 - **`Listener.delivery_mode`** is `Listener.DeliveryMode.INSTANT` or `.DIGEST` (queryable, indexed alongside `next_digest_at`):
   - **Instant**: notifier fires inline after `persist_hit`; `delivered_at` set on full success.
   - **Digest**: hits accumulate. `deliver_due_digests` scheduler batches pending Events for each listener into one payload per notifier, bulk-marks delivered on success. Implicit retry via `next_digest_at`, failure leaves the high-water mark untouched, so the next cycle re-batches.
-- **Webhook payload groups hits by `{source}:{slug}`** (slug from `Observation.stream_slug()`). One payload per batch.
+- **Webhook payload groups hits by `{source}:{slug}`** (slug from `Observation.source_slug()`). One payload per batch.
 - **`NotifierSpec.include_fields`**: empty list = include full Observation dump (minus scoping); explicit list = whitelist.
 
 ## Plugins (connectors, engines, notifiers)

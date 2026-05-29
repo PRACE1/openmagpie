@@ -37,12 +37,16 @@ class FeedItemService:
         feed: Feed,
         /,
         *,
-        stream_label: str,
+        source_label: str,
         observations: Iterable[Observation],
+        source_meta: dict[str, str] | None = None,
         chunk_size: int = 200,
     ) -> int:
-        """Persist a stream's polled items as FeedItems. Idempotent on
-        (feed_id, source, external_id); returns the count of NEW rows.
+        """Persist a source's polled items as FeedItems. Idempotent on
+        (feed_id, source_kind, external_id); returns the count of NEW rows.
+
+        `source_meta` is copied onto each persisted FeedItem; defaults
+        to empty when the polling path hasn't matched a Source row yet.
 
         Streams the iterable in fixed-size chunks so memory stays
         O(chunk_size). Per chunk: one SELECT to find existing keys, one
@@ -51,33 +55,43 @@ class FeedItemService:
         cycle, so the SELECT->INSERT window has no race risk.
         """
         self._assert_scope(str(feed.account_id), "feed")
+        meta = source_meta or {}
         created = 0
         chunk: list[Observation] = []
         for obs in observations:
             chunk.append(obs)
             if len(chunk) >= chunk_size:
-                created += self._record_chunk(feed, stream_label=stream_label, chunk=chunk)
+                created += self._record_chunk(feed, source_label=source_label, source_meta=meta, chunk=chunk)
                 chunk = []
         if chunk:
-            created += self._record_chunk(feed, stream_label=stream_label, chunk=chunk)
+            created += self._record_chunk(feed, source_label=source_label, source_meta=meta, chunk=chunk)
         return created
 
-    def _record_chunk(self, feed: Feed, /, *, stream_label: str, chunk: list[Observation]) -> int:
+    def _record_chunk(
+        self,
+        feed: Feed,
+        /,
+        *,
+        source_label: str,
+        source_meta: dict[str, str],
+        chunk: list[Observation],
+    ) -> int:
         """Persist one chunk: SELECT existing keys, bulk_create the rest.
         Returns the count of new rows in this chunk."""
         external_ids = [obs.external_id for obs in chunk]
         existing = set(
             FeedItem.objects.filter(
                 account_id=self.account_id, feed_id=feed.id, external_id__in=external_ids
-            ).values_list("source", "external_id")
+            ).values_list("source_kind", "external_id")
         )
         rows = [
             FeedItem(
                 account_id=self.account_id,
                 feed_id=feed.id,
-                source=obs.source,
+                source_kind=obs.source,
                 external_id=obs.external_id,
-                stream_label=stream_label,
+                source_label=source_label,
+                source_meta=source_meta,
                 occurred_at=obs.occurred_at,
                 data=obs.model_dump(mode="json"),
             )

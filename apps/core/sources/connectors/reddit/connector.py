@@ -8,7 +8,7 @@ from pydantic import ValidationError
 
 from events.observations import Observation
 from events.registry import register
-from openmagpie_schema.configs import RedditSubredditStreamSpec
+from openmagpie_schema.configs import RedditSubredditSourceSpec
 
 from ..base import BaseConnector, ConnectorParseError
 from .observations import NewRedditPostObservation
@@ -63,10 +63,10 @@ class RedditSubRedditConnector(BaseConnector):
     """Polls a single subreddit's `/r/<slug>/new/.rss` Atom feed.
 
     Live-mode semantics: every cycle is "yield posts newer than `since`".
-    `since` is the stream's `last_event_at`, which feed-config policy
+    `since` is the source's `last_event_at`, which feed-config policy
     initializes to wall-clock now at save time (see `feeds/policy.py`), so
     in production `since` is always non-None and the first poll just sees
-    the few posts published since the stream was created.
+    the few posts published since the source was created.
 
     The `since=None` path (no watermark) is a dev / test entry only, and
     walks up to `MAX_PAGES * PAGE_SIZE` posts from the head of /new
@@ -79,7 +79,7 @@ class RedditSubRedditConnector(BaseConnector):
     in here.
     """
 
-    kind = "reddit_subreddit"
+    kind = RedditSubredditSourceSpec.SOURCE_KIND
     observations: list[type[Observation]] = [NewRedditPostObservation]
 
     # `count` is the universal poll-walk default from BaseConnector: it
@@ -89,14 +89,14 @@ class RedditSubRedditConnector(BaseConnector):
 
     def poll(
         self,
-        spec: RedditSubredditStreamSpec,
+        spec: RedditSubredditSourceSpec,
         since: datetime | None,
     ) -> Iterator[NewRedditPostObservation]:
         subreddit = spec.subreddit
         if not subreddit:
-            raise ValueError(f"RedditSubredditStreamSpec missing subreddit: {spec}")
+            raise ValueError(f"RedditSubredditSourceSpec missing subreddit: {spec}")
 
-        # `/new` is sorted newest → oldest. Reddit has no server-side `since`
+        # `/new` is sorted newest -> oldest. Reddit has no server-side `since`
         # filter; the early-return on `obs.occurred_at <= since` works only
         # because of that ordering, once we see a post older than `since`,
         # every remaining post on this page and every later page is older too.
@@ -120,7 +120,7 @@ class RedditSubRedditConnector(BaseConnector):
                 entries = _parse_atom(response.text)
             except (ET.ParseError, ValidationError) as exc:
                 # 200 with non-XML, a Reddit-side schema change, or a missing
-                # required field on an entry should fail this stream's poll
+                # required field on an entry should fail this source's poll
                 # cycle, not the whole scheduler.
                 raise ConnectorParseError(
                     f"reddit /r/{subreddit}/new/.rss returned an unexpected payload: {type(exc).__name__}: {exc}"

@@ -56,6 +56,21 @@ def digest_lock(listener_id: str) -> AbstractContextManager[bool]:
     )
 
 
+def feed_set_lock(feed_id: str) -> AbstractContextManager[bool]:
+    """Serialize concurrent `SourceService.set_sources` on one feed.
+
+    Two operators racing `magpie feed set-sources` on the same feed
+    each snapshot the existing rows independently and compute
+    `removed = existing - desired`. The loser's removed set can drop
+    rows the winner just added or kept, and both report success. The
+    lock collapses the race to a single ordered apply; the loser
+    sees a clean retry-friendly error."""
+    return named_lock(
+        name=f"feed_set_lock:{feed_id}",
+        timeout=settings.FEED_SET_LOCK_TIMEOUT_SECONDS,
+    )
+
+
 def refresh_token_lock(refresh_token: str) -> AbstractContextManager[bool]:
     """Serialize concurrent refresh-token rotations for a single token.
 

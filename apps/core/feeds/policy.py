@@ -2,25 +2,22 @@
 that can't live in the pure shared `openmagpie-schema` package).
 
 Mirrors `listeners.policy`. `enforce_policy` runs at the validation
-seams (serializer -> 400; service). Idempotent; pure predicates and
-one default-fill.
+seams (serializer -> 400; service). Idempotent; pure predicates.
 
-Guards:
-  1. default per-stream `last_event_at` to wall-clock now when the
-     operator didn't specify one. The poller treats this as a since-
-     cursor; setting it at save (not on first poll) removes the
-     "fetches nothing on first cycle" cold-start dance and gives every
-     watch a non-None invariant downstream code can rely on. Operators
-     who want a backfill window pass an explicit past datetime.
-  2. no future per-stream `last_event_at` (a future watermark silently
-     disables the stream until wall-clock passes it).
-  3. retention_days in [1, 365] (0/negative would prune everything;
-     unbounded would grow the item log forever).
+Guards on the feed config:
+  - retention_days in [1, 365] (0/negative would prune everything;
+    unbounded would grow the item log forever).
+
+Per-source `last_event_at` defaulting + future-watermark rejection
+moved to `default_and_enforce_source_watermark`, called from the
+Source create / set paths (rows on a different model than the config).
 
 Raises `PolicyError` (ValueError); callers map it to a 400.
 """
 
 from __future__ import annotations
+
+from datetime import datetime
 
 from django.utils import timezone
 
@@ -35,30 +32,22 @@ class PolicyError(ValueError):
     boundary; the message is operator-facing."""
 
 
-def _default_and_enforce_watermarks(config: FeedConfig) -> None:
-    """Fill missing per-stream `last_event_at` with now; reject future ones.
-
-    Default-fill replaces the legacy first-poll cold-start: by setting
-    the watermark at save time we make `last_event_at is None`
-    impossible post-validation, so the poller can treat it as a hard
-    invariant. An operator who wants a backfill window passes an
-    explicit past datetime; the future-watermark guard still catches
-    fat-fingered dates like `2030-01-01`.
-
-    Mutates the config in place (re-assigning `watch.last_event_at`);
-    callers re-serialize the config when persisting."""
+def default_and_enforce_source_watermark(value: datetime | None) -> datetime:
+    """Fill a missing per-source `last_event_at` with wall-clock now;
+    reject a future watermark. Returned value is used as-is on the new
+    Source row, making `last_event_at is None` impossible post-validation
+    so the poller can treat it as a hard invariant. Operators who want
+    a backfill window pass an explicit past datetime."""
     now = timezone.now()
-    for watch in getattr(config, "streams", []):
-        value = watch.last_event_at
-        if value is None:
-            watch.last_event_at = now
-            continue
-        v = value if value.tzinfo else value.replace(tzinfo=now.tzinfo)
-        if v > now:
-            raise PolicyError(
-                f"last_event_at is in the future ({value.isoformat()}); "
-                "a future watermark silently disables the stream until then"
-            )
+    if value is None:
+        return now
+    v = value if value.tzinfo else value.replace(tzinfo=now.tzinfo)
+    if v > now:
+        raise PolicyError(
+            f"last_event_at is in the future ({value.isoformat()}); "
+            "a future watermark silently disables the source until then"
+        )
+    return value
 
 
 def _enforce_retention(config: FeedConfig) -> None:
@@ -71,12 +60,8 @@ def _enforce_retention(config: FeedConfig) -> None:
 
 
 def enforce_policy(config: FeedConfig) -> FeedConfig:
-    """Apply every server policy guard; return the config or raise
-    `PolicyError`. Idempotent.
-
-    Duck-types the config (getattr) because only CuratedFeedConfig exists
-    today; when a 2nd kind lands, replace with an explicit structural
-    contract on FeedConfig (matches the listeners.policy stance)."""
-    _default_and_enforce_watermarks(config)
+    """Apply every server policy guard on the feed config; return the
+    config or raise `PolicyError`. Idempotent. Per-source watermark
+    policy runs on the Source create/set paths, not here."""
     _enforce_retention(config)
     return config

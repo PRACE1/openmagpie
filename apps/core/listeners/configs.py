@@ -20,10 +20,9 @@ from openmagpie_schema.configs import (
     LogNotifierSpec,
     NotifierSpec,
     NotifierSpecBase,
-    RedditSubredditStreamSpec,
+    RedditSubredditSourceSpec,
     SemanticListenerConfig,
-    StreamSpec,
-    StreamWatch,
+    SourceSpec,
     WebhookNotifierSpec,
 )
 
@@ -35,9 +34,8 @@ __all__ = [
     "LogNotifierSpec",
     "NotifierSpec",
     "NotifierSpecBase",
-    "RedditSubredditStreamSpec",
+    "RedditSubredditSourceSpec",
     "SemanticListenerConfig",
-    "StreamSpec",
-    "StreamWatch",
+    "SourceSpec",
     "WebhookNotifierSpec",
 ]
