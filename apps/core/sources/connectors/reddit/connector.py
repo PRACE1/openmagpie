@@ -1,10 +1,11 @@
 import logging
-import xml.etree.ElementTree as ET
+import time
 from collections.abc import Iterator
-from datetime import datetime
+from datetime import UTC, datetime
+from typing import Any
 
+import feedparser
 import httpx
-from pydantic import ValidationError
 
 from events.observations import Observation
 from events.registry import register
@@ -12,7 +13,6 @@ from openmagpie_schema.configs import RedditSubredditSourceSpec
 
 from ..base import BaseConnector, ConnectorParseError
 from .observations import NewRedditPostObservation
-from .payloads import RedditAtomEntry
 
 logger = logging.getLogger("sources")
 
@@ -35,28 +35,14 @@ REDDIT_USER_AGENT = (
 PAGE_SIZE = 100
 MAX_PAGES = 10
 
-ATOM_NS = "{http://www.w3.org/2005/Atom}"
 
-
-def _parse_atom(xml_text: str) -> list[RedditAtomEntry]:
-    """Project Reddit's `.rss` Atom XML into our `RedditAtomEntry` list."""
-    root = ET.fromstring(xml_text)
-    entries: list[RedditAtomEntry] = []
-    for entry in root.findall(f"{ATOM_NS}entry"):
-        link_el = entry.find(f"{ATOM_NS}link")
-        cat_el = entry.find(f"{ATOM_NS}category")
-        entries.append(
-            RedditAtomEntry(
-                atom_id=entry.findtext(f"{ATOM_NS}id", default=""),
-                title=entry.findtext(f"{ATOM_NS}title", default=""),
-                published=entry.findtext(f"{ATOM_NS}published", default=""),
-                content_html=entry.findtext(f"{ATOM_NS}content", default=""),
-                link=link_el.get("href", "") if link_el is not None else "",
-                author_name=entry.findtext(f"{ATOM_NS}author/{ATOM_NS}name", default=""),
-                subreddit=cat_el.get("term", "") if cat_el is not None else "",
-            )
-        )
-    return entries
+def _entry_published(entry: Any) -> datetime | None:
+    """feedparser exposes Atom `<published>` as the `published_parsed`
+    struct_time in UTC. Convert to aware datetime; None if missing."""
+    parsed = entry.get("published_parsed")
+    if isinstance(parsed, time.struct_time):
+        return datetime.fromtimestamp(time.mktime(parsed), tz=UTC)
+    return None
 
 
 class RedditSubRedditConnector(BaseConnector):
@@ -124,23 +110,31 @@ class RedditSubRedditConnector(BaseConnector):
                 timeout=15.0,
             )
             response.raise_for_status()
-            try:
-                entries = _parse_atom(response.text)
-            except (ET.ParseError, ValidationError) as exc:
-                # 200 with non-XML, a Reddit-side schema change, or a missing
-                # required field on an entry should fail this source's poll
-                # cycle, not the whole scheduler.
+
+            parsed = feedparser.parse(response.content)
+            # feedparser flags malformed XML as `bozo` but typically still
+            # extracts entries; only fail the cycle when bozo coincides
+            # with zero entries (a real schema-change / 200-with-HTML case).
+            if parsed.bozo and not parsed.entries:
+                exc = parsed.get("bozo_exception")
                 raise ConnectorParseError(
                     f"reddit /r/{subreddit}/new/.rss returned an unexpected payload: {type(exc).__name__}: {exc}"
-                ) from exc
+                )
 
-            if not entries:
+            if not parsed.entries:
                 return  # empty page, nothing more to consume
 
             last_atom_id: str | None = None
-            for entry in entries:
-                obs = NewRedditPostObservation.from_atom_entry(entry, spec)
-                last_atom_id = entry.atom_id or last_atom_id
+            for entry in parsed.entries:
+                published = _entry_published(entry)
+                if published is None:
+                    # Reddit Atom always carries <published>; a missing one
+                    # is a Reddit-side schema change. Skip the row instead
+                    # of dropping the whole page (fail loud only on bozo
+                    # + zero entries above).
+                    continue
+                obs = NewRedditPostObservation.from_feedparser_entry(entry, spec, published)
+                last_atom_id = entry.get("id") or last_atom_id
                 if since is not None and obs.occurred_at <= since:
                     # /new is reverse-chronological, all remaining items on
                     # this and later pages are older. We've caught up.

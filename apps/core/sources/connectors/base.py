@@ -54,7 +54,6 @@ class Connector(Protocol):
         self,
         spec: SourceSpec,
         since: datetime | None,
-        field_map: dict[str, str] | None = None,
     ) -> int:
         """Exact count of observations newer than `since`. Used by the
         polling op's warm path to give progress UIs an `N/total` and
@@ -86,9 +85,8 @@ class BaseConnector:
         self,
         spec: SourceSpec,
         since: datetime | None,
-        field_map: dict[str, str] | None = None,
     ) -> int:
-        return sum(1 for _ in self.poll(spec, since=since, field_map=field_map))
+        return sum(1 for _ in self.poll(spec, since=since))
 
     def poll(
         self,

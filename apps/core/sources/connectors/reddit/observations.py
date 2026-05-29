@@ -1,14 +1,10 @@
 import html
 import re
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, ClassVar
+from typing import Any, ClassVar
 
 from events.observations import Observation
 from openmagpie_schema.configs import RedditSubredditSourceSpec
-
-if TYPE_CHECKING:
-    from .payloads import RedditAtomEntry
-
 
 # Reddit wraps the post body in `<!-- SC_OFF --> ... <!-- SC_ON -->` and
 # appends a "submitted by ... [link] [comments]" trailer. We want just the
@@ -30,6 +26,17 @@ def _atom_content_to_text(content_html: str) -> str:
     body_html = match.group(1)
     body = _TAG_RE.sub(" ", body_html)
     return _WS_RE.sub(" ", html.unescape(body)).strip()
+
+
+def _feedparser_content_html(entry: Any) -> str:
+    """Atom `<content type="html">` lands in `entry.content` as a list of
+    FeedParserDicts (one per representation Atom can carry). Reddit only
+    ships one; pull its `.value`. Missing = link post; return ""."""
+    content = entry.get("content")
+    if not content:
+        return ""
+    first = content[0]
+    return first.get("value", "") if isinstance(first, dict) else str(first)
 
 
 class NewRedditPostObservation(Observation):
@@ -73,28 +80,33 @@ class NewRedditPostObservation(Observation):
         )
 
     @classmethod
-    def from_atom_entry(
+    def from_feedparser_entry(
         cls,
-        entry: "RedditAtomEntry",
+        entry: Any,
         spec: RedditSubredditSourceSpec,
+        published: datetime,
     ) -> "NewRedditPostObservation":
         # Atom id is `t3_<post-id>`; the post id alone matches what the JSON
         # endpoint returned, so existing FeedItems keyed on the bare id stay
         # de-duped across the connector swap.
-        post_id = entry.atom_id.removeprefix("t3_")
+        post_id = entry.get("id", "").removeprefix("t3_")
         # `/u/username` -> `username`. Deleted users come back as `/u/[deleted]`.
-        author = entry.author_name.removeprefix("/u/")
+        author = entry.get("author", "").removeprefix("/u/")
+        link = entry.get("link", "")
         # `link` is the absolute comments URL; the permalink is the path part.
-        permalink = entry.link.removeprefix("https://www.reddit.com") or "/"
+        permalink = link.removeprefix("https://www.reddit.com") or "/"
+        # Atom `<category term="...">` ; feedparser exposes it as `tags`.
+        tags = entry.get("tags") or []
+        subreddit = tags[0].get("term", "") if tags and isinstance(tags[0], dict) else ""
         return cls(
             external_id=post_id,
             kind=cls.EVENT_KIND,
-            occurred_at=datetime.fromisoformat(entry.published),
+            occurred_at=published,
             source=spec.kind,
-            title=entry.title,
-            content=_atom_content_to_text(entry.content_html),
+            title=entry.get("title", ""),
+            content=_atom_content_to_text(_feedparser_content_html(entry)),
             author=author,
-            url=entry.link,
+            url=link,
             permalink=permalink,
-            subreddit=entry.subreddit or spec.subreddit,
+            subreddit=subreddit or spec.subreddit,
         )
