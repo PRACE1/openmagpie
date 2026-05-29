@@ -241,10 +241,17 @@ class FeedPollOperation:
         `source.last_event_at` is filled in by feeds.policy at save time
         (or carried by the data migration), so it's a real datetime by
         invariant. The connector treats it as a since-cursor; items with
-        `occurred_at <= since` are skipped."""
+        `occurred_at <= since` are skipped.
+
+        The effective `field_map` is `default_field_map | row.field_map`
+        (row wins per key) ; passed through to the connector so a single
+        Feed can mix sources whose publishers put the body in different
+        fields without rewriting the feed-level default. Connectors that
+        don't read field_map accept and ignore it."""
+        field_map = {**self.config.default_field_map, **(source.field_map or {})}
         connector = source_registry.get(spec.kind)
         obs_iter = _ObservedSource(
-            connector.poll(spec, since=source.last_event_at),
+            connector.poll(spec, since=source.last_event_at, field_map=field_map),
             initial_newest=source.last_event_at,
         )
         recorded = self.feed_item_svc.record_items(

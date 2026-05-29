@@ -38,14 +38,23 @@ class Connector(Protocol):
         self,
         spec: SourceSpec,
         since: datetime | None,
+        field_map: dict[str, str] | None = None,
     ) -> Iterator[Observation]:
-        """Yield typed Observations for one source, newer than `since`."""
+        """Yield typed Observations for one source, newer than `since`.
+
+        `field_map` is the EFFECTIVE map for this source ; the polling
+        orchestrator merges the feed's `default_field_map` with the
+        Source row's `field_map` (row wins per key) and passes the
+        result. Connectors that don't read it (e.g. Reddit) accept and
+        ignore. Recognized keys are per-connector; unknown keys are
+        silently dropped. None == empty dict."""
         ...
 
     def count(
         self,
         spec: SourceSpec,
         since: datetime | None,
+        field_map: dict[str, str] | None = None,
     ) -> int:
         """Exact count of observations newer than `since`. Used by the
         polling op's warm path to give progress UIs an `N/total` and
@@ -77,12 +86,14 @@ class BaseConnector:
         self,
         spec: SourceSpec,
         since: datetime | None,
+        field_map: dict[str, str] | None = None,
     ) -> int:
-        return sum(1 for _ in self.poll(spec, since=since))
+        return sum(1 for _ in self.poll(spec, since=since, field_map=field_map))
 
     def poll(
         self,
         spec: SourceSpec,
         since: datetime | None,
+        field_map: dict[str, str] | None = None,
     ) -> Iterator[Observation]:  # pragma: no cover - subclass responsibility
         raise NotImplementedError

@@ -91,7 +91,15 @@ class RedditSubRedditConnector(BaseConnector):
         self,
         spec: RedditSubredditSourceSpec,
         since: datetime | None,
+        field_map: dict[str, str] | None = None,
     ) -> Iterator[NewRedditPostObservation]:
+        # Reddit Atom carries fixed, non-overridable fields ; the
+        # connector ignores `field_map` (the Connector contract
+        # accepts it for the RSS variant + future per-source
+        # overrides). Documented as a no-op rather than silently
+        # dropped so a future Reddit field-map use case (e.g. body
+        # vs title-only) lands here intentionally.
+        del field_map
         subreddit = spec.subreddit
         if not subreddit:
             raise ValueError(f"RedditSubredditSourceSpec missing subreddit: {spec}")
