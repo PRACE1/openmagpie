@@ -140,62 +140,62 @@ class RedditSubRedditConnector(BaseConnector):
                     body = read_response_capped(response, max_bytes=MAX_BODY_BYTES, url_label=url)
 
                 parsed = feedparser.parse(body)
-            # Gate on `not version`: real feeds set `version`
-            # ('atom10' for Reddit ; HTML pages come back as ''.
-            # Reddit's anti-bot rate-limit / login page is a 200 with
-            # HTML body ; without this gate it silently reads as "no
-            # new posts" and never surfaces the block.
-            #
-            # Bozo is intentionally NOT a fail trigger. feedparser
-            # raises bozo=1 with SAXParseException for non-fatal
-            # quirks (undeclared namespace prefix, etc.) AND for hard
-            # parse failures ; we can't reliably discriminate without
-            # matching exception messages. The trade-off: a truncated
-            # body that recovers 0 entries reads as "empty page" and
-            # the loop returns ; next poll picks up when Reddit
-            # recovers. The Reddit-specific concern (the .rss
-            # endpoint being our anon channel) is fully covered by
-            # the version gate alone.
-            if not parsed.entries and not parsed.version:
-                raise ConnectorParseError(
-                    f"reddit /r/{subreddit}/new/.rss returned an unexpected payload "
-                    "(no feed format detected; likely the anti-bot HTML page)"
-                )
+                # Gate on `not version`: real feeds set `version`
+                # ('atom10' for Reddit ; HTML pages come back as ''.
+                # Reddit's anti-bot rate-limit / login page is a 200 with
+                # HTML body ; without this gate it silently reads as "no
+                # new posts" and never surfaces the block.
+                #
+                # Bozo is intentionally NOT a fail trigger. feedparser
+                # raises bozo=1 with SAXParseException for non-fatal
+                # quirks (undeclared namespace prefix, etc.) AND for hard
+                # parse failures ; we can't reliably discriminate without
+                # matching exception messages. The trade-off: a truncated
+                # body that recovers 0 entries reads as "empty page" and
+                # the loop returns ; next poll picks up when Reddit
+                # recovers. The Reddit-specific concern (the .rss
+                # endpoint being our anon channel) is fully covered by
+                # the version gate alone.
+                if not parsed.entries and not parsed.version:
+                    raise ConnectorParseError(
+                        f"reddit /r/{subreddit}/new/.rss returned an unexpected payload "
+                        "(no feed format detected; likely the anti-bot HTML page)"
+                    )
 
-            if not parsed.entries:
-                return  # empty page, nothing more to consume
+                if not parsed.entries:
+                    return  # empty page, nothing more to consume
 
-            last_atom_id: str | None = None
-            for entry in parsed.entries:
-                published = _entry_published(entry)
-                if published is None:
-                    # Reddit Atom always carries <published>; a missing one
-                    # is a Reddit-side schema change. Skip the row instead
-                    # of dropping the whole page (fail loud only on bozo
-                    # + zero entries above).
-                    continue
-                obs = NewRedditPostObservation.from_feedparser_entry(entry, spec, published)
-                last_atom_id = entry.get("id") or last_atom_id
-                # Strict `<`, not `<=`: two posts can share `<published>`
-                # to the second (batch import; same-second submissions),
-                # and dropping on tie permanently loses the second one
-                # because the watermark already crossed its second.
-                # The downstream `external_id` dedup on FeedItem is
-                # idempotent, so re-yielding the boundary post is
-                # suppressed at the recorder seam. The early-return
-                # remains safe: once we see a post strictly older than
-                # `since`, every remaining post on this and later pages
-                # is older too.
-                if since is not None and obs.occurred_at < since:
-                    return
-                yield obs
+                last_atom_id: str | None = None
+                for entry in parsed.entries:
+                    published = _entry_published(entry)
+                    if published is None:
+                        # Reddit Atom always carries <published>; a missing one
+                        # is a Reddit-side schema change. Skip the row instead
+                        # of dropping the whole page (fail loud only on bozo
+                        # + zero entries above).
+                        continue
+                    obs = NewRedditPostObservation.from_feedparser_entry(entry, spec, published)
+                    last_atom_id = entry.get("id") or last_atom_id
+                    # Strict `<`, not `<=`: two posts can share `<published>`
+                    # to the second (batch import; same-second submissions),
+                    # and dropping on tie permanently loses the second one
+                    # because the watermark already crossed its second.
+                    # The downstream `external_id` dedup on FeedItem is
+                    # idempotent, so re-yielding the boundary post is
+                    # suppressed at the recorder seam. The early-return
+                    # remains safe: once we see a post strictly older than
+                    # `since`, every remaining post on this and later pages
+                    # is older too.
+                    if since is not None and obs.occurred_at < since:
+                        return
+                    yield obs
 
-            # Atom has no Reddit-style `after` cursor in the envelope, but
-            # `?after=t3_xxx&limit=N` still works against `.rss`. Use the
-            # last entry's thing-id (already `t3_<post-id>`) as the cursor.
-            if not last_atom_id:
-                return  # nothing to page from
-            after = last_atom_id
+                # Atom has no Reddit-style `after` cursor in the envelope, but
+                # `?after=t3_xxx&limit=N` still works against `.rss`. Use the
+                # last entry's thing-id (already `t3_<post-id>`) as the cursor.
+                if not last_atom_id:
+                    return  # nothing to page from
+                after = last_atom_id
 
 
 # Register observations for hydration of Event.data, single source of truth via the class attrs.
