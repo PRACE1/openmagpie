@@ -1,8 +1,27 @@
 """Observation produced by the generic RSS/Atom connector.
 
-`title` / `url` / `external_id` / `content` / `author` are mapped from
-feedparser's normalized entry dict via a precedence chain per field,
-overridable per source via `field_map`. See `RssEntryObservation.from_feedparser_entry`."""
+`title` / `url` / `author` / `external_id` / `published` map directly to
+feedparser's normalized entry keys (feedparser already collapses RSS
+`<dc:creator>` -> `entry.author`, `<guid>` -> `entry.id`, `<description>`
+-> `entry.summary`, etc.). Two narrow fallbacks remain because they
+encode a real Atom-vs-RSS semantic difference, not a publisher quirk:
+
+  * `content` falls back from `entry.content` (Atom full body, list of
+    representations) to `entry.summary` (RSS `<description>`, Atom
+    short summary). "Longest available body for the engine."
+  * `published` falls back from `entry.published_parsed` to
+    `entry.updated_parsed`. Atom feeds (GitHub releases, Substack
+    edits) often ship only `<updated>`; skipping those would lose
+    real entries.
+
+For everything else, the canonical feedparser key is the contract;
+publishers whose data lives elsewhere set a `field_map` override per
+canonical name (e.g. `{"external_id": "media:content"}` for a podcast
+feed). Unknown override values are simply read from the entry as-is
+(feedparser exposes most namespaced keys with a `_` separator). If
+the resolved key is missing on a `external_id` / `published` field,
+the connector skips the entry and logs WHICH field was unresolved so
+the operator can spot the missing override."""
 
 import html
 import re
@@ -16,17 +35,6 @@ from openmagpie_schema.configs import RssSourceSpec
 _TAG_RE = re.compile(r"<[^>]+>")
 _WS_RE = re.compile(r"\s+")
 
-# Default precedence chains. The `field_map` overrides the first entry,
-# subsequent entries are fallbacks. A connector that drops `published`
-# from the chain and gets nothing skips the entry rather than fabricate
-# a timestamp (the poll watermark must reflect real publish time).
-DEFAULT_FIELD_PRECEDENCE: dict[str, tuple[str, ...]] = {
-    "external_id": ("id", "guid", "link"),
-    "content": ("content", "summary", "description"),
-    "author": ("author", "dc_creator"),
-    "published": ("published_parsed", "updated_parsed"),
-}
-
 
 def _html_to_text(value: str) -> str:
     """Strip HTML tags + collapse whitespace + unescape entities. RSS
@@ -36,40 +44,38 @@ def _html_to_text(value: str) -> str:
     return _WS_RE.sub(" ", html.unescape(_TAG_RE.sub(" ", value))).strip()
 
 
-def _resolve(entry: Any, canonical: str, field_map: dict[str, str]) -> Any:
-    """Walk the (override -> default precedence) chain for one canonical
-    field and return the first truthy value found, or None.
+def _resolve_str(entry: Any, key: str) -> str:
+    """Read a string-shaped field from the feedparser entry. Coerces
+    feedparser's odd "missing returns empty string" + occasional None
+    + numeric publisher values into a stable str."""
+    value = entry.get(key)
+    return str(value).strip() if value else ""
 
-    `entry` is a feedparser FeedParserDict ; attribute access returns
-    "" for missing keys, so a falsy check skips empty strings, missing
-    dict keys, AND missing struct_time fields uniformly."""
-    chain: list[str] = []
-    override = field_map.get(canonical)
+
+def _resolve_content(entry: Any, override: str | None) -> str:
+    """Body: Atom `entry.content[0].value` if present, else `entry.summary`.
+    An override reads that key directly. Always HTML-stripped."""
     if override:
-        chain.append(override)
-    chain.extend(k for k in DEFAULT_FIELD_PRECEDENCE.get(canonical, ()) if k != override)
-    for key in chain:
-        value = entry.get(key)
-        if value:
-            return value
-    return None
+        raw: Any = entry.get(override, "")
+    else:
+        content = entry.get("content")
+        if content:
+            first = content[0]
+            raw = first.get("value", "") if isinstance(first, dict) else first
+        else:
+            raw = entry.get("summary", "")
+    if isinstance(raw, list) and raw:
+        raw = raw[0].get("value", "") if isinstance(raw[0], dict) else raw[0]
+    return _html_to_text(str(raw or ""))
 
 
-def _coerce_content(value: Any) -> str:
-    """Feedparser's `content` key is a list of FeedParserDicts (Atom can
-    carry multiple representations); `summary` / `description` are
-    strings. Pick the first list element if a list, then strip HTML.
-    Anything else gets `str()` + strip."""
-    if isinstance(value, list) and value:
-        value = value[0].get("value", "") if isinstance(value[0], dict) else value[0]
-    return _html_to_text(str(value))
-
-
-def _coerce_published(value: Any) -> datetime | None:
-    """feedparser parses RFC-822/ISO timestamps into `time.struct_time`
-    in UTC, exposed as the `*_parsed` keys. Convert to aware datetime."""
-    if isinstance(value, time.struct_time):
-        return datetime.fromtimestamp(time.mktime(value), tz=UTC)
+def _resolve_published(entry: Any, override: str | None) -> datetime | None:
+    """Atom `published_parsed` -> Atom `updated_parsed`. feedparser parses
+    RFC-822 / ISO into a `time.struct_time` in UTC."""
+    for key in (override,) if override else ("published_parsed", "updated_parsed"):
+        parsed = entry.get(key)
+        if isinstance(parsed, time.struct_time):
+            return datetime.fromtimestamp(time.mktime(parsed), tz=UTC)
     return None
 
 
@@ -110,41 +116,36 @@ class RssEntryObservation(Observation):
         entry: Any,
         spec: RssSourceSpec,
         field_map: dict[str, str],
-    ) -> "RssEntryObservation | None":
+    ) -> "tuple[RssEntryObservation | None, str]":
         """Project one feedparser entry to an `RssEntryObservation`.
 
-        Returns None if no resolvable `published` timestamp exists (the
-        watermark must be real; fabricating one would either gate every
-        future poll on the wrong timestamp or, if we used `now()`, mark
-        a backfilled entry as just-published). The polling op drops
-        None-yielded entries via the `_ObservedSource` walk."""
-        published = _coerce_published(_resolve(entry, "published", field_map))
+        Returns `(obs, "")` on success, or `(None, missing_field)` if a
+        required field can't be resolved. The connector logs the missing
+        field name so the operator can spot which `field_map` override
+        the publisher needs."""
+        published = _resolve_published(entry, field_map.get("published"))
         if published is None:
-            return None
+            return None, "published"
 
-        external_id_raw = _resolve(entry, "external_id", field_map)
-        external_id = str(external_id_raw or "").strip()
+        external_id = _resolve_str(entry, field_map.get("external_id") or "id")
         if not external_id:
-            return None  # FeedItem dedupe key must be non-empty
+            return None, "external_id"
 
-        content = _coerce_content(_resolve(entry, "content", field_map) or "")
-        author_raw = _resolve(entry, "author", field_map)
-        author = str(author_raw or "").strip()
-
-        # `tags` is feedparser's normalized form of `<category>` / Atom
-        # `<category>` ; each item is a FeedParserDict with `term`.
+        # `tags` is feedparser's normalized form of RSS `<category>` /
+        # Atom `<category>` ; each item is a FeedParserDict with `term`.
         categories = [t.get("term", "") for t in entry.get("tags", []) if isinstance(t, dict)]
 
-        return cls(
+        obs = cls(
             external_id=external_id,
             kind=cls.EVENT_KIND,
             occurred_at=published,
             source=spec.kind,
-            title=str(entry.get("title", "")).strip(),
-            content=content,
-            url=str(entry.get("link", "")).strip(),
+            title=_resolve_str(entry, field_map.get("title") or "title"),
+            content=_resolve_content(entry, field_map.get("content")),
+            url=_resolve_str(entry, field_map.get("url") or "link"),
             parent_external_id="",
-            author=author,
+            author=_resolve_str(entry, field_map.get("author") or "author"),
             feed_url=spec.url,
             categories=[c for c in categories if c],
         )
+        return obs, ""

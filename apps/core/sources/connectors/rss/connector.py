@@ -49,11 +49,14 @@ class RssConnector(BaseConnector):
     (sitemap, archive-only feeds, ...) that doesn't belong in this
     connector.
 
-    `field_map` recognised keys: `external_id`, `content`, `author`,
-    `published`. Each is the feedparser-entry key to read in place of
-    the default precedence chain (see
-    `observations.DEFAULT_FIELD_PRECEDENCE`). Unknown keys are silently
-    dropped so a future schema extension is forward-compatible."""
+    `field_map` recognised keys: `external_id`, `title`, `url`,
+    `content`, `author`, `published`. Each is the feedparser-entry
+    key to read INSTEAD of the canonical default (e.g. `entry.id` for
+    external_id). Most feeds need no overrides ; feedparser normalizes
+    RSS / Atom / dc:* differences itself. Unknown override keys are
+    read from the entry as-is so a publisher with a namespaced field
+    can use `{"author": "itunes_author"}` without a connector change.
+    Unknown canonical names in `field_map` are silently dropped."""
 
     kind = RssSourceSpec.SOURCE_KIND
     observations: list[type[Observation]] = [RssEntryObservation]
@@ -94,15 +97,20 @@ class RssConnector(BaseConnector):
             raise ConnectorParseError(f"rss feed {spec.url} returned an unparseable body: {type(exc).__name__}: {exc}")
 
         for entry in parsed.entries:
-            obs = RssEntryObservation.from_feedparser_entry(entry, spec, field_map)
+            obs, missing = RssEntryObservation.from_feedparser_entry(entry, spec, field_map)
             if obs is None:
-                # Missing published or external_id ; logged once per
-                # entry at debug so an operator chasing "why aren't
-                # these landing" can flip to DEBUG and see the rows
-                # without spamming production logs.
+                # Named so the operator can spot which `field_map`
+                # override the publisher needs (e.g. "missing
+                # external_id" on a feed that puts the id in
+                # `<media:content url=...>` -> set `field_map:
+                # external_id: media_content`). DEBUG by default
+                # because well-behaved feeds shouldn't trip this;
+                # WARN here would spam production logs for a
+                # publisher who's missing one row's pubDate.
                 logger.debug(
-                    "rss: skipped entry on %s (missing published or external_id): %r",
+                    "rss: skipped entry on %s (missing %s): %r",
                     spec.url,
+                    missing,
                     entry.get("title", "<no title>"),
                 )
                 continue
