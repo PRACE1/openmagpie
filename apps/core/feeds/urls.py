@@ -13,4 +13,14 @@ urlpatterns = [
         views.FeedDetailView.as_view(),
         name="feed_detail",
     ),
+    api_path(
+        "<str:feed_id>/sources",
+        views.FeedSourcesView.as_view(),
+        name="feed_sources",
+    ),
+    api_path(
+        "<str:feed_id>/sources/<str:source_id>",
+        views.FeedSourceDetailView.as_view(),
+        name="feed_source_detail",
+    ),
 ]

@@ -7,7 +7,8 @@ small enough to read top-to-bottom on its own.
 
 import logging
 from datetime import datetime, timedelta
-from typing import Any
+from functools import cached_property
+from typing import TYPE_CHECKING, Any
 
 from django.db import transaction
 
@@ -16,6 +17,9 @@ from feeds.policy import PolicyError, enforce_policy
 from feeds.registry import load_config, parse_config, validate_config
 
 from ._global import FeedGlobal
+
+if TYPE_CHECKING:
+    from feeds.services.sources import SourceService
 
 logger = logging.getLogger("feeds")
 
@@ -33,6 +37,14 @@ class FeedService:
     def _assert_scope(self, account_id: str, what: str) -> None:
         if account_id != self.account_id:
             raise ValueError(f"{what} account_id mismatch: {account_id!r} not in scope {self.account_id!r}")
+
+    @cached_property
+    def source_svc(self) -> "SourceService":
+        # Local import to avoid the feeds -> sources -> feeds.models
+        # import cycle at module load.
+        from feeds.services.sources import SourceService
+
+        return SourceService(account_id=self.account_id)
 
     def get(self, id: str) -> Feed:
         """Raises Feed.DoesNotExist if missing (or owned by another account)."""
@@ -78,7 +90,15 @@ class FeedService:
         kind: str,
         poll_interval_seconds: int,
         data: dict[str, Any],
+        sources: list[Any] | None = None,
     ) -> Feed:
+        """Create a Feed plus, optionally, its starter Source rows in
+        one atomic step. `sources` is a list of `SourceInput` (already
+        validated upstream by the serializer / CLI parser).
+
+        For a curated feed with sources, the inner `set_sources` call
+        runs the same diff-and-bulk_create as the dedicated set verb
+        ; starting from zero rows, every source is an add."""
         feed = self.build(
             user_id=user_id,
             name=name,
@@ -86,7 +106,10 @@ class FeedService:
             poll_interval_seconds=poll_interval_seconds,
             data=data,
         )
-        feed.save()
+        with transaction.atomic():
+            feed.save()
+            if sources:
+                self.source_svc.set_sources(feed, sources)
         return feed
 
     def build_update(
@@ -103,7 +126,7 @@ class FeedService:
         self._assert_scope(str(feed.account_id), "feed")
 
         # parse_config = shape only. Policy runs on the MERGE OUTPUT (what
-        # persists); merge_preserving carries forward per-stream watermarks.
+        # persists); merge_preserving handles edit round-trip state.
         submitted = parse_config(str(feed.kind), data)
         prior = load_config(feed)
         try:
@@ -133,13 +156,15 @@ class FeedService:
         return feed
 
     def delete(self, feed: Feed, /) -> None:
-        """Delete a Feed and its FeedItems. Wrapped in transaction.atomic()
-        so a failure between the cascade and the row delete can't orphan
-        items (FeedItem.feed_id is a plain CharField, not a FK; no DB-level
-        cascade; the service owns the cleanup)."""
+        """Delete a Feed plus its FeedItems and Source rows. Wrapped in
+        transaction.atomic() so a failure between the cascades and the
+        row delete can't orphan rows. FeedItem.feed_id and Source.feed_id
+        are plain CharFields, not FKs (no DB-level cascade) ; the
+        service owns the cleanup."""
         self._assert_scope(str(feed.account_id), "feed")
         with transaction.atomic():
             FeedItem.objects.filter(account_id=self.account_id, feed_id=feed.id).delete()
+            self.source_svc.delete_for_feed(feed)
             feed.delete()
 
     def update_poll_state(
@@ -153,7 +178,7 @@ class FeedService:
         """Persist the poll cadence + (optionally) the config blob.
 
         `data=None` means "don't touch `feed.data`"; used on full-outage
-        cycles where no stream ran, so there are no advanced watermarks to
+        cycles where no source ran, so there are no advanced watermarks to
         persist and writing the pre-cycle snapshot back would just clobber
         any concurrent operator edit. We still advance last_polled_at /
         next_poll_at so the scheduler respects the operator's cadence

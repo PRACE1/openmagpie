@@ -31,7 +31,7 @@ class SeedCursor(StrEnum):
     listener judges everything in the retention window on first cycle
     (the default).
 
-    Unknown values must 400 at the view boundary — silently falling
+    Unknown values must 400 at the view boundary ; silently falling
     through to the default defeats the opt-out the operator asked for.
     """
 
@@ -210,7 +210,7 @@ class ListenerService:
         except Feed.DoesNotExist as exc:
             # build's _assert_feed_exists check has already passed; reaching
             # here means a concurrent operator deleted the feed between
-            # validate and seed. Re-raise as PolicyError → 400 so the
+            # validate and seed. Re-raise as PolicyError -> 400 so the
             # creating user gets a real error instead of a silently-dangling
             # listener with cursor='' pointing at a missing feed.
             raise PolicyError(f"feed {feed_id!r} was deleted before listener could be created") from exc
@@ -239,8 +239,8 @@ class ListenerService:
         `last_judged_item_id`, ...) are preserved by construction: we
         mutate the fetched row in place and never reassign them. The
         config blob carries forward its own must-not-reset state via
-        `merge_preserving` (masked `***` secrets; no stream watermarks
-        anymore - the Feed owns those).
+        `merge_preserving` (masked `***` secrets; no source watermarks
+        anymore - they live on the Feed's Source rows).
         """
         self._assert_scope(str(listener.account_id), "listener")
         self.validate_delivery_mode(delivery_mode)

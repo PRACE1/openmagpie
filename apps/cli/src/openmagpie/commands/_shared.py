@@ -139,3 +139,18 @@ def _flatten_errors(body: Any, prefix: str = "") -> list[str]:
     else:
         out.append(f"{prefix or '_'}: {body}")
     return out
+
+
+# Shared `--format yaml|json` option helpers for the template /
+# export commands. One source of truth for the accepted values and
+# the validation message, used by both `feed template[--with-source]`
+# and `feed (template|export)-sources`.
+FORMAT_CHOICES = ("yaml", "json")
+
+
+def _check_format(format: str) -> str:
+    fmt = format.lower()
+    if fmt not in FORMAT_CHOICES:
+        console.error(f"--format must be one of {FORMAT_CHOICES!r}, got {format!r}")
+        raise typer.Exit(code=1)
+    return fmt

@@ -26,6 +26,9 @@ from datetime import UTC, datetime, timedelta
 
 import typer
 
+from openmagpie_schema.configs import RedditSubredditSourceSpec
+from openmagpie_schema.feed import SourceInput
+
 from .. import console
 from ..api.engine import EngineStatus
 from ..api.feed import FeedEnvelope
@@ -84,10 +87,8 @@ def quickstart() -> None:
         name=feed_name,
         kind="curated",
         poll_interval_seconds=300,
-        data={
-            "streams": [_stream_watch(s, backfill) for s in subreddits],
-            "retention_days": 30,
-        },
+        data={"retention_days": 30},
+        sources=[_source_input(s, backfill) for s in subreddits],
     )
     feed_body = feed_envelope.model_dump(mode="json")
 
@@ -185,7 +186,7 @@ def _require_available_engine(ac: AppContext) -> EngineStatus:
         else:
             console.error(f"  {engine.kind}: unavailable")
         if engine.how_to_fix:
-            console.error(f"    → {engine.how_to_fix}")
+            console.error(f"    -> {engine.how_to_fix}")
     raise typer.Exit(code=1)
 
 
@@ -228,7 +229,7 @@ def _prompt_backfill() -> timedelta | None:
     One prompt, integer hours: `0` means live-only (server policy
     fills `last_event_at = now` and the first poll fetches only
     items posted after that), `1..168` translates to a past
-    `last_event_at = now - hours` on every stream. Default is 24h
+    `last_event_at = now - hours` on every source. Default is 24h
     because the demo is the point of quickstart: out of the box
     you want real posts to score, not an empty feed.
 
@@ -250,7 +251,7 @@ def _prompt_backfill() -> timedelta | None:
 
 
 def _hours_label(delta: timedelta) -> str:
-    """`72 hours` → `3 days`; smaller numbers stay in hours so a 24h
+    """`72 hours` -> `3 days`; smaller numbers stay in hours so a 24h
     default reads naturally."""
     hours = int(delta.total_seconds() // 3600)
     if hours >= 24 and hours % 24 == 0:
@@ -259,15 +260,15 @@ def _hours_label(delta: timedelta) -> str:
     return f"{hours} hour{'s' if hours != 1 else ''}"
 
 
-def _stream_watch(subreddit: str, backfill: timedelta | None) -> dict:
-    """Build one stream-watch envelope. When `backfill` is set, pin
-    `last_event_at` to `now - backfill` so the first poll fetches
-    items from that window forward; otherwise leave it absent and
-    the server's policy defaults it to `now` (live-only)."""
-    watch: dict = {"spec": {"kind": "reddit_subreddit", "subreddit": subreddit}}
-    if backfill is not None:
-        watch["last_event_at"] = (datetime.now(UTC) - backfill).isoformat()
-    return watch
+def _source_input(subreddit: str, backfill: timedelta | None) -> SourceInput:
+    """Build one starter `SourceInput` for the quickstart feed. When
+    `backfill` is set, pin `last_event_at` to `now - backfill` so the
+    first poll fetches items from that window forward; otherwise leave
+    it None and the server's policy defaults it to `now` (live-only)."""
+    return SourceInput(
+        spec=RedditSubredditSourceSpec(subreddit=subreddit),
+        last_event_at=(datetime.now(UTC) - backfill) if backfill is not None else None,
+    )
 
 
 _SLUG_RE = re.compile(r"[^a-z0-9]+")

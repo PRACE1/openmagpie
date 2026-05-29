@@ -10,7 +10,6 @@ what lets this module be a dependency-free shared package; the guards
 are preserved, just relocated.
 """
 
-from datetime import datetime
 from typing import Annotated, Any, ClassVar, Literal
 from urllib.parse import urlsplit
 
@@ -47,11 +46,13 @@ def _is_redacted_url(url: str) -> bool:
     return url == REDACTED or url.endswith("/***")
 
 
-# ── Stream specs (discriminated union over kind) ──────────────────────────
+# ── Source specs (discriminated union over kind) ──────────────────────────
 
 
-class RedditSubredditStreamSpec(BaseModel):
-    """Identity of one subreddit feed. Bound to RedditSubRedditConnector."""
+class RedditSubredditSourceSpec(BaseModel):
+    """Identity of one subreddit source. Bound to RedditSubRedditConnector."""
+
+    SOURCE_KIND: ClassVar[str] = "reddit_subreddit"
 
     kind: Literal["reddit_subreddit"] = "reddit_subreddit"
     subreddit: str
@@ -60,22 +61,38 @@ class RedditSubredditStreamSpec(BaseModel):
         return f"r/{self.subreddit}"
 
 
-StreamSpec = Annotated[
-    RedditSubredditStreamSpec,
+class RssSourceSpec(BaseModel):
+    """Identity of one RSS/Atom source by URL. Bound to a generic RSS connector."""
+
+    SOURCE_KIND: ClassVar[str] = "rss"
+
+    kind: Literal["rss"] = "rss"
+    url: str
+    name: str = ""
+
+    @field_validator("url")
+    @classmethod
+    def _validate_url_structural(cls, value: str) -> str:
+        """Structural check only (http/https scheme + host present),
+        mirroring `WebhookNotifierSpec`. Connector-side reachability /
+        feed-format validation runs at poll time. An empty URL slips
+        through plain `str` typing and silently produces a blank
+        source_label downstream; reject it here."""
+        parts = urlsplit(value)
+        if parts.scheme not in {"http", "https"}:
+            raise ValueError(f"rss URL scheme must be http or https, got {parts.scheme!r}")
+        if not parts.netloc:
+            raise ValueError(f"rss URL missing host: {value!r}")
+        return value
+
+    def display(self) -> str:
+        return self.name or self.url
+
+
+SourceSpec = Annotated[
+    RedditSubredditSourceSpec | RssSourceSpec,
     Field(discriminator="kind"),
 ]
-
-
-class StreamWatch(BaseModel):
-    """A stream in a Feed: identity + per-stream poll state.
-
-    Owned by a Feed (the Feed polls; Listeners subscribe to the Feed and
-    receive items from every stream in it). The "no future watermark"
-    guard is server policy (it needs the wall clock); see core
-    `feeds.policy`."""
-
-    spec: StreamSpec
-    last_event_at: datetime | None = None  # high-water mark for incremental polling
 
 
 class EngineSpec(BaseModel):
@@ -216,22 +233,20 @@ class ListenerConfig(BaseModel):
 
     def merge_preserving(self, prior: "ListenerConfig") -> "ListenerConfig":
         """Edit round-trip: return self with state that must NOT reset on
-        an edit carried over from `prior` - per-stream poll watermarks
-        and redacted secrets the operator left masked. No safe default:
-        a silent passthrough would reset every watermark and corrupt
+        an edit carried over from `prior` - redacted secrets the operator
+        left masked. No safe default: a silent passthrough would corrupt
         every secret to `***`."""
         raise NotImplementedError(
-            f"{type(self).__name__} must implement merge_preserving() "
-            "(no safe default: would reset watermarks and corrupt secrets)"
+            f"{type(self).__name__} must implement merge_preserving() (no safe default: would corrupt secrets)"
         )
 
 
 class SemanticListenerConfig(ListenerConfig):
     """Schema for Listener.data when Listener.kind == 'semantic'.
 
-    A listener is an ATTENTION over a Feed: it does not own streams (the
+    A listener is an ATTENTION over a Feed: it does not own sources (the
     Feed does). It subscribes to a Feed by id and judges every item the
-    Feed produces (across all of the Feed's streams) with its engine +
+    Feed produces (across all of the Feed's sources) with its engine +
     instructions."""
 
     LISTENER_KIND: ClassVar[str] = "semantic"
@@ -245,7 +260,7 @@ class SemanticListenerConfig(ListenerConfig):
     engine: EngineSpec = Field(default_factory=EngineSpec)
     # A FeedItem is a hit when engine.judge(...).score >= hit_threshold.
     # 0.8 Pareto default: most value, little noise. Strict `gt=0.0` so a
-    # threshold of 0 can't fire on every item — an engine that returns 0
+    # threshold of 0 can't fire on every item ; an engine that returns 0
     # for "completely irrelevant" would otherwise hit on every miss.
     hit_threshold: float = Field(default=0.8, gt=0.0, le=1.0)
     notifiers: list[NotifierSpec] = []
@@ -263,7 +278,7 @@ class SemanticListenerConfig(ListenerConfig):
 
     def summary(self) -> ListenerConfigSummary:
         """feed_id (serializer may enrich to feed name), notifiers by
-        kind, engine as `kind | model`. No secrets, no streams (the Feed
+        kind, engine as `kind | model`. No secrets, no sources (the Feed
         owns those)."""
         engine = f"{self.engine.kind} | {self.engine.model}" if self.engine.model else self.engine.kind
         return ListenerConfigSummary(
@@ -275,8 +290,9 @@ class SemanticListenerConfig(ListenerConfig):
     def merge_preserving(self, prior: "ListenerConfig") -> "SemanticListenerConfig":
         """Carry forward, from `prior`, the config state an edit must not
         reset: redacted secrets the operator left as `***`. There are NO
-        per-stream watermarks here anymore - the Feed owns those - so the
-        only round-trip concern is notifier secrets. `feed_id` is
+        per-source watermarks here anymore - they live on the Feed's
+        Source rows - so the only round-trip concern is notifier
+        secrets. `feed_id` is
         operator-editable; the submitted value wins.
 
         Notifiers have no non-secret identity to key on (a webhook's url

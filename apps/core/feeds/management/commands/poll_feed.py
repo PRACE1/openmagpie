@@ -4,7 +4,7 @@ from django.core.management.base import BaseCommand, CommandParser
 
 from feeds.models import Feed
 from feeds.services import FeedService
-from feeds.services.polling import FeedPollOperation, StreamPolled
+from feeds.services.polling import FeedPollOperation, SourcePolled
 
 
 class Command(BaseCommand):
@@ -22,8 +22,8 @@ class Command(BaseCommand):
 
         self.stdout.write(f"{feed.name} | {feed.id}")
 
-        def on_progress(ev: StreamPolled) -> None:
-            self.stdout.write(f"  {ev.stream_display}: {ev.observed} observed, {ev.recorded} new")
+        def on_progress(ev: SourcePolled) -> None:
+            self.stdout.write(f"  {ev.source_display}: {ev.observed} observed, {ev.recorded} new")
 
         result = FeedPollOperation(feed, on_progress=on_progress).run()
         self.stdout.write(

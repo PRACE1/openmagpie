@@ -1,8 +1,8 @@
 """Payload-sample preview: delivery dry-run for a listener.
 
-Composes the same code paths a real delivery cycle takes — EventService
+Composes the same code paths a real delivery cycle takes ; EventService
 for recent hits, the registered Observation class for the listener's
-feed source, every configured notifier's `render()` — but skips the
+feed source, every configured notifier's `render()` ; but skips the
 ship step. The result is what each receiver WOULD see for the next
 batch on this listener.
 
@@ -25,7 +25,7 @@ from pydantic import ValidationError as PydanticValidationError
 from events.observations import Observation
 from events.registry import UnhydrateableObservation, class_for_source, hydrate_data
 from events.services import EventKind, EventService
-from feeds.models import Feed
+from feeds.models import Feed, Source
 from feeds.registry import load_config as load_feed_config
 from feeds.services import FeedService
 from listeners.models import Listener
@@ -44,8 +44,8 @@ class CannotPreviewSource(Exception):
     """No Observation class honestly matches the listener's feed source.
 
     Raised when the resolver can't pick a class to synthesize a sample
-    from — feed missing, feed config drifted out of schema, or none of
-    the feed's stream kinds have a registered connector in this
+    from ; feed missing, feed config drifted out of schema, or none of
+    the feed's source kinds have a registered connector in this
     deployment. View layer translates to a 409 APIException; logs name
     the specific case for operators.
     """
@@ -121,7 +121,7 @@ def _build_hits(
 
     Real hits come from the most recent `target` HIT Events on this
     listener (un-hydrateable rows are skipped). If real hits are short,
-    backfill with `cls.sample(variant=i)` for the missing slots — the
+    backfill with `cls.sample(variant=i)` for the missing slots ; the
     connector owns variation across variants; this helper just asks
     for variant 0, 1, .... Returns `(hits, synthetic_used)`.
 
@@ -180,12 +180,12 @@ def _observation_class_for(config: SemanticListenerConfig, *, account_id: str) -
     Three None paths (each warn-logged so operators can diagnose):
       - feed row missing
       - feed config no longer validates against the current schema
-      - feed loads fine but none of its stream `spec.kind`s have a
+      - feed loads fine but none of its source `spec.kind`s have a
         registered Observation class (connector renamed/removed/unloaded)
     """
     try:
         feed = FeedService(account_id=account_id).get(config.feed_id)
-        feed_config = load_feed_config(feed)
+        load_feed_config(feed)  # surface kind-registry + schema drift early
     except Feed.DoesNotExist:
         logger.warning("payload-sample: feed %s not found (stale feed_id?)", config.feed_id)
         return None
@@ -199,18 +199,24 @@ def _observation_class_for(config: SemanticListenerConfig, *, account_id: str) -
     except KeyError as exc:
         # feeds.registry.get_config_class does a bare `_REGISTRY[kind]`,
         # so a feed row whose `kind` was renamed/removed in code raises
-        # KeyError out of load_feed_config. Treat the same as drift —
+        # KeyError out of load_feed_config. Treat the same as drift ;
         # the operator's preview-time view of "what's broken" is what
         # matters here.
         logger.warning("payload-sample: feed %s kind not registered: %s", config.feed_id, exc)
         return None
-    for watch in feed_config.streams:
-        cls = class_for_source(watch.spec.kind)
+    # Source kinds live on the Source table now (not feed.data); pull
+    # the distinct kinds the feed actually polls and pick the first
+    # one with a registered Observation class.
+    source_kinds = list(
+        Source.objects.filter(account_id=account_id, feed_id=str(feed.id)).values_list("kind", flat=True).distinct()
+    )
+    for kind in source_kinds:
+        cls = class_for_source(kind)
         if cls is not None:
             return cls
     logger.warning(
-        "payload-sample: feed %s streams [%s] have no registered Observation class",
+        "payload-sample: feed %s sources [%s] have no registered Observation class",
         config.feed_id,
-        ", ".join(w.spec.kind for w in feed_config.streams),
+        ", ".join(source_kinds) or "(none)",
     )
     return None

@@ -1,6 +1,6 @@
 # Magpie feed config.
 #
-# A feed is a curated set of streams the server polls on a cadence; its
+# A feed is a curated set of sources the server polls on a cadence; its
 # items are what you read (`magpie feed view <id>`) and what listeners
 # subscribe to. Save and run:
 #   magpie feed create -f feed.yaml
@@ -13,14 +13,17 @@ kind: curated
 poll_interval_seconds: 300
 
 data:
-  # The streams this feed polls. Listeners subscribed to this feed
-  # receive items from every stream below.
-  streams:
-    - spec:
-        kind: reddit_subreddit
-        subreddit: MachineLearning
-    # - spec:
-    #     kind: reddit_subreddit
-    #     subreddit: LocalLLaMA
-
   retention_days: 30   # how long polled items are kept for reading
+  # default_field_map: {}   # optional; per-source `field_map` overrides this
+
+# The sources this feed polls. Listeners subscribed to this feed
+# receive items from every source below.
+sources:
+  - spec:
+      kind: reddit_subreddit
+      subreddit: MachineLearning
+    # meta: {tag: research}            # operator tags carried onto FeedItem.source_meta
+    # field_map: {content: summary}    # per-source connector hints; overrides default_field_map
+  # - spec:
+  #     kind: reddit_subreddit
+  #     subreddit: LocalLLaMA

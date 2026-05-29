@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import typer
 
+from .commands import feed_sources as _feed_sources  # noqa: F401  registers verbs on feed_app
 from .commands.auth import auth_app
 from .commands.feed import feed_app
 from .commands.listener import listener_app
@@ -47,6 +48,6 @@ app.add_typer(
     name="listener",
     help="Create + list listeners.",
 )
-# Single-verb command at the root (no sub-app) — quickstart is one
+# Single-verb command at the root (no sub-app) ; quickstart is one
 # opinionated flow, not a noun with multiple verbs.
 app.command("quickstart", help="Interactive setup: one command to a working listener.")(quickstart)

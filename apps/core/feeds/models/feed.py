@@ -11,13 +11,14 @@ MIN_POLL_INTERVAL_SECONDS = 60
 
 
 class Feed(BaseModel):
-    """A curated (later: discovered) set of streams, polled on a cadence.
+    """A curated set of Source rows the feed polls on a cadence.
 
-    The Feed owns the stream set + per-stream watermarks (in `data`) and
-    the poll loop; it accumulates every polled item as a FeedItem (the
-    browsable "sort by new" log). Listeners subscribe to a Feed and judge
-    its items. Kind-specific config lives in `data`, validated by the
-    Pydantic class registered for `kind` in `feeds.registry`.
+    Each `feeds.Source` row owns its own `last_event_at` watermark; the
+    Feed row carries the schedule + kind-specific config in `data`
+    (validated by the Pydantic class registered for `kind` in
+    `feeds.registry`). Every polled item is persisted as a FeedItem
+    (the browsable "sort by new" log). Listeners subscribe to a Feed
+    and judge its items.
     """
 
     user_id = models.CharField(_("user id"), max_length=26)
@@ -31,8 +32,9 @@ class Feed(BaseModel):
     name = models.CharField(_("name"), max_length=255, help_text=_("Short label"))
     is_active = models.BooleanField(_("is active"), default=True)
 
-    # Feed-level SCHEDULING (when the feed runs). Per-stream DATA position
-    # (last_event_at) lives per-stream inside `data`, NOT here.
+    # Feed-level SCHEDULING (when the feed runs). Per-source DATA
+    # position (last_event_at) lives per-source on the Source row, NOT
+    # here.
     poll_interval_seconds = models.PositiveIntegerField(
         _("poll interval seconds"),
         default=300,

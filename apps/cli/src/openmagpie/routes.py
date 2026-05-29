@@ -64,6 +64,14 @@ class feeds:
     def detail(feed_id: str) -> str:
         return f"{_FEEDS}/{feed_id}"
 
+    @staticmethod
+    def sources(feed_id: str) -> str:
+        return f"{_FEEDS}/{feed_id}/sources"
+
+    @staticmethod
+    def source_detail(feed_id: str, source_id: str) -> str:
+        return f"{_FEEDS}/{feed_id}/sources/{source_id}"
+
 
 class engines:
     """`/v1/engines/*` routes the CLI consumes."""

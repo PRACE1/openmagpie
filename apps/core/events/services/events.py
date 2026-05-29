@@ -73,7 +73,7 @@ class EventService:
             account_id=self.account_id,
             listener_id=str(listener.id),
             kind=kind,
-            source=str(feed_item.source),
+            source=str(feed_item.source_kind),
             external_id=str(feed_item.external_id),
             feed_item_id=str(feed_item.id),
             score=score,
@@ -87,7 +87,7 @@ class EventService:
                 "persist dedup kind=%s listener=%s source=%s external_id=%s",
                 kind,
                 listener.id,
-                feed_item.source,
+                feed_item.source_kind,
                 feed_item.external_id,
             )
             return None

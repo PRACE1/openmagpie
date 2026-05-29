@@ -4,10 +4,9 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, ClassVar
 
 from events.observations import Observation
+from openmagpie_schema.configs import RedditSubredditSourceSpec
 
 if TYPE_CHECKING:
-    from openmagpie_schema.configs import RedditSubredditStreamSpec
-
     from .payloads import RedditAtomEntry
 
 
@@ -48,7 +47,7 @@ class NewRedditPostObservation(Observation):
 
     model_config = {"frozen": True, "extra": "ignore"}
 
-    def stream_slug(self) -> str:
+    def source_slug(self) -> str:
         return self.subreddit
 
     @classmethod
@@ -63,9 +62,9 @@ class NewRedditPostObservation(Observation):
             external_id=slug,
             kind=cls.EVENT_KIND,
             occurred_at=datetime(2026, 5, 27, 12, 0, tzinfo=UTC),
-            source="reddit_subreddit",
+            source=RedditSubredditSourceSpec.SOURCE_KIND,
             title=f"Example post {n}: matched this listener",
-            content="(Observation.content — included in payload only if `include_fields` lists it.)",
+            content="(Observation.content ; included in payload only if `include_fields` lists it.)",
             url=f"https://www.reddit.com/r/example/comments/{slug}/example_post_{n}/",
             parent_external_id="",
             subreddit="example",
@@ -77,13 +76,13 @@ class NewRedditPostObservation(Observation):
     def from_atom_entry(
         cls,
         entry: "RedditAtomEntry",
-        spec: "RedditSubredditStreamSpec",
+        spec: RedditSubredditSourceSpec,
     ) -> "NewRedditPostObservation":
         # Atom id is `t3_<post-id>`; the post id alone matches what the JSON
         # endpoint returned, so existing FeedItems keyed on the bare id stay
         # de-duped across the connector swap.
         post_id = entry.atom_id.removeprefix("t3_")
-        # `/u/username` → `username`. Deleted users come back as `/u/[deleted]`.
+        # `/u/username` -> `username`. Deleted users come back as `/u/[deleted]`.
         author = entry.author_name.removeprefix("/u/")
         # `link` is the absolute comments URL; the permalink is the path part.
         permalink = entry.link.removeprefix("https://www.reddit.com") or "/"

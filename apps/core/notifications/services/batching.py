@@ -18,10 +18,10 @@ from notifications.notifiers.base import Hit, HitBatch
 _EXCLUDED_FIELDS: frozenset[str] = frozenset({"user_id", "account_id"})
 
 
-def _stream_key(obs: Observation) -> str:
+def _source_key(obs: Observation) -> str:
     """The grouping key for hits, `<source>:<slug>` if the observation has a slug, else just source.
-    Slug knowledge lives on the Observation subclass (see `Observation.stream_slug`)."""
-    slug = obs.stream_slug()
+    Slug knowledge lives on the Observation subclass (see `Observation.source_slug`)."""
+    slug = obs.source_slug()
     return f"{obs.source}:{slug}" if slug else obs.source
 
 
@@ -30,11 +30,11 @@ def _hit_dict(hit: Hit, include_fields: list[str]) -> dict[str, Any]:
 
     The Observation's full dump is the base (minus internal scoping). The
     engine's `relevance_score` is layered on AFTER the obs dump as a
-    separate key — so it doesn't collide with source-side `score` (e.g.
+    separate key ; so it doesn't collide with source-side `score` (e.g.
     Reddit upvote count) and operators can whitelist them independently.
 
     `relevance_score` is always emitted (as `null` when the score is
-    unknown — e.g. an older row predating the column, or a future non-hit
+    unknown ; e.g. an older row predating the column, or a future non-hit
     event kind). Heterogeneous shapes (key present in some entries,
     absent in others) within one payload would force receivers to defend
     against KeyError on a whitelist-pinned field; emitting `null`
@@ -67,11 +67,11 @@ def _hit_dict(hit: Hit, include_fields: list[str]) -> dict[str, Any]:
 
 
 def build_payload(batch: HitBatch, *, include_fields: list[str] | None = None) -> dict[str, Any]:
-    """Group hits by stream key into a single payload dict, ready for JSON encoding."""
+    """Group hits by source key into a single payload dict, ready for JSON encoding."""
     selected = list(include_fields or [])
     by_source: dict[str, list[dict[str, Any]]] = {}
     for hit in batch.hits:
-        by_source.setdefault(_stream_key(hit.obs), []).append(_hit_dict(hit, selected))
+        by_source.setdefault(_source_key(hit.obs), []).append(_hit_dict(hit, selected))
 
     return {
         "listener_id": str(batch.listener.id),

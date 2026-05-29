@@ -17,6 +17,9 @@ from openmagpie_schema.feed import (
     FeedMutationResponse,
     FeedView,
     FeedWire,
+    SourceInput,
+    SourceSetResult,
+    SourceWire,
 )
 from openmagpie_schema.wire import ConfigBlob
 
@@ -30,20 +33,25 @@ __all__ = [
     "FeedMutationResponse",
     "FeedView",
     "FeedWire",
+    "SourceSetResult",
+    "SourceWire",
 ]
 
 
 class FeedEnvelope(BaseModel):
     """The envelope the CLI constructs for a feed write (request side).
     CLI-owned, distinct from the server-emitted models. `data` carries
-    the kind-specific config (streams + retention), opaque here; the
-    server validates it. Extra keys ignored (so the edit seed's read-only
-    fields drop on round-trip)."""
+    the kind-specific config (retention + default_field_map), opaque
+    here; the server validates it. `sources` is the optional starter
+    source list for curated feeds (server creates Source rows
+    atomically with the Feed). Extra keys ignored (so the edit seed's
+    read-only fields drop on round-trip)."""
 
     name: str
     kind: str = "curated"
     poll_interval_seconds: int = 300
     data: ConfigBlob = {}
+    sources: list[SourceInput] = []
 
     model_config = {"extra": "ignore"}
 
@@ -89,3 +97,26 @@ class FeedApi:
 
     def delete(self, feed_id: str) -> None:
         self._http.delete(routes.feeds.detail(feed_id))
+
+    # ── Sources sub-resource ───────────────────────────────────────────
+
+    def list_sources(self, feed_id: str) -> list[SourceWire]:
+        raw = self._http.get(routes.feeds.sources(feed_id))
+        items = (raw or {}).get("items") or []
+        return [SourceWire.model_validate(it) for it in items]
+
+    def set_sources(
+        self,
+        feed_id: str,
+        sources: list[dict[str, Any]],
+        *,
+        dry_run: bool = False,
+    ) -> SourceSetResult:
+        raw = self._http.put(
+            routes.feeds.sources(feed_id),
+            json_body={"sources": sources, "dry_run": dry_run},
+        )
+        return SourceSetResult.model_validate(raw)
+
+    def remove_source(self, feed_id: str, source_id: str) -> None:
+        self._http.delete(routes.feeds.source_detail(feed_id, source_id))

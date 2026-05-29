@@ -3,7 +3,7 @@ from datetime import datetime
 from typing import Protocol
 
 from events.observations import Observation
-from openmagpie_schema.configs import StreamSpec
+from openmagpie_schema.configs import SourceSpec
 
 
 class ConnectorParseError(Exception):
@@ -13,7 +13,7 @@ class ConnectorParseError(Exception):
     (HTML instead of JSON, payload schema change, missing required keys).
     Connectors should translate library-specific failures (json.JSONDecodeError,
     KeyError, TypeError on a dict walk, etc.) into this so the polling
-    orchestrator can recover at the per-stream boundary without having to
+    orchestrator can recover at the per-source boundary without having to
     enumerate every parser library's exception types.
     """
 
@@ -22,13 +22,13 @@ class Connector(Protocol):
     """A pluggable source connector.
 
     Each implementation:
-      - declares its `kind` (matches `StreamSpec.kind`),
+      - declares its `kind` (matches `SourceSpec.kind`),
       - declares its `observations` (Observation subclasses it produces, used
         by `events.registry` to hydrate stored data back to typed Observations),
       - yields typed Observations for a given stream_spec.
 
     Connectors are tenant-agnostic: the Feed drives polling, so `poll` takes
-    only the stream spec + watermark (no listener/account).
+    only the source spec + watermark (no listener/account).
     """
 
     kind: str
@@ -36,15 +36,15 @@ class Connector(Protocol):
 
     def poll(
         self,
-        spec: StreamSpec,
+        spec: SourceSpec,
         since: datetime | None,
     ) -> Iterator[Observation]:
-        """Yield typed Observations for one stream, newer than `since`."""
+        """Yield typed Observations for one source, newer than `since`."""
         ...
 
     def count(
         self,
-        spec: StreamSpec,
+        spec: SourceSpec,
         since: datetime | None,
     ) -> int:
         """Exact count of observations newer than `since`. Used by the
@@ -75,14 +75,14 @@ class BaseConnector:
 
     def count(
         self,
-        spec: StreamSpec,
+        spec: SourceSpec,
         since: datetime | None,
     ) -> int:
         return sum(1 for _ in self.poll(spec, since=since))
 
     def poll(
         self,
-        spec: StreamSpec,
+        spec: SourceSpec,
         since: datetime | None,
     ) -> Iterator[Observation]:  # pragma: no cover - subclass responsibility
         raise NotImplementedError
