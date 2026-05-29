@@ -87,14 +87,25 @@ class RssConnector(BaseConnector):
             raise ConnectorParseError(f"rss feed {spec.url} returned {len(body)} bytes (>{MAX_BODY_BYTES} cap)")
 
         parsed = feedparser.parse(body)
-        # `bozo` flags malformed XML but feedparser still recovers
-        # most entries; only fail the cycle if we got zero entries
-        # AND a hard parse failure. A bozo=1 with N entries means
-        # "some publishers ship invalid XML" - their entries still
-        # came through.
-        if parsed.bozo and not parsed.entries:
+        # Two failure modes flag the same loud-fail outcome:
+        #   * `bozo and entries == 0`: malformed XML feedparser
+        #     couldn't recover entries from (a Reddit-style schema
+        #     break).
+        #   * `not version and entries == 0`: the body was parseable
+        #     as XML / HTML but isn't a feed at all. Real feeds
+        #     always set `version` (`'rss20'`, `'atom10'`, ...) ; an
+        #     empty string means feedparser never matched a feed root
+        #     element. Rate-limit blocks and login walls show up as
+        #     200-with-HTML and would otherwise read as "empty page"
+        #     - exactly the failure the .rss / RSS endpoints are
+        #     meant to surface.
+        # `bozo + N entries` is intentionally allowed: some publishers
+        # ship invalid XML and feedparser still recovers items ; let
+        # the entries flow through.
+        if not parsed.entries and (parsed.bozo or not parsed.version):
             exc = parsed.get("bozo_exception")
-            raise ConnectorParseError(f"rss feed {spec.url} returned an unparseable body: {type(exc).__name__}: {exc}")
+            detail = f"{type(exc).__name__}: {exc}" if exc else f"unrecognized body (version={parsed.version!r})"
+            raise ConnectorParseError(f"rss feed {spec.url} returned an unparseable body: {detail}")
 
         for entry in parsed.entries:
             obs, missing = RssEntryObservation.from_feedparser_entry(entry, spec, field_map)
