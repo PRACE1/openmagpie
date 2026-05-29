@@ -1,9 +1,10 @@
 """Connector registry. Maps kind string → Connector instance."""
 
-from sources.connectors import Connector, RedditSubRedditConnector
+from sources.connectors import Connector, RedditSubRedditConnector, RssConnector
 
 _REGISTRY: dict[str, Connector] = {
     RedditSubRedditConnector.kind: RedditSubRedditConnector(),
+    RssConnector.kind: RssConnector(),
 }
 
 

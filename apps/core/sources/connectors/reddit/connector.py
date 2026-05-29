@@ -1,18 +1,18 @@
 import logging
-import xml.etree.ElementTree as ET
+import time
 from collections.abc import Iterator
-from datetime import datetime
+from datetime import UTC, datetime
+from typing import Any
 
+import feedparser
 import httpx
-from pydantic import ValidationError
 
 from events.observations import Observation
 from events.registry import register
 from openmagpie_schema.configs import RedditSubredditSourceSpec
 
-from ..base import BaseConnector, ConnectorParseError
+from ..base import BaseConnector, ConnectorParseError, read_response_capped
 from .observations import NewRedditPostObservation
-from .payloads import RedditAtomEntry
 
 logger = logging.getLogger("sources")
 
@@ -35,28 +35,34 @@ REDDIT_USER_AGENT = (
 PAGE_SIZE = 100
 MAX_PAGES = 10
 
-ATOM_NS = "{http://www.w3.org/2005/Atom}"
+# Per-page body cap. Reddit's .rss is typically <100KB ; one corrupted
+# / oversize response shouldn't chew RAM. Streamed + capped via
+# `read_response_capped` so we never buffer past the cap. Higher than
+# the RSS connector's 5MB ceiling because Reddit pages 100 posts each ;
+# left generous for any rich Atom payloads.
+MAX_BODY_BYTES = 5 * 1024 * 1024
 
 
-def _parse_atom(xml_text: str) -> list[RedditAtomEntry]:
-    """Project Reddit's `.rss` Atom XML into our `RedditAtomEntry` list."""
-    root = ET.fromstring(xml_text)
-    entries: list[RedditAtomEntry] = []
-    for entry in root.findall(f"{ATOM_NS}entry"):
-        link_el = entry.find(f"{ATOM_NS}link")
-        cat_el = entry.find(f"{ATOM_NS}category")
-        entries.append(
-            RedditAtomEntry(
-                atom_id=entry.findtext(f"{ATOM_NS}id", default=""),
-                title=entry.findtext(f"{ATOM_NS}title", default=""),
-                published=entry.findtext(f"{ATOM_NS}published", default=""),
-                content_html=entry.findtext(f"{ATOM_NS}content", default=""),
-                link=link_el.get("href", "") if link_el is not None else "",
-                author_name=entry.findtext(f"{ATOM_NS}author/{ATOM_NS}name", default=""),
-                subreddit=cat_el.get("term", "") if cat_el is not None else "",
-            )
+def _entry_published(entry: Any) -> datetime | None:
+    """feedparser exposes Atom `<published>` as `published_parsed`
+    struct_time ALREADY IN UTC. Read the year/month/day/hour/minute/
+    second fields straight into the datetime constructor ;
+    `time.mktime` would interpret the struct as local wall-clock and
+    shift every timestamp by the host's UTC offset on any non-UTC
+    deploy (Reddit's old custom-ET path used `datetime.fromisoformat`,
+    which was correct ; this path must preserve that)."""
+    parsed = entry.get("published_parsed")
+    if isinstance(parsed, time.struct_time):
+        return datetime(
+            parsed.tm_year,
+            parsed.tm_mon,
+            parsed.tm_mday,
+            parsed.tm_hour,
+            parsed.tm_min,
+            parsed.tm_sec,
+            tzinfo=UTC,
         )
-    return entries
+    return None
 
 
 class RedditSubRedditConnector(BaseConnector):
@@ -91,51 +97,96 @@ class RedditSubRedditConnector(BaseConnector):
         self,
         spec: RedditSubredditSourceSpec,
         since: datetime | None,
+        field_map: dict[str, str] | None = None,
     ) -> Iterator[NewRedditPostObservation]:
+        # Reddit Atom carries fixed, non-overridable fields ; the
+        # connector ignores `field_map` (the Connector contract
+        # accepts it for the RSS variant + future per-source
+        # overrides). Documented as a no-op rather than silently
+        # dropped so a future Reddit field-map use case (e.g. body
+        # vs title-only) lands here intentionally.
+        del field_map
         subreddit = spec.subreddit
         if not subreddit:
             raise ValueError(f"RedditSubredditSourceSpec missing subreddit: {spec}")
 
         # `/new` is sorted newest -> oldest. Reddit has no server-side `since`
-        # filter; the early-return on `obs.occurred_at <= since` works only
-        # because of that ordering, once we see a post older than `since`,
-        # every remaining post on this page and every later page is older too.
-        # The `after` cursor walks pages from newest to oldest in the same order.
+        # filter; the early-return on strict `obs.occurred_at < since` works
+        # only because of that ordering, once we see a post strictly older
+        # than `since`, every remaining post on this page and every later
+        # page is older too. The `after` cursor walks pages newest -> oldest
+        # in the same order.
         url = f"https://www.reddit.com/r/{subreddit}/new/.rss"
         after: str | None = None
 
-        for _ in range(MAX_PAGES):
-            params: dict[str, str | int] = {"limit": PAGE_SIZE}
-            if after:
-                params["after"] = after
+        # One Client across all pages: shares the connection pool, so
+        # `?after=` pagination reuses the keep-alive instead of
+        # handshaking per page. Reddit doesn't strictly need the body
+        # cap (fixed host, bounded pages), but routing through the
+        # shared `read_response_capped` puts the cap policy in one
+        # place ; an unexpected oversize 200 from a CDN edge surfaces
+        # as a parse error instead of an OOM.
+        with httpx.Client(
+            timeout=15.0,
+            headers={"User-Agent": REDDIT_USER_AGENT},
+        ) as client:
+            for _ in range(MAX_PAGES):
+                params: dict[str, str | int] = {"limit": PAGE_SIZE}
+                if after:
+                    params["after"] = after
 
-            response = httpx.get(
-                url,
-                params=params,
-                headers={"User-Agent": REDDIT_USER_AGENT},
-                timeout=15.0,
-            )
-            response.raise_for_status()
-            try:
-                entries = _parse_atom(response.text)
-            except (ET.ParseError, ValidationError) as exc:
-                # 200 with non-XML, a Reddit-side schema change, or a missing
-                # required field on an entry should fail this source's poll
-                # cycle, not the whole scheduler.
+                with client.stream("GET", url, params=params) as response:
+                    response.raise_for_status()
+                    body = read_response_capped(response, max_bytes=MAX_BODY_BYTES, url_label=url)
+
+                parsed = feedparser.parse(body)
+            # Gate on `not version`: real feeds set `version`
+            # ('atom10' for Reddit ; HTML pages come back as ''.
+            # Reddit's anti-bot rate-limit / login page is a 200 with
+            # HTML body ; without this gate it silently reads as "no
+            # new posts" and never surfaces the block.
+            #
+            # Bozo is intentionally NOT a fail trigger. feedparser
+            # raises bozo=1 with SAXParseException for non-fatal
+            # quirks (undeclared namespace prefix, etc.) AND for hard
+            # parse failures ; we can't reliably discriminate without
+            # matching exception messages. The trade-off: a truncated
+            # body that recovers 0 entries reads as "empty page" and
+            # the loop returns ; next poll picks up when Reddit
+            # recovers. The Reddit-specific concern (the .rss
+            # endpoint being our anon channel) is fully covered by
+            # the version gate alone.
+            if not parsed.entries and not parsed.version:
                 raise ConnectorParseError(
-                    f"reddit /r/{subreddit}/new/.rss returned an unexpected payload: {type(exc).__name__}: {exc}"
-                ) from exc
+                    f"reddit /r/{subreddit}/new/.rss returned an unexpected payload "
+                    "(no feed format detected; likely the anti-bot HTML page)"
+                )
 
-            if not entries:
+            if not parsed.entries:
                 return  # empty page, nothing more to consume
 
             last_atom_id: str | None = None
-            for entry in entries:
-                obs = NewRedditPostObservation.from_atom_entry(entry, spec)
-                last_atom_id = entry.atom_id or last_atom_id
-                if since is not None and obs.occurred_at <= since:
-                    # /new is reverse-chronological, all remaining items on
-                    # this and later pages are older. We've caught up.
+            for entry in parsed.entries:
+                published = _entry_published(entry)
+                if published is None:
+                    # Reddit Atom always carries <published>; a missing one
+                    # is a Reddit-side schema change. Skip the row instead
+                    # of dropping the whole page (fail loud only on bozo
+                    # + zero entries above).
+                    continue
+                obs = NewRedditPostObservation.from_feedparser_entry(entry, spec, published)
+                last_atom_id = entry.get("id") or last_atom_id
+                # Strict `<`, not `<=`: two posts can share `<published>`
+                # to the second (batch import; same-second submissions),
+                # and dropping on tie permanently loses the second one
+                # because the watermark already crossed its second.
+                # The downstream `external_id` dedup on FeedItem is
+                # idempotent, so re-yielding the boundary post is
+                # suppressed at the recorder seam. The early-return
+                # remains safe: once we see a post strictly older than
+                # `since`, every remaining post on this and later pages
+                # is older too.
+                if since is not None and obs.occurred_at < since:
                     return
                 yield obs
 

@@ -203,6 +203,19 @@ OLLAMA_DEFAULT_MODEL = os.environ["OLLAMA_DEFAULT_MODEL"]
 WEBHOOK_REQUIRE_HTTPS = env_bool("WEBHOOK_REQUIRE_HTTPS", "false")
 WEBHOOK_BLOCK_PRIVATE_IPS = env_bool("WEBHOOK_BLOCK_PRIVATE_IPS", "false")
 
+# Source-fetch SSRF gate. Parallel to WEBHOOK_BLOCK_PRIVATE_IPS but for
+# OUTBOUND-from-connector fetches (RSS, future HTTP-based connectors).
+# When true, a Source create / set with an IP-literal URL pointing at a
+# private / loopback / link-local / multicast / reserved address is
+# rejected at the policy seam (PolicyError -> 400), and the connector
+# additionally re-resolves on every outbound request (including
+# redirects) so a public hostname that resolves to a private address,
+# or a 302 to an internal target, is rejected at poll time as a
+# ConnectorParseError. Default off matches the webhook policy posture:
+# single-tenant self-host where the operator might legitimately watch
+# an internal feed; flip on for multi-tenant / public deployments.
+SOURCE_BLOCK_PRIVATE_IPS = env_bool("SOURCE_BLOCK_PRIVATE_IPS", "false")
+
 # ── Logging ────────────────────────────────────────────────────────────
 #
 # App loggers are configured explicitly so the warnings the polling /

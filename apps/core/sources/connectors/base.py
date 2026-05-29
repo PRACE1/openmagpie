@@ -2,6 +2,8 @@ from collections.abc import Iterator
 from datetime import datetime
 from typing import Protocol
 
+import httpx
+
 from events.observations import Observation
 from openmagpie_schema.configs import SourceSpec
 
@@ -16,6 +18,24 @@ class ConnectorParseError(Exception):
     orchestrator can recover at the per-source boundary without having to
     enumerate every parser library's exception types.
     """
+
+
+def read_response_capped(response: httpx.Response, *, max_bytes: int, url_label: str) -> bytes:
+    """Drain a streaming response into bytes, raising once the running
+    total crosses `max_bytes`. The cap fires mid-stream so a hostile
+    endpoint serving a multi-GB body never buffers past the cap (a
+    `response.content`-then-`len` check materializes the full body
+    before deciding).
+
+    Caller is responsible for `response.raise_for_status()` ; the helper
+    only reads bytes. Shared between connectors so the cap policy lives
+    in one place."""
+    body = bytearray()
+    for chunk in response.iter_bytes():
+        body.extend(chunk)
+        if len(body) > max_bytes:
+            raise ConnectorParseError(f"{url_label} exceeded {max_bytes}-byte cap mid-stream")
+    return bytes(body)
 
 
 class Connector(Protocol):
@@ -38,8 +58,16 @@ class Connector(Protocol):
         self,
         spec: SourceSpec,
         since: datetime | None,
+        field_map: dict[str, str] | None = None,
     ) -> Iterator[Observation]:
-        """Yield typed Observations for one source, newer than `since`."""
+        """Yield typed Observations for one source, newer than `since`.
+
+        `field_map` is the EFFECTIVE map for this source ; the polling
+        orchestrator merges the feed's `default_field_map` with the
+        Source row's `field_map` (row wins per key) and passes the
+        result. Connectors that don't read it (e.g. Reddit) accept and
+        ignore. Recognized keys are per-connector; unknown keys are
+        silently dropped. None == empty dict."""
         ...
 
     def count(
@@ -84,5 +112,6 @@ class BaseConnector:
         self,
         spec: SourceSpec,
         since: datetime | None,
+        field_map: dict[str, str] | None = None,
     ) -> Iterator[Observation]:  # pragma: no cover - subclass responsibility
         raise NotImplementedError

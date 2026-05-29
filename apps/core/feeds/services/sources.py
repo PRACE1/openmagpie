@@ -30,7 +30,7 @@ from django.db import transaction
 
 from common.locks import feed_set_lock
 from feeds.models import Feed, Source
-from feeds.policy import PolicyError, default_and_enforce_source_watermark
+from feeds.policy import PolicyError, default_and_enforce_source_watermark, enforce_source_spec_safety
 from openmagpie_schema.configs import SourceSpec
 from openmagpie_schema.feed import SourceInput, SourceSetResult
 from sources import registry as source_registry
@@ -165,7 +165,9 @@ class SourceService:
         duplicates are logged at WARNING so the operator can spot a
         scrape script that's silently dropping data."""
         self._assert_curated(feed)
-        _assert_connector_registered([item.spec for item in items])
+        specs = [item.spec for item in items]
+        _assert_connector_registered(specs)
+        enforce_source_spec_safety(specs)
 
         new_by_hash: dict[str, SourceInput] = {}
         for item in items:
