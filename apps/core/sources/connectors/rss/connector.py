@@ -7,12 +7,15 @@ publisher quirks (which key holds the body, which holds the author)
 are absorbed by the `field_map` override threaded through from the
 Source row + feed default."""
 
+import ipaddress
 import logging
+import socket
 from collections.abc import Iterator
 from datetime import datetime
 
 import feedparser
 import httpx
+from django.conf import settings
 
 from events.observations import Observation
 from events.registry import register
@@ -27,11 +30,48 @@ logger = logging.getLogger("sources")
 # Identify the project so a publisher can correlate traffic if they look.
 RSS_USER_AGENT = "openmagpie-rss/1.0 (+https://github.com/obris-dev/openmagpie)"
 
-# Cap how many bytes we read from a single feed in one cycle. RSS feeds
-# are typically <100KB; a >5MB body is either a misconfigured endpoint
-# (serving the full archive) or a hostile target. Treat as a parse
-# failure rather than chew RAM.
+# Cap how many bytes we accumulate from a single feed in one cycle.
+# RSS feeds are typically <100KB; a >5MB body is either a misconfigured
+# endpoint (serving the full archive) or a hostile target. Streamed +
+# checked per chunk so we never buffer past the cap (unlike a
+# `response.content`-then-len check, which materializes the full body
+# before deciding).
 MAX_BODY_BYTES = 5 * 1024 * 1024
+
+
+def _block_private_ip(host: str, *, url: httpx.URL) -> None:
+    """Raise `ConnectorParseError` if `host` resolves to a private /
+    loopback / link-local / multicast / reserved address and the
+    SOURCE_BLOCK_PRIVATE_IPS setting is on. Catches both IP-literal
+    URLs (no DNS round-trip) and hostname URLs (one getaddrinfo). The
+    schema validator rejected the no-host case at create."""
+    try:
+        ip = ipaddress.ip_address(host)
+        candidates: list[ipaddress.IPv4Address | ipaddress.IPv6Address] = [ip]
+    except ValueError:
+        try:
+            infos = socket.getaddrinfo(host, None)
+        except socket.gaierror as exc:
+            raise ConnectorParseError(f"rss: DNS resolution failed for {host!r}: {exc}") from exc
+        candidates = [ipaddress.ip_address(info[4][0]) for info in infos]
+    for ip in candidates:
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_reserved:
+            raise ConnectorParseError(
+                f"rss: blocked URL {url} (host {host!r} resolves to {ip}; SOURCE_BLOCK_PRIVATE_IPS is set)"
+            )
+
+
+def _validate_request_url(request: httpx.Request) -> None:
+    """httpx request hook ; runs for the initial GET AND for every
+    redirect target so a public hostname that 302s to an internal
+    address is rejected before httpx makes the inner fetch. No-op if
+    the SSRF setting is off."""
+    if not settings.SOURCE_BLOCK_PRIVATE_IPS:
+        return
+    host = request.url.host
+    if not host:
+        return
+    _block_private_ip(host, url=request.url)
 
 
 class RssConnector(BaseConnector):
@@ -69,24 +109,28 @@ class RssConnector(BaseConnector):
     ) -> Iterator[RssEntryObservation]:
         field_map = field_map or {}
 
-        try:
-            response = httpx.get(
-                spec.url,
-                headers={"User-Agent": RSS_USER_AGENT},
-                timeout=15.0,
+        # Client carries the per-request hook so every redirect target
+        # is re-checked under SOURCE_BLOCK_PRIVATE_IPS (a 302 from a
+        # public host to 169.254.169.254 raises before httpx fetches
+        # the inner target). Body is streamed + capped per chunk so the
+        # MAX_BODY_BYTES gate runs before the bytes are buffered.
+        body = bytearray()
+        with (
+            httpx.Client(
+                event_hooks={"request": [_validate_request_url]},
                 follow_redirects=True,
-            )
+                timeout=15.0,
+                headers={"User-Agent": RSS_USER_AGENT},
+            ) as client,
+            client.stream("GET", spec.url) as response,
+        ):
             response.raise_for_status()
-        except httpx.HTTPError:
-            # Propagated; `_RECOVERABLE_ERRORS` covers it so one bad
-            # feed doesn't abort the whole cycle.
-            raise
+            for chunk in response.iter_bytes():
+                body.extend(chunk)
+                if len(body) > MAX_BODY_BYTES:
+                    raise ConnectorParseError(f"rss feed {spec.url} exceeded {MAX_BODY_BYTES}-byte cap mid-stream")
 
-        body = response.content
-        if len(body) > MAX_BODY_BYTES:
-            raise ConnectorParseError(f"rss feed {spec.url} returned {len(body)} bytes (>{MAX_BODY_BYTES} cap)")
-
-        parsed = feedparser.parse(body)
+        parsed = feedparser.parse(bytes(body))
         # Two failure modes flag the same loud-fail outcome:
         #   * `bozo and entries == 0`: malformed XML feedparser
         #     couldn't recover entries from (a Reddit-style schema

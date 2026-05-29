@@ -27,6 +27,7 @@ import html
 import re
 import time
 from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from typing import Any, ClassVar
 
 from events.observations import Observation
@@ -69,25 +70,60 @@ def _resolve_content(entry: Any, override: str | None) -> str:
     return _html_to_text(str(raw or ""))
 
 
-def _resolve_published(entry: Any, override: str | None) -> datetime | None:
-    """Atom `published_parsed` -> Atom `updated_parsed`. feedparser parses
-    RFC-822 / ISO into a `time.struct_time` ALREADY IN UTC. Read the
+def _struct_time_to_utc(parsed: time.struct_time) -> datetime:
+    """feedparser's `*_parsed` struct_times are ALREADY in UTC. Read the
     year/month/day/hour/minute/second fields straight into the datetime
     constructor ; `time.mktime` would interpret the struct as local
     wall-clock and shift every timestamp by the host's UTC offset on
     any non-UTC deploy."""
-    for key in (override,) if override else ("published_parsed", "updated_parsed"):
-        parsed = entry.get(key)
-        if isinstance(parsed, time.struct_time):
-            return datetime(
-                parsed.tm_year,
-                parsed.tm_mon,
-                parsed.tm_mday,
-                parsed.tm_hour,
-                parsed.tm_min,
-                parsed.tm_sec,
-                tzinfo=UTC,
-            )
+    return datetime(
+        parsed.tm_year,
+        parsed.tm_mon,
+        parsed.tm_mday,
+        parsed.tm_hour,
+        parsed.tm_min,
+        parsed.tm_sec,
+        tzinfo=UTC,
+    )
+
+
+def _coerce_published(value: Any) -> datetime | None:
+    """Read a published-ish value into an aware UTC datetime. Accepts
+    feedparser's `*_parsed` struct_time (the common path, no parsing)
+    AND raw strings (RFC-822 / ISO 8601) so a `field_map` override can
+    point at either feedparser's normalized struct (`published_parsed`,
+    `updated_parsed`) OR a string-keyed namespaced field
+    (e.g. `dc_date`, `prism_published`). Naive datetimes are tagged
+    UTC ; that matches feedparser's struct_time semantics and matches
+    how the rest of the connector treats publish times."""
+    if isinstance(value, time.struct_time):
+        return _struct_time_to_utc(value)
+    if isinstance(value, str) and value:
+        try:
+            dt = parsedate_to_datetime(value)
+        except (TypeError, ValueError):
+            try:
+                dt = datetime.fromisoformat(value)
+            except ValueError:
+                return None
+        return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
+    return None
+
+
+def _resolve_published(entry: Any, override: str | None) -> datetime | None:
+    """Pick the published timestamp. An `override` is tried first (high
+    priority), then the canonical `published_parsed -> updated_parsed`
+    fallback chain so an override that doesn't resolve doesn't disable
+    the entries that DO have a real `published`. The chain dedupes the
+    override key so we don't read the same entry twice."""
+    chain: list[str] = []
+    if override:
+        chain.append(override)
+    chain.extend(k for k in ("published_parsed", "updated_parsed") if k != override)
+    for key in chain:
+        dt = _coerce_published(entry.get(key))
+        if dt is not None:
+            return dt
     return None
 
 
@@ -145,7 +181,12 @@ class RssEntryObservation(Observation):
 
         # `tags` is feedparser's normalized form of RSS `<category>` /
         # Atom `<category>` ; each item is a FeedParserDict with `term`.
-        categories = [t.get("term", "") for t in entry.get("tags", []) if isinstance(t, dict)]
+        # Empty-term entries get filtered out here ; the empties usually
+        # come from publishers who emit `<category></category>` as a
+        # placeholder.
+        categories = [
+            term for t in entry.get("tags", []) if isinstance(t, dict) and (term := t.get("term", "").strip())
+        ]
 
         obs = cls(
             external_id=external_id,
@@ -158,6 +199,6 @@ class RssEntryObservation(Observation):
             parent_external_id="",
             author=_resolve_str(entry, field_map.get("author") or "author"),
             feed_url=spec.url,
-            categories=[c for c in categories if c],
+            categories=categories,
         )
         return obs, ""
