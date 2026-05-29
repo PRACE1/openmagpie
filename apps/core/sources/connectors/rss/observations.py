@@ -71,11 +71,23 @@ def _resolve_content(entry: Any, override: str | None) -> str:
 
 def _resolve_published(entry: Any, override: str | None) -> datetime | None:
     """Atom `published_parsed` -> Atom `updated_parsed`. feedparser parses
-    RFC-822 / ISO into a `time.struct_time` in UTC."""
+    RFC-822 / ISO into a `time.struct_time` ALREADY IN UTC. Read the
+    year/month/day/hour/minute/second fields straight into the datetime
+    constructor ; `time.mktime` would interpret the struct as local
+    wall-clock and shift every timestamp by the host's UTC offset on
+    any non-UTC deploy."""
     for key in (override,) if override else ("published_parsed", "updated_parsed"):
         parsed = entry.get(key)
         if isinstance(parsed, time.struct_time):
-            return datetime.fromtimestamp(time.mktime(parsed), tz=UTC)
+            return datetime(
+                parsed.tm_year,
+                parsed.tm_mon,
+                parsed.tm_mday,
+                parsed.tm_hour,
+                parsed.tm_min,
+                parsed.tm_sec,
+                tzinfo=UTC,
+            )
     return None
 
 

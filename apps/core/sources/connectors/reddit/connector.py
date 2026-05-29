@@ -37,11 +37,24 @@ MAX_PAGES = 10
 
 
 def _entry_published(entry: Any) -> datetime | None:
-    """feedparser exposes Atom `<published>` as the `published_parsed`
-    struct_time in UTC. Convert to aware datetime; None if missing."""
+    """feedparser exposes Atom `<published>` as `published_parsed`
+    struct_time ALREADY IN UTC. Read the year/month/day/hour/minute/
+    second fields straight into the datetime constructor ;
+    `time.mktime` would interpret the struct as local wall-clock and
+    shift every timestamp by the host's UTC offset on any non-UTC
+    deploy (Reddit's old custom-ET path used `datetime.fromisoformat`,
+    which was correct ; this path must preserve that)."""
     parsed = entry.get("published_parsed")
     if isinstance(parsed, time.struct_time):
-        return datetime.fromtimestamp(time.mktime(parsed), tz=UTC)
+        return datetime(
+            parsed.tm_year,
+            parsed.tm_mon,
+            parsed.tm_mday,
+            parsed.tm_hour,
+            parsed.tm_min,
+            parsed.tm_sec,
+            tzinfo=UTC,
+        )
     return None
 
 
