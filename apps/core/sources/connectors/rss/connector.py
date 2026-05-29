@@ -21,7 +21,7 @@ from events.observations import Observation
 from events.registry import register
 from openmagpie_schema.configs import RssSourceSpec
 
-from ..base import BaseConnector, ConnectorParseError
+from ..base import BaseConnector, ConnectorParseError, read_response_capped
 from .observations import RssEntryObservation
 
 logger = logging.getLogger("sources")
@@ -112,9 +112,9 @@ class RssConnector(BaseConnector):
         # Client carries the per-request hook so every redirect target
         # is re-checked under SOURCE_BLOCK_PRIVATE_IPS (a 302 from a
         # public host to 169.254.169.254 raises before httpx fetches
-        # the inner target). Body is streamed + capped per chunk so the
-        # MAX_BODY_BYTES gate runs before the bytes are buffered.
-        body = bytearray()
+        # the inner target). `read_response_capped` streams + checks
+        # per chunk so the MAX_BODY_BYTES gate runs before the bytes
+        # are buffered.
         with (
             httpx.Client(
                 event_hooks={"request": [_validate_request_url]},
@@ -125,12 +125,9 @@ class RssConnector(BaseConnector):
             client.stream("GET", spec.url) as response,
         ):
             response.raise_for_status()
-            for chunk in response.iter_bytes():
-                body.extend(chunk)
-                if len(body) > MAX_BODY_BYTES:
-                    raise ConnectorParseError(f"rss feed {spec.url} exceeded {MAX_BODY_BYTES}-byte cap mid-stream")
+            body = read_response_capped(response, max_bytes=MAX_BODY_BYTES, url_label=f"rss feed {spec.url}")
 
-        parsed = feedparser.parse(bytes(body))
+        parsed = feedparser.parse(body)
         # The "is this even a feed?" gate keys on `parsed.version`. Real
         # feeds always set `version` (`'rss20'`, `'atom10'`, ...) ; HTML
         # rate-limit / block pages parse as bozo=False, version=''
@@ -172,7 +169,15 @@ class RssConnector(BaseConnector):
                     entry.get("title", "<no title>"),
                 )
                 continue
-            if since is not None and obs.occurred_at <= since:
+            # Strict `<`, not `<=`: two distinct entries can share a
+            # pubDate to the second (publisher batches, scheduled
+            # cron). Dropping on tie permanently loses the second
+            # entry because the watermark already crossed its second
+            # in the prior cycle. The downstream `external_id` dedup
+            # on FeedItem is idempotent, so re-yielding the boundary
+            # item that legitimately repeats is suppressed at the
+            # recorder seam.
+            if since is not None and obs.occurred_at < since:
                 continue
             yield obs
 

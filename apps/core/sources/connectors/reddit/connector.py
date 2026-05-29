@@ -11,7 +11,7 @@ from events.observations import Observation
 from events.registry import register
 from openmagpie_schema.configs import RedditSubredditSourceSpec
 
-from ..base import BaseConnector, ConnectorParseError
+from ..base import BaseConnector, ConnectorParseError, read_response_capped
 from .observations import NewRedditPostObservation
 
 logger = logging.getLogger("sources")
@@ -34,6 +34,13 @@ REDDIT_USER_AGENT = (
 # wake; with PAGE_SIZE=100, MAX_PAGES=10 covers the latest ~1000 posts.
 PAGE_SIZE = 100
 MAX_PAGES = 10
+
+# Per-page body cap. Reddit's .rss is typically <100KB ; one corrupted
+# / oversize response shouldn't chew RAM. Streamed + capped via
+# `read_response_capped` so we never buffer past the cap. Higher than
+# the RSS connector's 5MB ceiling because Reddit pages 100 posts each ;
+# left generous for any rich Atom payloads.
+MAX_BODY_BYTES = 5 * 1024 * 1024
 
 
 def _entry_published(entry: Any) -> datetime | None:
@@ -104,27 +111,35 @@ class RedditSubRedditConnector(BaseConnector):
             raise ValueError(f"RedditSubredditSourceSpec missing subreddit: {spec}")
 
         # `/new` is sorted newest -> oldest. Reddit has no server-side `since`
-        # filter; the early-return on `obs.occurred_at <= since` works only
-        # because of that ordering, once we see a post older than `since`,
-        # every remaining post on this page and every later page is older too.
-        # The `after` cursor walks pages from newest to oldest in the same order.
+        # filter; the early-return on strict `obs.occurred_at < since` works
+        # only because of that ordering, once we see a post strictly older
+        # than `since`, every remaining post on this page and every later
+        # page is older too. The `after` cursor walks pages newest -> oldest
+        # in the same order.
         url = f"https://www.reddit.com/r/{subreddit}/new/.rss"
         after: str | None = None
 
-        for _ in range(MAX_PAGES):
-            params: dict[str, str | int] = {"limit": PAGE_SIZE}
-            if after:
-                params["after"] = after
+        # One Client across all pages: shares the connection pool, so
+        # `?after=` pagination reuses the keep-alive instead of
+        # handshaking per page. Reddit doesn't strictly need the body
+        # cap (fixed host, bounded pages), but routing through the
+        # shared `read_response_capped` puts the cap policy in one
+        # place ; an unexpected oversize 200 from a CDN edge surfaces
+        # as a parse error instead of an OOM.
+        with httpx.Client(
+            timeout=15.0,
+            headers={"User-Agent": REDDIT_USER_AGENT},
+        ) as client:
+            for _ in range(MAX_PAGES):
+                params: dict[str, str | int] = {"limit": PAGE_SIZE}
+                if after:
+                    params["after"] = after
 
-            response = httpx.get(
-                url,
-                params=params,
-                headers={"User-Agent": REDDIT_USER_AGENT},
-                timeout=15.0,
-            )
-            response.raise_for_status()
+                with client.stream("GET", url, params=params) as response:
+                    response.raise_for_status()
+                    body = read_response_capped(response, max_bytes=MAX_BODY_BYTES, url_label=url)
 
-            parsed = feedparser.parse(response.content)
+                parsed = feedparser.parse(body)
             # Gate on `not version`: real feeds set `version`
             # ('atom10' for Reddit ; HTML pages come back as ''.
             # Reddit's anti-bot rate-limit / login page is a 200 with
@@ -161,9 +176,17 @@ class RedditSubRedditConnector(BaseConnector):
                     continue
                 obs = NewRedditPostObservation.from_feedparser_entry(entry, spec, published)
                 last_atom_id = entry.get("id") or last_atom_id
-                if since is not None and obs.occurred_at <= since:
-                    # /new is reverse-chronological, all remaining items on
-                    # this and later pages are older. We've caught up.
+                # Strict `<`, not `<=`: two posts can share `<published>`
+                # to the second (batch import; same-second submissions),
+                # and dropping on tie permanently loses the second one
+                # because the watermark already crossed its second.
+                # The downstream `external_id` dedup on FeedItem is
+                # idempotent, so re-yielding the boundary post is
+                # suppressed at the recorder seam. The early-return
+                # remains safe: once we see a post strictly older than
+                # `since`, every remaining post on this and later pages
+                # is older too.
+                if since is not None and obs.occurred_at < since:
                     return
                 yield obs
 
