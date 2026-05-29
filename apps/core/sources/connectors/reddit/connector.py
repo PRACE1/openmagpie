@@ -125,23 +125,27 @@ class RedditSubRedditConnector(BaseConnector):
             response.raise_for_status()
 
             parsed = feedparser.parse(response.content)
-            # Two failure modes both raise here:
-            #   * `bozo and entries == 0`: malformed XML feedparser
-            #     couldn't recover entries from (a real Reddit-side
-            #     schema change).
-            #   * `not version and entries == 0`: body parses but
-            #     isn't a feed - the canonical sign Reddit served the
-            #     anti-bot HTML rate-limit page on a 200. The old
-            #     ET.ParseError path would have raised on this ; the
-            #     bozo-only gate silently treated it as "no new
-            #     posts," which is exactly the failure the .rss
-            #     endpoint exists to surface.
-            # `bozo + N entries` is intentionally allowed (feedparser
-            # recovered items from imperfect XML).
-            if not parsed.entries and (parsed.bozo or not parsed.version):
-                exc = parsed.get("bozo_exception")
-                detail = f"{type(exc).__name__}: {exc}" if exc else f"unrecognized body (version={parsed.version!r})"
-                raise ConnectorParseError(f"reddit /r/{subreddit}/new/.rss returned an unexpected payload: {detail}")
+            # Gate on `not version`: real feeds set `version`
+            # ('atom10' for Reddit ; HTML pages come back as ''.
+            # Reddit's anti-bot rate-limit / login page is a 200 with
+            # HTML body ; without this gate it silently reads as "no
+            # new posts" and never surfaces the block.
+            #
+            # Bozo is intentionally NOT a fail trigger. feedparser
+            # raises bozo=1 with SAXParseException for non-fatal
+            # quirks (undeclared namespace prefix, etc.) AND for hard
+            # parse failures ; we can't reliably discriminate without
+            # matching exception messages. The trade-off: a truncated
+            # body that recovers 0 entries reads as "empty page" and
+            # the loop returns ; next poll picks up when Reddit
+            # recovers. The Reddit-specific concern (the .rss
+            # endpoint being our anon channel) is fully covered by
+            # the version gate alone.
+            if not parsed.entries and not parsed.version:
+                raise ConnectorParseError(
+                    f"reddit /r/{subreddit}/new/.rss returned an unexpected payload "
+                    "(no feed format detected; likely the anti-bot HTML page)"
+                )
 
             if not parsed.entries:
                 return  # empty page, nothing more to consume

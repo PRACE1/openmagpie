@@ -131,25 +131,28 @@ class RssConnector(BaseConnector):
                     raise ConnectorParseError(f"rss feed {spec.url} exceeded {MAX_BODY_BYTES}-byte cap mid-stream")
 
         parsed = feedparser.parse(bytes(body))
-        # Two failure modes flag the same loud-fail outcome:
-        #   * `bozo and entries == 0`: malformed XML feedparser
-        #     couldn't recover entries from (a Reddit-style schema
-        #     break).
-        #   * `not version and entries == 0`: the body was parseable
-        #     as XML / HTML but isn't a feed at all. Real feeds
-        #     always set `version` (`'rss20'`, `'atom10'`, ...) ; an
-        #     empty string means feedparser never matched a feed root
-        #     element. Rate-limit blocks and login walls show up as
-        #     200-with-HTML and would otherwise read as "empty page"
-        #     - exactly the failure the .rss / RSS endpoints are
-        #     meant to surface.
-        # `bozo + N entries` is intentionally allowed: some publishers
-        # ship invalid XML and feedparser still recovers items ; let
-        # the entries flow through.
-        if not parsed.entries and (parsed.bozo or not parsed.version):
-            exc = parsed.get("bozo_exception")
-            detail = f"{type(exc).__name__}: {exc}" if exc else f"unrecognized body (version={parsed.version!r})"
-            raise ConnectorParseError(f"rss feed {spec.url} returned an unparseable body: {detail}")
+        # The "is this even a feed?" gate keys on `parsed.version`. Real
+        # feeds always set `version` (`'rss20'`, `'atom10'`, ...) ; HTML
+        # rate-limit / block pages parse as bozo=False, version=''
+        # which would otherwise silently land as "no new posts" and
+        # never surface the upstream block.
+        #
+        # Bozo is intentionally NOT a fail trigger here. feedparser
+        # raises bozo=1 with a SAX exception for non-fatal quirks like
+        # an undeclared `dc:` namespace prefix (very common: most RSS
+        # 2.0 feeds use `<dc:date>` without declaring xmlns:dc), and a
+        # truncated body raises the same exception class. Failing on
+        # bozo would mean a valid feed with a warning + a genuinely
+        # empty cycle gets thrown out, AND we couldn't reliably
+        # discriminate from a hard parse failure without matching on
+        # exception messages. Trade-off: truncated XML returning zero
+        # recovered entries reads as "empty cycle" instead of an
+        # error ; next poll picks it up when the publisher recovers.
+        if not parsed.entries and not parsed.version:
+            raise ConnectorParseError(
+                f"rss feed {spec.url} returned an unparseable body (no feed format detected; "
+                "version='', 0 entries) ; likely an HTML block / rate-limit page or non-feed URL"
+            )
 
         for entry in parsed.entries:
             obs, missing = RssEntryObservation.from_feedparser_entry(entry, spec, field_map)
