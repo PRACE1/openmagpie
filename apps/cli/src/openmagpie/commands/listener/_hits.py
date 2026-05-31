@@ -148,6 +148,7 @@ def hits(
             title = title[:77] + "..."
         console.log(f"  {score} | {delivered} | {title} | {url} | {h.id}")
 
+    console.log("")
+    console.log(f"{len(page.items)} hit(s) shown")
     if page.next_cursor:
-        console.log("")
         console.log(f"More: magpie listener hits {listener_id} --after {page.next_cursor}")
