@@ -13,10 +13,12 @@ from __future__ import annotations
 
 from contextvars import ContextVar, Token
 
+import httpx
+
 from .api import Api
 from .api.auth import TokenPair
 from .config import Config, UserInfo, load, save
-from .http import MagpieClient
+from .http import ApiError, MagpieClient
 
 
 class AppContext:
@@ -68,7 +70,11 @@ class AppContext:
         if self.config.access_token:
             try:
                 self.api.auth.tokens.revoke()
-            except Exception:
+            except (ApiError, httpx.HTTPError):
+                # ApiError = server reachable but revocation rejected
+                # (already-expired token, etc.) ; httpx.HTTPError =
+                # transport failure (server unreachable / timeout).
+                # Either way we still want local creds cleared.
                 server_ok = False
         self.config.clear_credentials()
         save(self.config)

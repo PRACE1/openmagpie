@@ -180,7 +180,11 @@ def save(config: Config) -> None:
             tmp_path = f.name
             f.write(wrapper.model_dump_json(indent=2))
         os.replace(tmp_path, target)
-    except Exception:
+    except OSError:
+        # Tempfile / write / replace are the only OSError paths here ;
+        # cleanup runs and the original error re-propagates so the
+        # caller sees the real failure (disk full, permission denied,
+        # parent dir gone, ...).
         if tmp_path is not None:
             with contextlib.suppress(FileNotFoundError):
                 os.unlink(tmp_path)

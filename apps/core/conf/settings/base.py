@@ -216,6 +216,27 @@ WEBHOOK_BLOCK_PRIVATE_IPS = env_bool("WEBHOOK_BLOCK_PRIVATE_IPS", "false")
 # an internal feed; flip on for multi-tenant / public deployments.
 SOURCE_BLOCK_PRIVATE_IPS = env_bool("SOURCE_BLOCK_PRIVATE_IPS", "false")
 
+# Anti-bot challenge-bypass sidecar (shared connector primitive).
+# Bot-management products flag Python TLS fingerprints and serve a JS-
+# challenge page (HTTP 202, or 200-with-bot-HTML) in place of the real
+# payload. When set, any connector mixing in `ChallengeBypassMixin`
+# POSTs the failing URL to a FlareSolverr sidecar
+# (https://github.com/FlareSolverr/FlareSolverr) which runs headless
+# Chrome in its own container, passes the JS challenge, and returns
+# the real body. Empty default (no localhost / docker fallback baked
+# into prod settings) ; dev seeds the docker-compose service name in
+# `conf.settings.local`.
+SOURCE_CHALLENGE_BYPASS_URL = os.environ.get("SOURCE_CHALLENGE_BYPASS_URL", "")
+
+# Allow the RSS connector to retry a failing fetch with TLS chain
+# verification disabled. Some publisher feeds sit behind stale / self-
+# signed / wrong-name certs and serve valid bodies once verification
+# is dropped, BUT verify=False is a real MITM downgrade for feed
+# content (anyone on-path can forge entries). Default off ; turn on
+# only for single-tenant self-host where the operator accepts the
+# trade-off.
+SOURCE_ALLOW_INSECURE_TLS = env_bool("SOURCE_ALLOW_INSECURE_TLS", "false")
+
 # ── Logging ────────────────────────────────────────────────────────────
 #
 # App loggers are configured explicitly so the warnings the polling /

@@ -47,7 +47,7 @@ def _safe_authorize_url(authorize_url: str, server_url: str) -> bool:
     try:
         a = urlparse(authorize_url)
         s = urlparse(server_url)
-    except Exception:
+    except ValueError:
         return False
     if a.scheme not in ("http", "https"):
         return False
@@ -92,7 +92,7 @@ def login(
         opened = False
         try:
             opened = webbrowser.open(created.authorize_url)
-        except Exception as e:
+        except webbrowser.Error as e:
             console.warn(f"Couldn't launch a browser ({e}). Open the URL above to continue.")
         else:
             if not opened:

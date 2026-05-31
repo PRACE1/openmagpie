@@ -156,7 +156,11 @@ class RedditSubRedditConnector(BaseConnector):
                 # recovers. The Reddit-specific concern (the .rss
                 # endpoint being our anon channel) is fully covered by
                 # the version gate alone.
-                if not parsed.entries and not parsed.version:
+                # `getattr(..., "")` because some inputs (empty body,
+                # non-XML) cause feedparser to return a FeedParserDict
+                # that raises AttributeError on `.version` access
+                # instead of returning empty string.
+                if not parsed.entries and not getattr(parsed, "version", ""):
                     raise ConnectorParseError(
                         f"reddit /r/{subreddit}/new/.rss returned an unexpected payload "
                         "(no feed format detected; likely the anti-bot HTML page)"

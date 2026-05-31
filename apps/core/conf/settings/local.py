@@ -8,6 +8,12 @@ os.environ.setdefault("BASE_URL", "http://localhost:8000")
 os.environ.setdefault("WEB_BASE_URL", "http://localhost:3001")
 # Browser ↔ Django is plain HTTP in dev; secure cookies would never get sent.
 os.environ.setdefault("AUTH_COOKIE_SECURE", "false")
+# Dev points at the docker-compose flaresolverr service ; prod operators
+# set this themselves (or leave it empty to disable the capability).
+os.environ.setdefault("SOURCE_CHALLENGE_BYPASS_URL", "http://flaresolverr:8191/v1")
+# Single-tenant self-host accepts the broken-publisher / MITM-downgrade
+# trade-off for convenience ; prod multi-tenant deployments leave it off.
+os.environ.setdefault("SOURCE_ALLOW_INSECURE_TLS", "true")
 
 from common.env import env_bool
 

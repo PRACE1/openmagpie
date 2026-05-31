@@ -10,6 +10,7 @@ Source row + feed default."""
 import ipaddress
 import logging
 import socket
+import ssl
 from collections.abc import Iterator
 from datetime import datetime
 
@@ -22,6 +23,7 @@ from events.registry import register
 from openmagpie_schema.configs import RssSourceSpec
 
 from ..base import BaseConnector, ConnectorParseError, read_response_capped
+from ..challenge_bypass import ChallengeBypassMixin
 from .observations import RssEntryObservation
 
 logger = logging.getLogger("sources")
@@ -74,7 +76,7 @@ def _validate_request_url(request: httpx.Request) -> None:
     _block_private_ip(host, url=request.url)
 
 
-class RssConnector(BaseConnector):
+class RssConnector(ChallengeBypassMixin, BaseConnector):
     """Polls a single RSS or Atom feed URL.
 
     Live-mode semantics: every cycle yields entries newer than `since`,
@@ -101,6 +103,56 @@ class RssConnector(BaseConnector):
     kind = RssSourceSpec.SOURCE_KIND
     observations: list[type[Observation]] = [RssEntryObservation]
 
+    def _fetch_with_ssl_fallback(self, url: str) -> bytes:
+        """Stream the URL body. When `SOURCE_ALLOW_INSECURE_TLS=true`,
+        retry once with `verify=False` if the first attempt fails an SSL
+        check ; some publisher feeds sit behind stale / self-signed /
+        wrong-name certs but serve a valid body once chain verification
+        is dropped. The retry is opt-in because verify=False is a real
+        MITM downgrade ; operators who want feed-content integrity over
+        broken-publisher tolerance leave the setting off (the default)
+        and SSL failures propagate normally.
+
+        SSL detection is type-based (`isinstance(exc.__cause__,
+        ssl.SSLError)`) not string-matched — see the bozo comment below
+        for why we generally avoid matching on exception text.
+
+        The httpx client carries `_validate_request_url` as a request
+        hook so every redirect target is re-checked under
+        `SOURCE_BLOCK_PRIVATE_IPS` (a 302 from a public host to a
+        link-local / metadata-service address raises before httpx
+        fetches the inner target). `read_response_capped` streams +
+        checks per chunk so the MAX_BODY_BYTES gate runs before bytes
+        are buffered."""
+
+        def _stream(verify: bool) -> bytes:
+            with (
+                httpx.Client(
+                    event_hooks={"request": [_validate_request_url]},
+                    follow_redirects=True,
+                    timeout=15.0,
+                    headers={"User-Agent": RSS_USER_AGENT},
+                    verify=verify,
+                ) as client,
+                client.stream("GET", url) as response,
+            ):
+                response.raise_for_status()
+                return read_response_capped(response, max_bytes=MAX_BODY_BYTES, url_label=f"rss feed {url}")
+
+        try:
+            return _stream(verify=True)
+        except httpx.ConnectError as exc:
+            if isinstance(exc.__cause__, ssl.SSLError) and settings.SOURCE_ALLOW_INSECURE_TLS:
+                # WARN (not INFO) because verify=False is consequential
+                # enough that an operator watching the log should see it
+                # even when they enabled the setting deliberately.
+                logger.warning(
+                    "rss: SSL verify failed for %s, retrying with verify=False (SOURCE_ALLOW_INSECURE_TLS=true)",
+                    url,
+                )
+                return _stream(verify=False)
+            raise
+
     def poll(
         self,
         spec: RssSourceSpec,
@@ -110,22 +162,12 @@ class RssConnector(BaseConnector):
         field_map = field_map or {}
 
         # Client carries the per-request hook so every redirect target
-        # is re-checked under SOURCE_BLOCK_PRIVATE_IPS (a 302 from a
-        # public host to 169.254.169.254 raises before httpx fetches
-        # the inner target). `read_response_capped` streams + checks
-        # per chunk so the MAX_BODY_BYTES gate runs before the bytes
-        # are buffered.
-        with (
-            httpx.Client(
-                event_hooks={"request": [_validate_request_url]},
-                follow_redirects=True,
-                timeout=15.0,
-                headers={"User-Agent": RSS_USER_AGENT},
-            ) as client,
-            client.stream("GET", spec.url) as response,
-        ):
-            response.raise_for_status()
-            body = read_response_capped(response, max_bytes=MAX_BODY_BYTES, url_label=f"rss feed {spec.url}")
+        # is re-checked under SOURCE_BLOCK_PRIVATE_IPS (a 302 to a
+        # link-local / metadata-service address raises before httpx
+        # fetches the inner target). `read_response_capped` streams +
+        # checks per chunk so the MAX_BODY_BYTES gate runs before the
+        # bytes are buffered.
+        body = self._fetch_with_ssl_fallback(spec.url)
 
         parsed = feedparser.parse(body)
         # The "is this even a feed?" gate keys on `parsed.version`. Real
@@ -145,11 +187,30 @@ class RssConnector(BaseConnector):
         # exception messages. Trade-off: truncated XML returning zero
         # recovered entries reads as "empty cycle" instead of an
         # error ; next poll picks it up when the publisher recovers.
-        if not parsed.entries and not parsed.version:
-            raise ConnectorParseError(
-                f"rss feed {spec.url} returned an unparseable body (no feed format detected; "
-                "version='', 0 entries) ; likely an HTML block / rate-limit page or non-feed URL"
-            )
+        # `getattr(..., "")` because some inputs (empty body, completely
+        # non-XML) cause feedparser to return a FeedParserDict that
+        # raises AttributeError on `.version` access instead of returning
+        # the empty string. Defensive accessor keeps a single bad source
+        # from aborting the whole feed's poll cycle.
+        if not parsed.entries and not getattr(parsed, "version", ""):
+            # Anti-bot JS-challenge fallback (Cloudflare, Imperva,
+            # DDoS-Guard, ...): hand the URL to the FlareSolverr sidecar,
+            # which drives a real browser to pass the challenge and
+            # returns the eventual response body. If THAT body parses,
+            # continue with the recovered observations ; if not, raise
+            # so the per-source skip path logs and moves on. No-op when
+            # the sidecar URL is empty or unreachable.
+            bypass_body = self.challenge_bypass_fetch(spec.url, max_bytes=MAX_BODY_BYTES)
+            if bypass_body:
+                bypass_parsed = feedparser.parse(bypass_body)
+                if bypass_parsed.entries or getattr(bypass_parsed, "version", ""):
+                    logger.info("rss: challenge-bypass succeeded for %s", spec.url)
+                    parsed = bypass_parsed
+            if not parsed.entries and not getattr(parsed, "version", ""):
+                raise ConnectorParseError(
+                    f"rss feed {spec.url} returned an unparseable body (no feed format detected; "
+                    "version='', 0 entries) ; likely an HTML block / rate-limit page or non-feed URL"
+                )
 
         for entry in parsed.entries:
             obs, missing = RssEntryObservation.from_feedparser_entry(entry, spec, field_map)
