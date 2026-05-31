@@ -54,6 +54,10 @@ class listeners:
     def payload_sample(listener_id: str) -> str:
         return f"{_LISTENERS}/{listener_id}/payload-sample"
 
+    @staticmethod
+    def hits(listener_id: str) -> str:
+        return f"{_LISTENERS}/{listener_id}/hits"
+
 
 class feeds:
     """`/v1/feeds/*` routes the CLI consumes."""

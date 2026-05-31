@@ -15,6 +15,7 @@ Entry points:
 - `magpie listener delete <id>` deletes one listener
 - `magpie listener rewind <id>` resets the judge cursor
 - `magpie listener payload-sample <id>` previews per-notifier delivery
+- `magpie listener hits <id>` paginates over historical hits (JSON / CSV)
 
 `create` and `edit` share one mutation flow (in `_helpers`):
 server-validate (dry-run) -> preview -> confirm -> apply. `--dry-run`
@@ -32,6 +33,6 @@ listener_app = typer.Typer(no_args_is_help=True)
 # Sub-modules register their commands on `listener_app` at import time.
 # Imported here for side effects; ordering matches the help screen the
 # operator sees.
-from . import _template, _mutate, _get, _delete, _tools, _list  # noqa: F401, I001
+from . import _template, _mutate, _get, _delete, _tools, _list, _hits  # noqa: F401, I001
 
 __all__ = ["listener_app"]

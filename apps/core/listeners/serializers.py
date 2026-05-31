@@ -27,6 +27,7 @@ from listeners.registry import get_config_class, load_config, validate_config
 from listeners.stats import DEFAULT_WINDOW_DAYS, compute_hit_rates
 from openmagpie_schema.configs import ListenerConfigSummary
 from openmagpie_schema.wire import (
+    HitWire,
     ListenerMutationResponse,
     ListenerView,
     ListenerWire,
@@ -195,4 +196,21 @@ def listener_mutation(listener: Listener, *, dry_run: bool) -> ListenerMutationR
         **listener_wire(listener).model_dump(),
         summary=_listener_summary(listener),
         dry_run=dry_run,
+    )
+
+
+def hit_wire(event: Any) -> HitWire:
+    """The wire shape for one hit row (Event of kind='hit'). The Event's
+    `data` blob is the FeedItem snapshot taken at hit time, carried
+    opaquely (its interior is the connector's Observation shape,
+    per-source-kind)."""
+    return HitWire(
+        id=str(event.id),
+        score=event.score,
+        source=event.source,
+        external_id=event.external_id,
+        feed_item_id=str(event.feed_item_id or ""),
+        delivered_at=event.delivered_at,
+        created_at=event.created_at,
+        data=event.data or {},
     )

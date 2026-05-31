@@ -20,6 +20,8 @@ from pydantic import BaseModel
 
 from openmagpie_schema.wire import (
     ConfigBlob,
+    HitListResponse,
+    HitWire,
     ListenerListResponse,
     ListenerMutationResponse,
     ListenerView,
@@ -33,6 +35,8 @@ from ..http import MagpieClient
 
 __all__ = [
     "ConfigBlob",
+    "HitListResponse",
+    "HitWire",
     "ListenerApi",
     "ListenerEnvelope",
     "ListenerListResponse",
@@ -152,3 +156,24 @@ class ListenerApi:
     def delete(self, listener_id: str) -> None:
         """DELETE one listener. 204 on success; 404 -> ApiError."""
         self._http.delete(routes.listeners.detail(listener_id))
+
+    def hits(
+        self,
+        listener_id: str,
+        *,
+        after: str | None = None,
+        limit: int | None = None,
+    ) -> HitListResponse:
+        """One page of hits for this listener, newest first.
+
+        `after=<event_id>` paginates to the next (older) page ; the
+        server caps `limit` at 200 and defaults to 50 when omitted.
+        Returns the typed envelope so the caller reads `.items` and
+        `.next_cursor` without dict poking."""
+        params: dict[str, str] = {}
+        if after:
+            params["after"] = after
+        if limit is not None:
+            params["limit"] = str(limit)
+        raw = self._http.get(routes.listeners.hits(listener_id), params=params or None)
+        return HitListResponse.model_validate(raw)

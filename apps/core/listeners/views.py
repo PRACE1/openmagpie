@@ -21,15 +21,17 @@ from accounts.api import AccountScopedAPIView
 from common.fields import is_valid_ulid
 from listeners.api import ListenerScopedAPIView
 from listeners.registry import load_semantic_config
-from openmagpie_schema.wire import ListenerListResponse, NotifierPayload, PayloadSampleResponse
+from openmagpie_schema.wire import HitListResponse, ListenerListResponse, NotifierPayload, PayloadSampleResponse
 
 from .policy import PolicyError
 from .serializers import (
     ListenerCreateSerializer,
+    hit_wire,
     listener_mutation,
     listener_view,
     listener_wire,
 )
+from .services.hits import list_hits
 from .services.listeners import ListenerService, SeedCursor
 from .services.preview import CannotPreviewSource, build_preview
 from .stats import compute_hit_rates
@@ -37,12 +39,24 @@ from .stats import compute_hit_rates
 logger = logging.getLogger("listeners")
 
 _TRUTHY = {"1", "true", "yes", "on"}
+_DEFAULT_HIT_LIMIT = 50
+_MAX_HIT_LIMIT = 200
 
 
 def _is_truthy(value: str | None) -> bool:
     """Parse a query-string flag. Absent or anything outside the truthy
     set reads as False, so `?dry_run=0` / no param creates for real."""
     return value is not None and value.strip().lower() in _TRUTHY
+
+
+def _parse_hit_limit(request) -> int:
+    raw = request.query_params.get("limit")
+    if raw is None:
+        return _DEFAULT_HIT_LIMIT
+    try:
+        return max(1, min(_MAX_HIT_LIMIT, int(raw)))
+    except ValueError:
+        return _DEFAULT_HIT_LIMIT
 
 
 class ListenerListCreateView(AccountScopedAPIView):
@@ -299,3 +313,22 @@ class ListenerPayloadSampleView(ListenerScopedAPIView):
             notifiers=[NotifierPayload(kind=n.kind, target=n.target, rendered=n.rendered) for n in result.notifiers],
         )
         return Response(body.model_dump(mode="json"), status=status.HTTP_200_OK)
+
+
+class ListenerHitsView(ListenerScopedAPIView):
+    """GET /v1/listeners/<id>/hits, paginated by ULID pk, newest first.
+
+    Cursor-pagination via `?after=<event_id>` (id strictly less than that).
+    `?limit=N` caps page size (default 50, max 200). Account-scoped via
+    `ListenerScopedAPIView` ; the inner query also filters by account_id
+    for defense in depth.
+    """
+
+    def get(self, request, listener_id: str):
+        limit = _parse_hit_limit(request)
+        after = request.query_params.get("after") or None
+        hits = list_hits(self.listener, after=after, limit=limit)
+        next_cursor = str(hits[-1].id) if len(hits) == limit else None
+        return Response(
+            HitListResponse(items=[hit_wire(h) for h in hits], next_cursor=next_cursor).model_dump(mode="json")
+        )

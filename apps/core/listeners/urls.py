@@ -23,4 +23,9 @@ urlpatterns = [
         views.ListenerPayloadSampleView.as_view(),
         name="listener_payload_sample",
     ),
+    api_path(
+        "<str:listener_id>/hits",
+        views.ListenerHitsView.as_view(),
+        name="listener_hits",
+    ),
 ]
