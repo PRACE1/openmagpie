@@ -10,6 +10,7 @@ ask the user to re-run `magpie auth login`.
 
 from __future__ import annotations
 
+import json
 import os
 import platform
 import socket
@@ -31,10 +32,13 @@ _VERIFY_TLS = os.environ.get("MAGPIE_INSECURE_SKIP_TLS_VERIFY") != "1"
 
 
 def _hostname() -> str:
-    """Best-effort hostname; falls back to 'unknown' rather than raising."""
+    """Best-effort hostname; falls back to 'unknown' rather than raising.
+
+    `socket.gethostname()` raises `OSError` (gaierror is a subclass) on
+    DNS / name-resolution failure ; nothing else is a normal outcome."""
     try:
         return socket.gethostname() or "unknown"
-    except Exception:
+    except OSError:
         return "unknown"
 
 
@@ -250,9 +254,13 @@ class MagpieClient:
 
 
 def _safe_json(resp: httpx.Response) -> Any:
+    """Used to format error payloads ; some servers return text/plain
+    on errors. Narrow to the json-decode paths so unrelated bugs (e.g.
+    a programming error in `resp`) propagate instead of being papered
+    over with the raw response text."""
     try:
         return resp.json()
-    except Exception:
+    except (json.JSONDecodeError, UnicodeDecodeError):
         return resp.text
 
 

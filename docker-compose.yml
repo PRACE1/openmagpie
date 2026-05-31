@@ -28,6 +28,24 @@ services:
       retries: 6
       start_period: 30s
 
+  # Sidecar that bypasses anti-bot JS challenges (Cloudflare, Imperva,
+  # DDoS-Guard, ...) by running headless Chrome in its own process and
+  # exposing an HTTP API. Any connector mixing in ChallengeBypassMixin
+  # falls back to this when its normal fetch hits a challenge page.
+  # Optional ; if the container isn't running, the connector gracefully
+  # logs and skips the challenge-protected source as before. See
+  # `SOURCE_CHALLENGE_BYPASS_URL` in core settings.
+  flaresolverr:
+    image: ghcr.io/flaresolverr/flaresolverr:latest
+    restart: unless-stopped
+    environment:
+      LOG_LEVEL: info
+      TZ: UTC
+    ports:
+      # Exposed for ad-hoc debugging from the host ; the core
+      # container reaches it as `http://flaresolverr:8191`.
+      - "8191:8191"
+
   web:
     build: ./web
     working_dir: /web
