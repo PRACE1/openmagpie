@@ -120,3 +120,34 @@ class PayloadSampleResponse(BaseModel):
 
     synthetic: bool
     notifiers: list[NotifierPayload] = []
+
+
+class HitWire(BaseModel):
+    """One listener hit on the read path (`GET /v1/listeners/<id>/hits`).
+
+    A hit is a persisted Event of kind="hit" — the judge's verdict that
+    a FeedItem was relevant. `data` is the FeedItem snapshot taken at
+    hit time (survives FeedItem retention prune), opaque on the wire
+    because its interior is the connector's Observation shape (varies
+    per source kind). Clients render common keys (`title`, `url`,
+    `occurred_at`) best-effort ; the full snapshot is round-trippable
+    for downstream extraction / CSV export."""
+
+    id: str
+    score: float | None = None
+    source: str
+    external_id: str
+    feed_item_id: str
+    delivered_at: datetime | None = None
+    created_at: datetime | None = None
+    data: dict[str, Any] = {}
+
+
+class HitListResponse(BaseModel):
+    """`GET /v1/listeners/<id>/hits` envelope. Cursor-paginated by ULID
+    pk, newest-first. Pass `?after=<id>` to fetch the next page ;
+    `next_cursor` is the id to send back, or null when the page wasn't
+    full (= no more rows)."""
+
+    items: list[HitWire] = []
+    next_cursor: str | None = None
