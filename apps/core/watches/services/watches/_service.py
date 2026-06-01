@@ -63,6 +63,21 @@ class WatchService:
             .values_list("feed_id", flat=True)
         )
 
+    def watch_feeds(self, watch: Watch, /) -> builtins.list[WatchFeed]:
+        """The watch's WatchFeed rows (subscription + per-feed watermark),
+        creation order. The trigger pass reads `last_item_id` off each to
+        scan only new FeedItems, then advances it via `advance_watermark`."""
+        self._assert_scope(str(watch.account_id), "watch")
+        return builtins.list(WatchFeed.objects.filter(account_id=self.account_id, watch_id=watch.id).order_by("id"))
+
+    def advance_watermark(self, watch_feed: WatchFeed, /, *, last_item_id: str) -> None:
+        """Advance one (watch, feed) cursor to the newest item it has
+        triggered on. Single-column UPDATE ; called by the trigger pass
+        after enqueuing runs for the items in `(prev, last_item_id]`."""
+        self._assert_scope(str(watch_feed.account_id), "watch feed")
+        watch_feed.last_item_id = last_item_id
+        watch_feed.save(update_fields=["last_item_id", "updated_at"])
+
     def initial_actions(self, watch: Watch, /) -> builtins.list[WatchAction]:
         """The watch's initial-path actions, ordered by rank (the chain).
 

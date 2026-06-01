@@ -1,3 +1,4 @@
+from .runs import WatchActionRunService
 from .watches import WatchActionService, WatchService
 
-__all__ = ["WatchActionService", "WatchService"]
+__all__ = ["WatchActionRunService", "WatchActionService", "WatchService"]

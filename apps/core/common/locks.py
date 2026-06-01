@@ -75,6 +75,23 @@ def path_chain_lock(path_id: str) -> AbstractContextManager[bool]:
     )
 
 
+def job_lock(name: str) -> AbstractContextManager[bool]:
+    """Single-flight a scheduled job (a management command) by name.
+
+    Skip-if-held: yields True iff acquired ; a run that finds a prior pass
+    still going gets False and should log + skip rather than pile up behind
+    it. Built on `named_lock`, so release rides the same owner-token
+    finally ; a normal exit, a handled exception, even SIGTERM
+    (SystemExit runs finally) all free it promptly. Only a hard SIGKILL /
+    power loss skips the finally ; `JOB_LOCK_TIMEOUT_SECONDS` (deliberately
+    a full day) is the failsafe that eventually frees a lock orphaned that
+    way, set long so a legitimately hours-long pass never expires it."""
+    return named_lock(
+        name=f"job_lock:{name}",
+        timeout=settings.JOB_LOCK_TIMEOUT_SECONDS,
+    )
+
+
 def refresh_token_lock(refresh_token: str) -> AbstractContextManager[bool]:
     """Serialize concurrent refresh-token rotations for a single token.
 

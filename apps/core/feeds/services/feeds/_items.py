@@ -131,6 +131,12 @@ class FeedItemService:
         deleted, _ = FeedItem.objects.filter(account_id=self.account_id, feed_id=feed.id, id__lt=cutoff_ulid).delete()
         return deleted
 
+    def get(self, item_id: str, /) -> FeedItem:
+        """One FeedItem by id, account-scoped. Raises FeedItem.DoesNotExist
+        if missing / other-account. The drain loads `item.data` (the stored
+        SourcePayload dump) here to hand to an action."""
+        return FeedItem.objects.get(id=item_id, account_id=self.account_id)
+
     def newest_item_id(self, feed: Feed, /) -> str | None:
         """ULID pk of the newest FeedItem in this feed, or None if empty.
         Used as the snapshot upper bound for a judge cycle."""
@@ -197,6 +203,43 @@ class FeedItemService:
             for item in chunk:
                 yield item
                 last_seen = str(item.id)
+            if len(chunk) < chunk_size:
+                return
+
+    def iter_item_ids_in_window(
+        self,
+        feed: Feed,
+        /,
+        *,
+        after_id: str,
+        through_id: str,
+        chunk_size: int = 500,
+    ) -> Iterator[str]:
+        """Yield just the ULID pks in `(after_id, through_id]`, ascending.
+
+        The id-only twin of `iter_items_in_window` for callers that need
+        only the keys, not the rows ; the watch trigger enqueues runs by
+        `feed_item_id` and never reads the payload, so projecting to `id`
+        avoids dragging every item's `data` JSON out of the DB. Same
+        keyset pagination (O(chunk_size) memory, early-break safe)."""
+        self._assert_scope(str(feed.account_id), "feed")
+        last_seen = after_id
+        while True:
+            chunk = builtins.list(
+                FeedItem.objects.filter(
+                    account_id=self.account_id,
+                    feed_id=feed.id,
+                    id__gt=last_seen,
+                    id__lte=through_id,
+                )
+                .order_by("id")
+                .values_list("id", flat=True)[:chunk_size]
+            )
+            if not chunk:
+                return
+            for item_id in chunk:
+                yield str(item_id)
+                last_seen = str(item_id)
             if len(chunk) < chunk_size:
                 return
 

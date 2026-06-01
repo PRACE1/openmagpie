@@ -38,6 +38,9 @@ db.sqlite3-journal
 staticfiles/
 media/
 
+# Local background job tickers (make up-jobs): per-stage pid + log
+.jobs/
+
 # Celery
 celerybeat-schedule
 celerybeat.pid

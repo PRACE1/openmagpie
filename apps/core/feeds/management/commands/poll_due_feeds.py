@@ -1,16 +1,16 @@
 import logging
 from typing import Any
 
-from django.core.management.base import BaseCommand
 from django.utils import timezone
 
+from common.commands import SingleFlightCommand
 from feeds.services import FeedService
 from feeds.services.polling import SourcePolled, poll_feed
 
 logger = logging.getLogger("feeds")
 
 
-class Command(BaseCommand):
+class Command(SingleFlightCommand):
     help = "Poll every active feed whose poll_interval_seconds has elapsed. The scheduler entry point."
 
     def add_arguments(self, parser: Any) -> None:

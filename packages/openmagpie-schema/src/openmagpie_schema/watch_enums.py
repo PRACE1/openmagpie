@@ -41,10 +41,24 @@ class WatchActionRunState(StrEnum):
     """Lifecycle of one WatchActionRun (one action executing one item).
 
     The runner advances the chain to the next action IFF a run reaches
-    `SUCCEEDED`. `GATED` is a clean run whose result halts the chain (a
-    semantic-filter that returned pass=false) ; the control-flow fact
-    lives in this column so the audit log is self-documenting, with the
-    score still in `result`.
+    `SUCCEEDED`. The control-flow fact lives in this column so the audit
+    log is self-documenting (the score etc. stay in `result`).
+
+    Terminal states, and how the drain treats each:
+      - SUCCEEDED : ran, score met threshold -> advance the chain.
+      - GATED     : ran cleanly, score below threshold -> chain stops. Not
+                    a failure ; the expected "didn't pass the filter" path.
+      - FAILED    : a TRANSIENT error (engine down, timeout, bad response).
+                    Retryable -> the drain re-claims it until attempts hit
+                    WATCH_RUN_MAX_ATTEMPTS, then it stays FAILED.
+      - ERRORED   : a PERMANENT backend defect (e.g. a feed item whose
+                    stored data can't be rehydrated). Terminal, NEVER
+                    retried ; distinct from FAILED so an audit query can
+                    tell "broken, look at it" from "transient, gave up".
+      - SKIPPED   : a DELIBERATE non-run (operator paused the watch, a
+                    policy chose not to run this action). Reserved for that
+                    intent ; NOT used for defects (use ERRORED).
+    Non-terminal: PENDING (queued) -> RUNNING (claimed by the drain).
     """
 
     PENDING = "pending"
@@ -52,4 +66,5 @@ class WatchActionRunState(StrEnum):
     SUCCEEDED = "succeeded"
     GATED = "gated"
     FAILED = "failed"
+    ERRORED = "errored"
     SKIPPED = "skipped"

@@ -180,10 +180,32 @@ FEED_SET_LOCK_TIMEOUT_SECONDS = int(os.environ.get("FEED_SET_LOCK_TIMEOUT_SECOND
 # no network. 30s is far above a real renumber and unblocks a stuck run.
 PATH_CHAIN_LOCK_TIMEOUT_SECONDS = int(os.environ.get("PATH_CHAIN_LOCK_TIMEOUT_SECONDS", "30"))
 
+# Watch-action-run execution (process_due_runs drain).
+# A run is ONE action vs ONE feed item (a semantic_filter = one ~120s LLM
+# call), so these size against a single call, NOT a feed's source count.
+# MAX_ATTEMPTS: the drain claims a run only while attempts < this (each
+# claim burns one) ; past it the run stays terminally FAILED so a broken
+# or worker-crashing run can't retry forever.
+WATCH_RUN_MAX_ATTEMPTS = int(os.environ.get("WATCH_RUN_MAX_ATTEMPTS", "3"))
+# STALE_SECONDS: a run stuck in RUNNING longer than this is presumed
+# crashed and reaped to FAILED. 5x the engine's 120s judge timeout, so a
+# slow-but-alive call is never false-reaped; a real crash recovers in <=10m.
+WATCH_RUN_STALE_SECONDS = int(os.environ.get("WATCH_RUN_STALE_SECONDS", "600"))
+
 # Refresh-token rotation lock failsafe. The critical section is one row
 # read + revoke + mint, so milliseconds in practice; 30s leaves plenty
 # of headroom if the DB is briefly slow.
 REFRESH_TOKEN_LOCK_TIMEOUT_SECONDS = int(os.environ.get("REFRESH_TOKEN_LOCK_TIMEOUT_SECONDS", "30"))
+
+# Single-flight lock for scheduled jobs (SingleFlightCommand): a second
+# run of the same command skips while one is in flight. TTL is purely a
+# CRASH failsafe, set deliberately LONG. A drain pass judges items
+# synchronously and sequentially (each ~120s, no internal queue), so a
+# backlog makes ONE legit pass run for hours; a short TTL would expire
+# mid-pass and let a second drain in. A full day stays well past any real
+# pass, so the lock only ever frees one orphaned by a hard SIGKILL ; every
+# graceful exit (normal, exception, SIGTERM) releases via the finally.
+JOB_LOCK_TIMEOUT_SECONDS = int(os.environ.get("JOB_LOCK_TIMEOUT_SECONDS", "86400"))
 
 # Relevance engine defaults. ENGINE_DEFAULT_KIND selects which engine a
 # semantic-filter action's config falls back to when it doesn't pin one

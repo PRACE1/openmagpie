@@ -1,0 +1,124 @@
+"""Watch trigger pass: enqueue first-action runs for new feed items.
+
+Mirrors `FeedPollOperation`, a one-shot operation built from one Watch,
+`.run()` once. The `process_due_watches` cron iterates active watches and
+runs one of these each.
+
+Pull model (not push): the per-(watch, feed) watermark on `WatchFeed` is
+the cursor. For each subscribed feed the operation scans FeedItems past
+that watermark, enqueues a PENDING `WatchActionRun` for the chain's FIRST
+action (rank 0), then advances the watermark to the scan's upper bound.
+Because the cursor lives on the watch side, a watch created after items
+already exist still picks them up (a blank watermark backfills the whole
+retained window), and `feeds` never needs to know about its watchers.
+"""
+
+import logging
+from collections.abc import Callable
+from dataclasses import dataclass
+from functools import cached_property
+
+from django.utils import timezone
+
+from feeds.models import Feed
+from feeds.services import FeedItemService, FeedService
+from watches.models import Watch
+from watches.services import WatchActionRunService, WatchService
+
+logger = logging.getLogger("watches")
+
+
+@dataclass(frozen=True)
+class FeedTriggered:
+    """Per-feed progress, emitted once after each subscribed feed is scanned."""
+
+    watch: Watch
+    feed_id: str
+    enqueued: int
+
+
+WatchTriggerProgressCallback = Callable[[FeedTriggered], None]
+
+
+@dataclass(frozen=True)
+class WatchTriggerResult:
+    feeds_scanned: int
+    runs_enqueued: int
+
+
+class WatchTriggerOperation:
+    """One-shot: scan a Watch's subscribed feeds, enqueue first-action runs."""
+
+    def __init__(self, watch: Watch, *, on_progress: WatchTriggerProgressCallback | None = None) -> None:
+        self.watch = watch
+        self.account_id = str(watch.account_id)
+        self.on_progress: WatchTriggerProgressCallback = on_progress or (lambda _: None)
+
+    @cached_property
+    def watch_svc(self) -> WatchService:
+        return WatchService(account_id=self.account_id)
+
+    @cached_property
+    def run_svc(self) -> WatchActionRunService:
+        return WatchActionRunService(account_id=self.account_id)
+
+    @cached_property
+    def feed_item_svc(self) -> FeedItemService:
+        return FeedItemService(account_id=self.account_id)
+
+    def run(self) -> WatchTriggerResult:
+        now = timezone.now()
+
+        # The chain's first action (rank 0) is the only enqueue target ;
+        # the drain advances rank+1 on success. An actionless watch has
+        # nothing to trigger (a legit empty chain, not corruption).
+        actions = self.watch_svc.initial_actions(self.watch)
+        if not actions:
+            return WatchTriggerResult(feeds_scanned=0, runs_enqueued=0)
+        first_action_id = str(actions[0].id)
+
+        feeds_scanned = 0
+        runs_enqueued = 0
+        for watch_feed in self.watch_svc.watch_feeds(self.watch):
+            try:
+                feed = FeedService.Global.get(watch_feed.feed_id)
+            except Feed.DoesNotExist:
+                # Subscription to a deleted feed: skip, leave the row
+                # (cleanup is a watch-edit concern). One stale feed must
+                # not abort the watch's others.
+                logger.warning(
+                    "watch=%s subscribed to missing feed=%s; skipping",
+                    self.watch.id,
+                    watch_feed.feed_id,
+                )
+                continue
+
+            feeds_scanned += 1
+            through_id = self.feed_item_svc.newest_item_id(feed)
+            if through_id is None:
+                continue  # empty feed, nothing to scan
+
+            # Blank watermark backfills the retained window (after_id="" <
+            # every ULID). Already at head -> no new items this cycle.
+            after_id = watch_feed.last_item_id or ""
+            if after_id == through_id:
+                continue
+
+            # Not transactional, deliberately: enqueue-before-advance keeps
+            # the watermark from moving past un-enqueued items, and the only
+            # crash gap (enqueued, not advanced) self-heals next cycle since
+            # enqueue_many is idempotent. A transaction would hold one write
+            # lock across the whole chunked backfill.
+            enqueued = self.run_svc.enqueue_many(
+                watch_id=str(self.watch.id),
+                action_id=first_action_id,
+                feed_item_ids=self.feed_item_svc.iter_item_ids_in_window(
+                    feed, after_id=after_id, through_id=through_id
+                ),
+                scheduled_at=now,
+            )
+            self.watch_svc.advance_watermark(watch_feed, last_item_id=through_id)
+            runs_enqueued += enqueued
+            self.on_progress(FeedTriggered(self.watch, str(feed.id), enqueued))
+
+        return WatchTriggerResult(feeds_scanned=feeds_scanned, runs_enqueued=runs_enqueued)

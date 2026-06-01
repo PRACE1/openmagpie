@@ -2,6 +2,7 @@ from django.db import models
 from django.utils.translation import gettext_lazy as _
 
 from common.models import BaseModel
+from watches.constants import WatchActionRunState
 
 
 class WatchActionRun(BaseModel):
@@ -26,7 +27,7 @@ class WatchActionRun(BaseModel):
     state = models.CharField(
         _("state"),
         max_length=16,
-        default="pending",
+        default=WatchActionRunState.PENDING.value,
         help_text=_("WatchActionRunState value"),
     )
     scheduled_at = models.DateTimeField(_("scheduled at"), null=True, blank=True)
@@ -34,6 +35,12 @@ class WatchActionRun(BaseModel):
     completed_at = models.DateTimeField(_("completed at"), null=True, blank=True)
     result = models.JSONField(_("result"), default=dict, help_text=_("Kind-specific result blob"))
     error = models.TextField(_("error"), blank=True, default="")
+    # Execution attempts ; incremented on each claim (the drain's CAS).
+    # The drain stops claiming a run once attempts reaches
+    # WATCH_RUN_MAX_ATTEMPTS, so a persistently-failing or worker-crashing
+    # run can't retry forever (it stays terminally FAILED). SmallInteger:
+    # the value is single-digit (capped at a few), never large.
+    attempts = models.PositiveSmallIntegerField(_("attempts"), default=0)
     # The run that queued this one (the prior action in the chain). Blank
     # for the chain's first run (queued by the trigger pass, not a run).
     prior_run_id = models.CharField(_("prior run id"), max_length=26, blank=True, default="")

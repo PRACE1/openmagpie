@@ -19,7 +19,8 @@ class WatchGlobal:
         return Watch.objects.get(id=id)
 
     @staticmethod
-    def list_active(*, chunk_size: int = 100) -> Iterator[Watch]:
-        """Active Watches across all accounts ; the trigger pass entry
-        point ("due" = is_active, no per-watch schedule)."""
+    def iter_active(*, chunk_size: int = 100) -> Iterator[Watch]:
+        """Stream active Watches across all accounts ; the trigger pass
+        entry point ("due" = is_active, no per-watch schedule). Iterates
+        (chunked) rather than materializing ; there may be many watches."""
         return Watch.objects.filter(is_active=True).iterator(chunk_size=chunk_size)
