@@ -16,7 +16,7 @@ def is_valid_ulid(value: str) -> bool:
 
     `fullmatch` (not `match`) so a trailing newline can't sneak through —
     in default re mode `$` matches before a final `\\n`, which would
-    persist `"ULID\\n"` as a cursor and silently desync the listener.
+    persist `"ULID\\n"` as a cursor and silently desync the watch.
     """
     return bool(_ULID_RE.fullmatch(value))
 

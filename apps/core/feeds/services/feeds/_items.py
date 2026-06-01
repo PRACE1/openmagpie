@@ -14,8 +14,8 @@ from datetime import datetime, timedelta
 from django.utils import timezone
 
 from common.fields import min_ulid_at
-from events.observations import Observation
 from feeds.models import Feed, FeedItem
+from sources.payloads import SourcePayload
 
 logger = logging.getLogger("feeds")
 
@@ -38,7 +38,7 @@ class FeedItemService:
         /,
         *,
         source_label: str,
-        observations: Iterable[Observation],
+        payloads: Iterable[SourcePayload],
         source_meta: dict[str, str] | None = None,
         chunk_size: int = 200,
     ) -> int:
@@ -57,9 +57,9 @@ class FeedItemService:
         self._assert_scope(str(feed.account_id), "feed")
         meta = source_meta or {}
         created = 0
-        chunk: list[Observation] = []
-        for obs in observations:
-            chunk.append(obs)
+        chunk: list[SourcePayload] = []
+        for payload in payloads:
+            chunk.append(payload)
             if len(chunk) >= chunk_size:
                 created += self._record_chunk(feed, source_label=source_label, source_meta=meta, chunk=chunk)
                 chunk = []
@@ -74,11 +74,11 @@ class FeedItemService:
         *,
         source_label: str,
         source_meta: dict[str, str],
-        chunk: list[Observation],
+        chunk: list[SourcePayload],
     ) -> int:
         """Persist one chunk: SELECT existing keys, bulk_create the rest.
         Returns the count of new rows in this chunk."""
-        external_ids = [obs.external_id for obs in chunk]
+        external_ids = [payload.external_id for payload in chunk]
         existing = set(
             FeedItem.objects.filter(
                 account_id=self.account_id, feed_id=feed.id, external_id__in=external_ids
@@ -88,15 +88,15 @@ class FeedItemService:
             FeedItem(
                 account_id=self.account_id,
                 feed_id=feed.id,
-                source_kind=obs.source,
-                external_id=obs.external_id,
+                source_kind=payload.source,
+                external_id=payload.external_id,
                 source_label=source_label,
                 source_meta=source_meta,
-                occurred_at=obs.occurred_at,
-                data=obs.model_dump(mode="json"),
+                occurred_at=payload.occurred_at,
+                data=payload.model_dump(mode="json"),
             )
-            for obs in chunk
-            if (obs.source, obs.external_id) not in existing
+            for payload in chunk
+            if (payload.source, payload.external_id) not in existing
         ]
         if not rows:
             return 0
@@ -114,7 +114,6 @@ class FeedItemService:
         *,
         retention_days: int,
         now: datetime | None = None,
-        min_subscriber_cursor: str | None = None,
     ) -> int:
         """Delete FeedItems older than retention (by ULID-ms cutoff).
 
@@ -122,29 +121,14 @@ class FeedItemService:
         the delete plan hits the `(account_id, feed_id, id)` index as a
         tight range scan. Returns the count deleted.
 
-        `min_subscriber_cursor`, when supplied, floors the prune so items
-        a lagging listener hasn't judged yet aren't silently cut. The
-        caller (FeedPollOperation) computes this via
-        ListenerService.Global.min_cursor_for_feed. A lagging listener
-        will hold the retention window open until it catches up; if it's
-        permanently broken, this trades disk for visibility; a warning
-        log fires when the cap is applied.
+        NOTE: a subscriber-cursor floor (so items a lagging Watch hasn't
+        processed yet aren't silently cut) returns with WatchCursor ; until
+        then prune is a plain retention cutoff.
         """
         self._assert_scope(str(feed.account_id), "feed")
         cutoff = (now or timezone.now()) - timedelta(days=retention_days)
         cutoff_ulid = min_ulid_at(cutoff)
-        if min_subscriber_cursor is not None and min_subscriber_cursor < cutoff_ulid:
-            logger.warning(
-                "feed=%s prune capped by lagging listener (cursor=%s < retention cutoff=%s); "
-                "items older than retention are preserved until the listener catches up",
-                feed.id,
-                min_subscriber_cursor,
-                cutoff_ulid,
-            )
-            prune_below = min_subscriber_cursor
-        else:
-            prune_below = cutoff_ulid
-        deleted, _ = FeedItem.objects.filter(account_id=self.account_id, feed_id=feed.id, id__lt=prune_below).delete()
+        deleted, _ = FeedItem.objects.filter(account_id=self.account_id, feed_id=feed.id, id__lt=cutoff_ulid).delete()
         return deleted
 
     def newest_item_id(self, feed: Feed, /) -> str | None:

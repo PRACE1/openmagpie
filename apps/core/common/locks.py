@@ -4,9 +4,9 @@
 mutex keyed by an opaque name. Built on `cache.add` (atomic). Yields
 True iff acquired; caller decides whether to skip, retry, or 409.
 
-The listener-specific wrappers (`poll_lock` / `digest_lock`) and the
-refresh-rotation wrapper (`refresh_token_lock`) are thin shims that
-just pick the cache key and timeout for their scope.
+The feed poll wrapper (`poll_lock`), the feed set-sources wrapper
+(`feed_set_lock`), and the refresh-rotation wrapper (`refresh_token_lock`)
+are thin shims that just pick the cache key and timeout for their scope.
 """
 
 import hashlib
@@ -36,23 +36,11 @@ def named_lock(*, name: str, timeout: int) -> Iterator[bool]:
             cache.delete(name)
 
 
-def _listener_lock_name(listener_id: str, scope: str) -> str:
-    return f"listener_lock:{listener_id}:{scope}"
-
-
-def poll_lock(listener_id: str) -> AbstractContextManager[bool]:
-    """Lock a listener's poll cycle. Yields True iff acquired."""
+def poll_lock(feed_id: str) -> AbstractContextManager[bool]:
+    """Lock a feed's poll cycle. Yields True iff acquired."""
     return named_lock(
-        name=_listener_lock_name(listener_id, "poll"),
+        name=f"feed_poll_lock:{feed_id}",
         timeout=settings.POLL_LOCK_TIMEOUT_SECONDS,
-    )
-
-
-def digest_lock(listener_id: str) -> AbstractContextManager[bool]:
-    """Lock a listener's digest cycle. Yields True iff acquired."""
-    return named_lock(
-        name=_listener_lock_name(listener_id, "digest"),
-        timeout=settings.DIGEST_LOCK_TIMEOUT_SECONDS,
     )
 
 

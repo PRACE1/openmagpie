@@ -1,8 +1,7 @@
 """Feed kind → typed config class, with the parse/validate/load family.
 
-Mirrors `listeners.registry` exactly. `parse_config` is the ONE place
-`get_config_class(...).model_validate(...)` is called; the others
-compose from it.
+`parse_config` is the ONE place `get_config_class(...).model_validate(...)`
+is called; the others compose from it.
 """
 
 from feeds.configs import CuratedFeedConfig, FeedConfig

@@ -6,7 +6,7 @@ in-core import path (`from feeds.configs import ...`).
 
 Django/settings-coupled *policy* (no future watermark, retention
 bounds) is NOT here - it lives in `feeds.policy` and runs at the
-validation seam. Mirrors `listeners.configs`.
+validation seam.
 """
 
 from openmagpie_schema.feed import (

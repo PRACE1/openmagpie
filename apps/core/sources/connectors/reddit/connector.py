@@ -7,12 +7,12 @@ from typing import Any
 import feedparser
 import httpx
 
-from events.observations import Observation
-from events.registry import register
 from openmagpie_schema.configs import RedditSubredditSourceSpec
+from sources.payload_registry import register
+from sources.payloads import SourcePayload
 
 from ..base import BaseConnector, ConnectorParseError, read_response_capped
-from .observations import NewRedditPostObservation
+from .payloads import NewRedditPostPayload
 
 logger = logging.getLogger("sources")
 
@@ -30,7 +30,7 @@ REDDIT_USER_AGENT = (
 )
 
 # Reddit's anonymous max page size is 100. Cap pagination at MAX_PAGES so a
-# Listener that's been silent for weeks doesn't fetch unbounded history on
+# feed that's been silent for weeks doesn't fetch unbounded history on
 # wake; with PAGE_SIZE=100, MAX_PAGES=10 covers the latest ~1000 posts.
 PAGE_SIZE = 100
 MAX_PAGES = 10
@@ -65,7 +65,7 @@ def _entry_published(entry: Any) -> datetime | None:
     return None
 
 
-class RedditSubRedditConnector(BaseConnector):
+class RedditSubRedditConnector(BaseConnector[RedditSubredditSourceSpec]):
     """Polls a single subreddit's `/r/<slug>/new/.rss` Atom feed.
 
     Live-mode semantics: every cycle is "yield posts newer than `since`".
@@ -86,11 +86,11 @@ class RedditSubRedditConnector(BaseConnector):
     """
 
     kind = RedditSubredditSourceSpec.SOURCE_KIND
-    observations: list[type[Observation]] = [NewRedditPostObservation]
+    payloads: list[type[SourcePayload]] = [NewRedditPostPayload]
 
     # `count` is the universal poll-walk default from BaseConnector: it
     # re-walks the page fetch (~10 GETs to /new.rss) discarding each
-    # observation. Reddit has no cheaper exact-count path, so we don't
+    # payload. Reddit has no cheaper exact-count path, so we don't
     # override it.
 
     def poll(
@@ -98,7 +98,7 @@ class RedditSubRedditConnector(BaseConnector):
         spec: RedditSubredditSourceSpec,
         since: datetime | None,
         field_map: dict[str, str] | None = None,
-    ) -> Iterator[NewRedditPostObservation]:
+    ) -> Iterator[NewRedditPostPayload]:
         # Reddit Atom carries fixed, non-overridable fields ; the
         # connector ignores `field_map` (the Connector contract
         # accepts it for the RSS variant + future per-source
@@ -111,7 +111,7 @@ class RedditSubRedditConnector(BaseConnector):
             raise ValueError(f"RedditSubredditSourceSpec missing subreddit: {spec}")
 
         # `/new` is sorted newest -> oldest. Reddit has no server-side `since`
-        # filter; the early-return on strict `obs.occurred_at < since` works
+        # filter; the early-return on strict `payload.occurred_at < since` works
         # only because of that ordering, once we see a post strictly older
         # than `since`, every remaining post on this page and every later
         # page is older too. The `after` cursor walks pages newest -> oldest
@@ -178,7 +178,7 @@ class RedditSubRedditConnector(BaseConnector):
                         # of dropping the whole page (fail loud only on bozo
                         # + zero entries above).
                         continue
-                    obs = NewRedditPostObservation.from_feedparser_entry(entry, spec, published)
+                    payload = NewRedditPostPayload.from_feedparser_entry(entry, spec, published)
                     last_atom_id = entry.get("id") or last_atom_id
                     # Strict `<`, not `<=`: two posts can share `<published>`
                     # to the second (batch import; same-second submissions),
@@ -190,9 +190,9 @@ class RedditSubRedditConnector(BaseConnector):
                     # remains safe: once we see a post strictly older than
                     # `since`, every remaining post on this and later pages
                     # is older too.
-                    if since is not None and obs.occurred_at < since:
+                    if since is not None and payload.occurred_at < since:
                         return
-                    yield obs
+                    yield payload
 
                 # Atom has no Reddit-style `after` cursor in the envelope, but
                 # `?after=t3_xxx&limit=N` still works against `.rss`. Use the
@@ -202,5 +202,5 @@ class RedditSubRedditConnector(BaseConnector):
                 after = last_atom_id
 
 
-# Register observations for hydration of Event.data, single source of truth via the class attrs.
-register(RedditSubRedditConnector.kind, RedditSubRedditConnector.observations)
+# Register payloads for hydration of FeedItem.data, single source of truth via the class attrs.
+register(RedditSubRedditConnector.kind, RedditSubRedditConnector.payloads)

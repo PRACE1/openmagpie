@@ -31,12 +31,9 @@ LOCAL_APPS = [
     "common",
     "accounts",
     "auth_api",
-    "events",
     "sources",
     "feeds",
-    "listeners",
     "engine",
-    "notifications",
 ]
 
 INSTALLED_APPS = DJANGO_APPS + THIRD_PARTY_APPS + LOCAL_APPS
@@ -164,14 +161,12 @@ CACHE_BACKEND = os.environ.get("CACHE_BACKEND", "django.core.cache.backends.db.D
 CACHE_LOCATION = os.environ.get("CACHE_LOCATION", "openmagpie_cache")
 CACHES = {"default": {"BACKEND": CACHE_BACKEND, "LOCATION": CACHE_LOCATION}}
 
-# Scheduler-lock failsafe TTLs, only kicks in if a process holds the lock
-# longer than the cache key's expiry, in which case it auto-releases. Each
-# scope gets its own ceiling because realistic cycle durations differ a lot:
-# polls are dominated by per-observation LLM calls (slow), digests just fire
-# already-batched payloads (fast). Both should be set well above the longest
-# healthy cycle but tight enough that a stuck process unblocks soonish.
+# Scheduler-lock failsafe TTL, only kicks in if a process holds the lock
+# longer than the cache key's expiry, in which case it auto-releases. The
+# feed poll cycle is dominated by per-item LLM calls downstream, so the
+# ceiling is set well above the longest healthy cycle but tight enough
+# that a stuck process unblocks soonish.
 POLL_LOCK_TIMEOUT_SECONDS = int(os.environ.get("POLL_LOCK_TIMEOUT_SECONDS", "600"))
-DIGEST_LOCK_TIMEOUT_SECONDS = int(os.environ.get("DIGEST_LOCK_TIMEOUT_SECONDS", "120"))
 
 # Feed set-sources serialization lock. The critical section is the
 # diff + bulk insert/delete + per-row meta updates ; bounded by the
@@ -184,22 +179,22 @@ FEED_SET_LOCK_TIMEOUT_SECONDS = int(os.environ.get("FEED_SET_LOCK_TIMEOUT_SECOND
 # of headroom if the DB is briefly slow.
 REFRESH_TOKEN_LOCK_TIMEOUT_SECONDS = int(os.environ.get("REFRESH_TOKEN_LOCK_TIMEOUT_SECONDS", "30"))
 
-# Relevance engine defaults. ENGINE_DEFAULT_KIND selects which engine
-# `SemanticListenerConfig` falls back to when a Listener's config doesn't
-# pin one explicitly. The kind must be registered in `engine.registry`.
+# Relevance engine defaults. ENGINE_DEFAULT_KIND selects which engine a
+# semantic-filter action's config falls back to when it doesn't pin one
+# explicitly. The kind must be registered in `engine.registry`.
 ENGINE_DEFAULT_KIND = os.environ.get("ENGINE_DEFAULT_KIND", "ollama")
 
 # Ollama (relevance engine). Required when ENGINE_DEFAULT_KIND="ollama", fail
-# fast at startup if unset. `OLLAMA_DEFAULT_MODEL` is the fallback when a
-# Listener's config leaves `engine.model` empty; named "default" (not
+# fast at startup if unset. `OLLAMA_DEFAULT_MODEL` is the fallback when an
+# action's config leaves `engine.model` empty; named "default" (not
 # "model") so it doesn't read like "the" model when the system supports
-# per-Listener overrides. See core/.env.example for example values.
+# per-action overrides. See core/.env.example for example values.
 OLLAMA_URL = os.environ["OLLAMA_URL"]
 OLLAMA_DEFAULT_MODEL = os.environ["OLLAMA_DEFAULT_MODEL"]
 
-# WebhookNotifier security gates. Defaults assume single-tenant self-host with
-# possible internal targets (e.g. an OpenClaw instance on the same box). Set
-# stricter values via env for multi-tenant / public deployments.
+# Webhook-action security gates (consumed by the WebhookAction when it
+# lands). Defaults assume single-tenant self-host with possible internal
+# targets. Set stricter values via env for multi-tenant / public deployments.
 WEBHOOK_REQUIRE_HTTPS = env_bool("WEBHOOK_REQUIRE_HTTPS", "false")
 WEBHOOK_BLOCK_PRIVATE_IPS = env_bool("WEBHOOK_BLOCK_PRIVATE_IPS", "false")
 
@@ -243,7 +238,7 @@ SOURCE_ALLOW_INSECURE_TLS = env_bool("SOURCE_ALLOW_INSECURE_TLS", "false")
 # delivery / engine code emits surface predictably regardless of
 # Python's default lastResort handler quirks. App level is INFO by
 # default; per-logger override via the `LOG_LEVEL_<APP>` env so an
-# operator can crank `LOG_LEVEL_LISTENERS=DEBUG` without editing code.
+# operator can crank `LOG_LEVEL_FEEDS=DEBUG` without editing code.
 #
 # Django's own loggers are left at framework defaults via
 # `disable_existing_loggers=False`.

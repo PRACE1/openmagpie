@@ -14,7 +14,6 @@ from __future__ import annotations
 
 API_VERSION = "v1"
 _AUTH = f"/{API_VERSION}/auth"
-_LISTENERS = f"/{API_VERSION}/listeners"
 _FEEDS = f"/{API_VERSION}/feeds"
 _ENGINES = f"/{API_VERSION}/engines"
 
@@ -35,28 +34,6 @@ class auth:
 
         refresh = f"{_AUTH}/tokens/refresh"
         revoke = f"{_AUTH}/tokens/revoke"
-
-
-class listeners:
-    """`/v1/listeners/*` routes the CLI consumes."""
-
-    collection = _LISTENERS
-
-    @staticmethod
-    def detail(listener_id: str) -> str:
-        return f"{_LISTENERS}/{listener_id}"
-
-    @staticmethod
-    def rewind(listener_id: str) -> str:
-        return f"{_LISTENERS}/{listener_id}/rewind"
-
-    @staticmethod
-    def payload_sample(listener_id: str) -> str:
-        return f"{_LISTENERS}/{listener_id}/payload-sample"
-
-    @staticmethod
-    def hits(listener_id: str) -> str:
-        return f"{_LISTENERS}/{listener_id}/hits"
 
 
 class feeds:

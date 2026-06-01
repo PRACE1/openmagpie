@@ -1,7 +1,7 @@
 """Cross-tenant Feed operations.
 
-Do NOT import directly; use `FeedService.Global.<op>(...)`. Mirrors
-`listeners.services._listeners_global`. For scheduler / debug only.
+Do NOT import directly; use `FeedService.Global.<op>(...)`. For
+scheduler / debug only.
 """
 
 from collections.abc import Iterator

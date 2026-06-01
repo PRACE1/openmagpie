@@ -5,6 +5,7 @@ live on `FeedItemService` in a sibling module; the Feed-row concern is
 small enough to read top-to-bottom on its own.
 """
 
+import builtins
 import logging
 from datetime import datetime, timedelta
 from functools import cached_property
@@ -15,6 +16,7 @@ from django.db import transaction
 from feeds.models import Feed, FeedItem
 from feeds.policy import PolicyError, enforce_policy
 from feeds.registry import load_config, parse_config, validate_config
+from openmagpie_schema.feed import SourceInput
 
 from ._global import FeedGlobal
 
@@ -90,7 +92,9 @@ class FeedService:
         kind: str,
         poll_interval_seconds: int,
         data: dict[str, Any],
-        sources: list[Any] | None = None,
+        # builtins.list: the class defines a `list` method that shadows the
+        # builtin in annotation scope.
+        sources: builtins.list[SourceInput] | None = None,
     ) -> Feed:
         """Create a Feed plus, optionally, its starter Source rows in
         one atomic step. `sources` is a list of `SourceInput` (already

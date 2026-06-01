@@ -1,6 +1,6 @@
 """Feed-scope DRF mixin.
 
-Mirrors `listeners.api`. For endpoints under
+For endpoints under
 `/v1/feeds/<feed_id>/...` ids land on the request
 (`request.account_id` from the parent mixin, `request.feed_id` from the
 URL pattern); the resolved services and row are cached_properties on
@@ -21,11 +21,25 @@ from functools import cached_property
 from rest_framework import status
 from rest_framework.exceptions import APIException
 
-from accounts.api import AccountScopedAPIView
+from accounts.api import AccountScopedAPIView, AccountScopedRequest
 
 from .models import Feed, Source
 from .services import FeedItemService, FeedService
 from .services.sources import SourceService
+
+
+class FeedScopedRequest(AccountScopedRequest):
+    """Typing view of the request once `feed_id` is stashed by
+    `FeedScopedAPIView.initial()`."""
+
+    feed_id: str
+
+
+class SourceScopedRequest(FeedScopedRequest):
+    """Typing view of the request once `source_id` is stashed by
+    `SourceScopedAPIView.initial()`."""
+
+    source_id: str
 
 
 class FeedNotFound(APIException):
@@ -62,6 +76,8 @@ class FeedSvcMixin:
     """Per-request `feed_svc` cached_property ; usable on any view that
     knows the account but doesn't have a feed-id in its URL."""
 
+    request: AccountScopedRequest
+
     @cached_property
     def feed_svc(self) -> FeedService:
         return FeedService(account_id=self.request.account_id)
@@ -69,6 +85,8 @@ class FeedSvcMixin:
 
 class SourceSvcMixin:
     """Per-request `source_svc` cached_property for the sources views."""
+
+    request: AccountScopedRequest
 
     @cached_property
     def source_svc(self) -> SourceService:
@@ -79,6 +97,8 @@ class FeedItemSvcMixin:
     """Per-request `feed_item_svc` cached_property ; for views that
     need to read or write the feed's item log (GET-detail recent
     items, the prune path, ...)."""
+
+    request: AccountScopedRequest
 
     @cached_property
     def feed_item_svc(self) -> FeedItemService:
@@ -103,11 +123,17 @@ class FeedScopedAPIView(FeedSvcMixin, AccountScopedAPIView):
     touches it skips the lookup entirely (e.g. on `magpie feed delete`
     we still need it; on a future no-lookup endpoint we wouldn't)."""
 
+    # `initial()` stashes `feed_id` on the live request; narrow the
+    # annotation so handlers read `self.request.feed_id` as `str`.
+    request: FeedScopedRequest
+
     def initial(self, request, *args, **kwargs):
         # super() runs auth + account scope; `request.account_id` is
         # populated by the time control returns.
         super().initial(request, *args, **kwargs)
-        request.feed_id = kwargs.get("feed_id")
+        # The `<str:feed_id>` URL capture always provides this; index
+        # (not .get) so the type is `str`, not `str | None`.
+        request.feed_id = kwargs["feed_id"]
 
     @cached_property
     def feed(self) -> Feed:
@@ -127,9 +153,12 @@ class SourceScopedAPIView(SourceSvcMixin, FeedScopedAPIView):
     explicit; the source lookup is account + feed bounded inside
     `SourceService.get`."""
 
+    request: SourceScopedRequest
+
     def initial(self, request, *args, **kwargs):
         super().initial(request, *args, **kwargs)
-        request.source_id = kwargs.get("source_id")
+        # `<str:source_id>` URL capture is always present; index for `str`.
+        request.source_id = kwargs["source_id"]
 
     @cached_property
     def source(self) -> Source:

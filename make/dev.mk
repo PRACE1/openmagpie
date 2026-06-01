@@ -41,10 +41,8 @@ dev-migrate: ## Run Django database migrations + ensure cache table exists + boo
 dev-bootstrap: ## Alias for dev-migrate (first-run setup)
 	$(MAKE) dev-migrate
 
-dev-tick: ## Run one pipeline pass: poll feeds -> judge listeners -> deliver due digests
+dev-tick: ## Run one pipeline pass: poll feeds (watch trigger + run drain land in a later commit)
 	$(MAKE) dev-manage CMD="poll_due_feeds"
-	$(MAKE) dev-manage CMD="judge_listeners"
-	$(MAKE) dev-manage CMD="deliver_due_digests"
 
 dev-web: ## Start (or restart) just the Next.js dev container and tail its logs
 	docker compose up -d web

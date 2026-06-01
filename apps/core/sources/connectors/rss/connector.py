@@ -1,7 +1,7 @@
 """Generic RSS / Atom connector.
 
 One GET per cycle (RSS feeds don't paginate), parsed by `feedparser`,
-yielding `RssEntryObservation` for entries with `occurred_at > since`.
+yielding `RssEntryPayload` for entries with `occurred_at > since`.
 Unlike Reddit's connector this works against any feed URL ; the per-
 publisher quirks (which key holds the body, which holds the author)
 are absorbed by the `field_map` override threaded through from the
@@ -18,13 +18,13 @@ import feedparser
 import httpx
 from django.conf import settings
 
-from events.observations import Observation
-from events.registry import register
 from openmagpie_schema.configs import RssSourceSpec
+from sources.payload_registry import register
+from sources.payloads import SourcePayload
 
 from ..base import BaseConnector, ConnectorParseError, read_response_capped
 from ..challenge_bypass import ChallengeBypassMixin
-from .observations import RssEntryObservation
+from .payloads import RssEntryPayload
 
 logger = logging.getLogger("sources")
 
@@ -76,7 +76,7 @@ def _validate_request_url(request: httpx.Request) -> None:
     _block_private_ip(host, url=request.url)
 
 
-class RssConnector(ChallengeBypassMixin, BaseConnector):
+class RssConnector(ChallengeBypassMixin, BaseConnector[RssSourceSpec]):
     """Polls a single RSS or Atom feed URL.
 
     Live-mode semantics: every cycle yields entries newer than `since`,
@@ -101,7 +101,7 @@ class RssConnector(ChallengeBypassMixin, BaseConnector):
     Unknown canonical names in `field_map` are silently dropped."""
 
     kind = RssSourceSpec.SOURCE_KIND
-    observations: list[type[Observation]] = [RssEntryObservation]
+    payloads: list[type[SourcePayload]] = [RssEntryPayload]
 
     def _fetch_with_ssl_fallback(self, url: str) -> bytes:
         """Stream the URL body. When `SOURCE_ALLOW_INSECURE_TLS=true`,
@@ -158,7 +158,7 @@ class RssConnector(ChallengeBypassMixin, BaseConnector):
         spec: RssSourceSpec,
         since: datetime | None,
         field_map: dict[str, str] | None = None,
-    ) -> Iterator[RssEntryObservation]:
+    ) -> Iterator[RssEntryPayload]:
         field_map = field_map or {}
 
         # Client carries the per-request hook so every redirect target
@@ -197,7 +197,7 @@ class RssConnector(ChallengeBypassMixin, BaseConnector):
             # DDoS-Guard, ...): hand the URL to the FlareSolverr sidecar,
             # which drives a real browser to pass the challenge and
             # returns the eventual response body. If THAT body parses,
-            # continue with the recovered observations ; if not, raise
+            # continue with the recovered payloads ; if not, raise
             # so the per-source skip path logs and moves on. No-op when
             # the sidecar URL is empty or unreachable.
             bypass_body = self.challenge_bypass_fetch(spec.url, max_bytes=MAX_BODY_BYTES)
@@ -213,8 +213,8 @@ class RssConnector(ChallengeBypassMixin, BaseConnector):
                 )
 
         for entry in parsed.entries:
-            obs, missing = RssEntryObservation.from_feedparser_entry(entry, spec, field_map)
-            if obs is None:
+            payload, missing = RssEntryPayload.from_feedparser_entry(entry, spec, field_map)
+            if payload is None:
                 # Named so the operator can spot which `field_map`
                 # override the publisher needs (e.g. "missing
                 # external_id" on a feed that puts the id in
@@ -238,10 +238,10 @@ class RssConnector(ChallengeBypassMixin, BaseConnector):
             # on FeedItem is idempotent, so re-yielding the boundary
             # item that legitimately repeats is suppressed at the
             # recorder seam.
-            if since is not None and obs.occurred_at < since:
+            if since is not None and payload.occurred_at < since:
                 continue
-            yield obs
+            yield payload
 
 
-# Register observations for hydration of Event.data, single source of truth via the class attrs.
-register(RssConnector.kind, RssConnector.observations)
+# Register payloads for hydration of FeedItem.data, single source of truth via the class attrs.
+register(RssConnector.kind, RssConnector.payloads)

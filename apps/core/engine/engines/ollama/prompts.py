@@ -12,16 +12,16 @@ Respond with a JSON object matching this schema:
 - reason: short string under 200 characters explaining the score"""
 
 USER_PROMPT_TEMPLATE = """User interest:
-{listener_instructions}
+{instructions}
 
-Event:
+Item:
   Source: {source}
   Title: {title}
   Content: {content}
 
 Respond with JSON only."""
 
-# Cap the observation body we hand the model. Most observations are well
+# Cap the payload body we hand the model. Most payloads are well
 # under this; the cap matters for the long-form ones (Reddit `selftext`
 # at the upper bound). Truncation is purely a cost/latency lever; the
 # title alone is usually enough signal.

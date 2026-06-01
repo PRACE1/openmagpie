@@ -10,15 +10,12 @@ commands package — they are not part of any public surface.
 from __future__ import annotations
 
 import functools
-import json
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import httpx
 import typer
-
-from openmagpie_schema.wire import PayloadSampleResponse
 
 from .. import console
 from ..http import ApiError, AuthError
@@ -66,32 +63,6 @@ def _open_editor_or_abort(seed: str) -> str:
         console.warn("Edit cancelled.")
         raise typer.Exit(code=1) from None
     return edited
-
-
-def _print_payload_sample(result: PayloadSampleResponse) -> None:
-    """Render the payload-sample envelope for a human.
-
-    One block per notifier (header: `kind` or `kind | target`), body
-    is JSON for dict-rendered notifiers (webhook) and plain text for
-    string-rendered ones (log). Shared by `listener payload-sample`
-    and the `quickstart` wizard so both flows format hits identically.
-    """
-    if result.synthetic:
-        console.warn("(synthetic sample — listener has no hit events yet)")
-
-    if not result.notifiers:
-        console.warn("(no notifiers configured — this listener fires nothing)")
-        return
-
-    for i, entry in enumerate(result.notifiers):
-        if i > 0:
-            typer.echo("")
-        header = f"{entry.kind} | {entry.target}" if entry.target else entry.kind
-        console.header(header)
-        if isinstance(entry.rendered, dict):
-            typer.echo(json.dumps(entry.rendered, indent=2, default=str))
-        else:
-            typer.echo(entry.rendered)
 
 
 def _print_api_error(e: ApiError) -> None:

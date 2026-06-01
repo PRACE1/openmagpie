@@ -1,7 +1,7 @@
 """Pydantic -> DRF error-shape conversion.
 
 Shared by every serializer that validates a `data` blob through a
-Pydantic config (listeners, feeds, ...). Produces the flat
+Pydantic config (feeds, watches, ...). Produces the flat
 `{path: [messages]}` shape the magpie CLI error printer expects (see
 cli/AGENTS.md), one key per leaf path.
 """

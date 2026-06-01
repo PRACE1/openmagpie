@@ -67,7 +67,7 @@ sources:
       tag: research
 
     # `field_map` (optional): per-source connector hints. Maps a
-    # canonical Observation field (`content`, `external_id`, ...)
+    # canonical SourcePayload field (`content`, `external_id`, ...)
     # to where the connector should read it from the upstream
     # payload. Useful when a publisher puts the body in `summary`
     # instead of `content`, or when an auto-generated `external_id`

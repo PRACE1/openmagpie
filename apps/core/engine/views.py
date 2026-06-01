@@ -1,9 +1,9 @@
 """HTTP entry points for /v1/engines.
 
 `EngineListView` reports each registered engine's reachability so a
-client (the magpie CLI's quickstart) can pre-flight Ollama (or any
-future engine) before creating a listener and getting silent
-500-per-judge-cycle once polling starts.
+client can pre-flight Ollama (or any future engine) before creating a
+semantic-filter action and getting silent 500-per-judge-cycle once
+polling starts.
 
 Auth-gated but NOT account-scoped — engine identity is system-level,
 not per-tenant. The endpoint never returns secrets (URLs aren't

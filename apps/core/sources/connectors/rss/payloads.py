@@ -1,4 +1,4 @@
-"""Observation produced by the generic RSS/Atom connector.
+"""SourcePayload produced by the generic RSS/Atom connector.
 
 `title` / `url` / `author` / `external_id` / `published` map directly to
 feedparser's normalized entry keys (feedparser already collapses RSS
@@ -30,8 +30,8 @@ from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from typing import Any, ClassVar
 
-from events.observations import Observation
 from openmagpie_schema.configs import RssSourceSpec
+from sources.payloads import SourcePayload
 
 _TAG_RE = re.compile(r"<[^>]+>")
 _WS_RE = re.compile(r"\s+")
@@ -127,10 +127,10 @@ def _resolve_published(entry: Any, override: str | None) -> datetime | None:
     return None
 
 
-class RssEntryObservation(Observation):
+class RssEntryPayload(SourcePayload):
     """One entry from an RSS / Atom feed."""
 
-    EVENT_KIND: ClassVar[str] = "rss_entry"
+    PAYLOAD_KIND: ClassVar[str] = "rss_entry"
 
     author: str = ""
     feed_url: str = ""
@@ -142,11 +142,11 @@ class RssEntryObservation(Observation):
         return self.feed_url
 
     @classmethod
-    def sample(cls, variant: int = 0) -> "RssEntryObservation":
+    def sample(cls, variant: int = 0) -> "RssEntryPayload":
         n = variant + 1
         return cls(
             external_id=f"https://example.com/news/article-{n}",
-            kind=cls.EVENT_KIND,
+            kind=cls.PAYLOAD_KIND,
             occurred_at=datetime(2026, 5, 27, 12, 0, tzinfo=UTC),
             source=RssSourceSpec.SOURCE_KIND,
             title=f"Example RSS headline {n}",
@@ -164,11 +164,11 @@ class RssEntryObservation(Observation):
         entry: Any,
         spec: RssSourceSpec,
         field_map: dict[str, str],
-    ) -> "tuple[RssEntryObservation | None, str]":
-        """Project one feedparser entry to an `RssEntryObservation`.
+    ) -> "tuple[RssEntryPayload | None, str]":
+        """Project one feedparser entry to an `RssEntryPayload`.
 
-        Returns `(obs, "")` on success, or `(None, missing_field)` if a
-        required field can't be resolved. The connector logs the missing
+        Returns `(payload, "")` on success, or `(None, missing_field)` if
+        a required field can't be resolved. The connector logs the missing
         field name so the operator can spot which `field_map` override
         the publisher needs."""
         published = _resolve_published(entry, field_map.get("published"))
@@ -188,9 +188,9 @@ class RssEntryObservation(Observation):
             term for t in entry.get("tags", []) if isinstance(t, dict) and (term := t.get("term", "").strip())
         ]
 
-        obs = cls(
+        payload = cls(
             external_id=external_id,
-            kind=cls.EVENT_KIND,
+            kind=cls.PAYLOAD_KIND,
             occurred_at=published,
             source=spec.kind,
             title=_resolve_str(entry, field_map.get("title") or "title"),
@@ -201,4 +201,4 @@ class RssEntryObservation(Observation):
             feed_url=spec.url,
             categories=categories,
         )
-        return obs, ""
+        return payload, ""
