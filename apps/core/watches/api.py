@@ -1,0 +1,122 @@
+"""Watch-scope DRF mixins.
+
+Mirrors `feeds.api`. For endpoints under `/v1/watches/<watch_id>/...`
+ids land on the request (`request.account_id` from the parent mixin,
+`request.watch_id` / `request.action_id` from the URL); the resolved
+services + rows are cached_properties on the view so they're loaded once
+per request, lazily.
+"""
+
+from __future__ import annotations
+
+from functools import cached_property
+
+from rest_framework import status
+from rest_framework.exceptions import APIException
+
+from accounts.api import AccountScopedAPIView, AccountScopedRequest
+
+from .models import Watch, WatchAction
+from .services import WatchActionService, WatchService
+
+
+class WatchScopedRequest(AccountScopedRequest):
+    """Typing view of the request once `watch_id` is stashed by
+    `WatchScopedAPIView.initial()`."""
+
+    watch_id: str
+
+
+class ActionScopedRequest(WatchScopedRequest):
+    """Typing view once `action_id` is stashed by
+    `WatchActionDetailView.initial()`."""
+
+    action_id: str
+
+
+class WatchNotFound(APIException):
+    """404 for a watch absent from the caller's account. Same body whether
+    it never existed or belongs to another account ; not distinguishing IS
+    the account-scoping guarantee."""
+
+    status_code = status.HTTP_404_NOT_FOUND
+    default_code = "not_found"
+
+    def __init__(self, watch_id: str) -> None:
+        super().__init__(
+            detail={"error": "not_found", "detail": f"no watch {watch_id}"},
+            code=self.default_code,
+        )
+
+
+class WatchActionNotFound(APIException):
+    """404 for an action absent from the (account, watch) it's scoped to."""
+
+    status_code = status.HTTP_404_NOT_FOUND
+    default_code = "not_found"
+
+    def __init__(self, action_id: str) -> None:
+        super().__init__(
+            detail={"error": "not_found", "detail": f"no action {action_id}"},
+            code=self.default_code,
+        )
+
+
+class WatchSvcMixin:
+    """Per-request `watch_svc` cached_property ; usable on any view that
+    knows the account but doesn't have a watch-id in its URL."""
+
+    request: AccountScopedRequest
+
+    @cached_property
+    def watch_svc(self) -> WatchService:
+        return WatchService(account_id=self.request.account_id)
+
+    @cached_property
+    def action_svc(self) -> WatchActionService:
+        return WatchActionService(account_id=self.request.account_id)
+
+
+class WatchScopedAPIView(WatchSvcMixin, AccountScopedAPIView):
+    """APIView for endpoints scoped to one watch within the caller's
+    account. After `initial()`: `request.account_id` + `request.watch_id`.
+    `self.watch` is the resolved row (raises WatchNotFound on first
+    access if absent), cached so repeated access is one DB hit."""
+
+    request: WatchScopedRequest
+
+    def initial(self, request, *args, **kwargs):
+        super().initial(request, *args, **kwargs)
+        request.watch_id = kwargs["watch_id"]
+
+    @cached_property
+    def watch(self) -> Watch:
+        try:
+            return self.watch_svc.get(self.request.watch_id)
+        except Watch.DoesNotExist as exc:
+            raise WatchNotFound(self.request.watch_id) from exc
+
+
+class WatchActionScopedAPIView(WatchScopedAPIView):
+    """Extends WatchScopedAPIView with a stashed `action_id` + a
+    `self.action` cached_property (raises WatchActionNotFound on miss).
+    Touch `self.watch` first to keep the watch-scoping guarantee explicit;
+    the action lookup is account-bounded inside the service."""
+
+    request: ActionScopedRequest
+
+    def initial(self, request, *args, **kwargs):
+        super().initial(request, *args, **kwargs)
+        request.action_id = kwargs["action_id"]
+
+    @cached_property
+    def action(self) -> WatchAction:
+        try:
+            action = self.action_svc.get(self.request.action_id)
+        except WatchAction.DoesNotExist as exc:
+            raise WatchActionNotFound(self.request.action_id) from exc
+        # Account-scoped already; assert the action belongs to THIS watch's
+        # path so a cross-watch action id can't be mutated through this URL.
+        if str(action.path_id) != (self.watch.initial_path_id or ""):
+            raise WatchActionNotFound(self.request.action_id)
+        return action

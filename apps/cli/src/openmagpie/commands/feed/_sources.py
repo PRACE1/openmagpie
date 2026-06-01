@@ -1,8 +1,7 @@
 """`magpie feed <source-verb>` commands: list / remove / set / export / template-sources.
 
-Companion to `feed.py`; adds the source verbs to the same `feed_app`
-Typer so `magpie feed --help` shows everything in one place. The split
-is just to keep the per-file line count under the 350-line cap.
+Companion to `_crud.py`; adds the source verbs to the same `feed_app`
+Typer so `magpie feed --help` shows everything in one place.
 
 Bulk write is `set-sources` (the shape an external scrape script
 naturally produces); `template-sources` emits a starter file so a
@@ -28,10 +27,10 @@ from pydantic import ValidationError
 
 from openmagpie_schema.feed import SourceInput, SourceSetPayload
 
-from .. import console
-from ..context import app_ctx
-from ._shared import _check_format, _handle_api_errors, _read_file_or_abort
-from .feed import feed_app
+from ... import console
+from ...context import app_ctx
+from .._shared import _check_format, _handle_api_errors, _read_file_or_abort
+from ._apps import feed_app
 
 _SET_FILE_SHAPES = (
     'JSON or YAML matching `{"version": "v1", "sources": [{spec, meta, field_map}]}` '

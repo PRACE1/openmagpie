@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import typer
 
-from .commands import feed_sources as _feed_sources  # noqa: F401  registers verbs on feed_app
 from .commands.auth import auth_app
 from .commands.feed import feed_app
+from .commands.watch import watch_app
 from .context import AppContext, bind_app_ctx, unbind_app_ctx
 
 app = typer.Typer(
@@ -40,4 +40,9 @@ app.add_typer(
     feed_app,
     name="feed",
     help="Curate + read feeds (the source set watches subscribe to).",
+)
+app.add_typer(
+    watch_app,
+    name="watch",
+    help="Build + manage watches (a feed subscription + action chain).",
 )

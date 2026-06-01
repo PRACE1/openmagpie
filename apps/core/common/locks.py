@@ -59,6 +59,22 @@ def feed_set_lock(feed_id: str) -> AbstractContextManager[bool]:
     )
 
 
+def path_chain_lock(path_id: str) -> AbstractContextManager[bool]:
+    """Serialize chain mutations on one WatchPath (add / remove / replace).
+
+    Rank uniqueness is per-path (`unique(account_id, path_id, rank)`), so
+    the path is the right grain. Two concurrent add/removes each snapshot
+    the chain, recompute dense ranks, and write back ; without serializing
+    they collide on the rank constraint (or interleave into a gapped
+    chain). Locking the PATH (not its action rows) also covers the
+    add-first-action race, where a row-level lock would find nothing to
+    lock. The loser gets a clean retry-friendly error."""
+    return named_lock(
+        name=f"path_chain_lock:{path_id}",
+        timeout=settings.PATH_CHAIN_LOCK_TIMEOUT_SECONDS,
+    )
+
+
 def refresh_token_lock(refresh_token: str) -> AbstractContextManager[bool]:
     """Serialize concurrent refresh-token rotations for a single token.
 

@@ -175,6 +175,11 @@ POLL_LOCK_TIMEOUT_SECONDS = int(os.environ.get("POLL_LOCK_TIMEOUT_SECONDS", "600
 # reconcile and tight enough that a stuck CLI run unblocks.
 FEED_SET_LOCK_TIMEOUT_SECONDS = int(os.environ.get("FEED_SET_LOCK_TIMEOUT_SECONDS", "60"))
 
+# Watch-path chain-mutation lock. The critical section is a snapshot +
+# dense-rank renumber + bulk_update over a path's actions (~2-10 rows),
+# no network. 30s is far above a real renumber and unblocks a stuck run.
+PATH_CHAIN_LOCK_TIMEOUT_SECONDS = int(os.environ.get("PATH_CHAIN_LOCK_TIMEOUT_SECONDS", "30"))
+
 # Refresh-token rotation lock failsafe. The critical section is one row
 # read + revoke + mint, so milliseconds in practice; 30s leaves plenty
 # of headroom if the DB is briefly slow.

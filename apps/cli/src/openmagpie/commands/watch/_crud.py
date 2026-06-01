@@ -1,0 +1,254 @@
+"""`magpie watch` verbs: template, create, list, get, edit, delete.
+
+A watch subscribes to feeds and runs an ordered action chain over each
+new item. YAML is the on-disk format for authoring / replacing the whole
+watch (validate -> preview -> confirm -> apply). Single-action edits live
+in `_actions.py` (`watch action ...`).
+"""
+
+from __future__ import annotations
+
+import sys
+
+import typer
+import yaml
+
+from openmagpie_schema.watch import WatchActionInput
+
+from ... import console
+from ...api.watch import WatchInput, WatchMutationResponse, WatchView
+from ...context import AppContext, app_ctx
+from .._shared import (
+    _abort_unexpected,
+    _check_format,
+    _emit_doc,
+    _handle_api_errors,
+    _open_editor_or_abort,
+    _parse_yaml_or_abort,
+    _read_file_or_abort,
+)
+from ._apps import WATCH_TEMPLATE_YAML, watch_app
+
+_DEFAULT_LIST_LIMIT = 50
+
+
+# ── Template ───────────────────────────────────────────────────────────
+
+
+@watch_app.command("template")
+def template(
+    format: str = typer.Option(
+        "yaml",
+        "--format",
+        "-F",
+        case_sensitive=False,
+        help="Output format: `yaml` (commented; default) or `json` (structural; no comments).",
+    ),
+    output: str | None = typer.Option(None, "--output", "-o", help="Write to a file instead of stdout."),
+) -> None:
+    """Emit a starter watch config to stdout."""
+    fmt = _check_format(format)
+    _emit_doc(WATCH_TEMPLATE_YAML, format=fmt, output=output)
+
+
+# ── Create ─────────────────────────────────────────────────────────────
+
+
+@watch_app.command("create")
+@_handle_api_errors
+def create(
+    file: str | None = typer.Option(
+        None, "--file", "-f", help="YAML config ('-' for stdin). Omit to edit a fresh template in $EDITOR."
+    ),
+    dry_run: bool = typer.Option(False, "--dry-run", "-n", help="Validate server-side and show the result, then stop."),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation prompt. Required for piped input."),
+) -> None:
+    """Create a watch from a YAML config."""
+    if file is None:
+        body_text = _edit_template_or_abort()
+    elif file == "-":
+        body_text = sys.stdin.read()
+    else:
+        body_text = _read_file_or_abort(file)
+    _reject_if_unmodified_template(body_text)
+    body = _parse_yaml_or_abort(body_text, WatchInput)
+    _run_mutation(app_ctx(), body, watch_id=None, dry_run=dry_run, yes=yes)
+
+
+# ── Get / Edit / Delete (single watch) ─────────────────────────────────
+
+
+@watch_app.command("get")
+@_handle_api_errors
+def get(watch_id: str = typer.Argument(..., help="Watch id.")) -> None:
+    """Show one watch's config + action chain."""
+    detail = app_ctx().api.watch.get(watch_id)
+    _print_watch(detail, f"Watch {detail.id}  [{console.active_or_paused(detail.is_active)}]")
+
+
+@watch_app.command("edit")
+@_handle_api_errors
+def edit(
+    watch_id: str = typer.Argument(..., help="Watch id."),
+    file: str | None = typer.Option(
+        None, "--file", "-f", help="YAML to apply ('-' for stdin). Omit to edit the current config in $EDITOR."
+    ),
+    dry_run: bool = typer.Option(False, "--dry-run", "-n", help="Validate the edit and show the result, then stop."),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation prompt. Required for piped input."),
+) -> None:
+    """Full-replace edit of one watch (name, active, feeds, action chain).
+    For a single-action tweak, `magpie watch action add/remove` is the
+    surgical alternative."""
+    ac = app_ctx()
+    detail = ac.api.watch.get(watch_id)
+    seed = yaml.safe_dump(_edit_seed(detail).model_dump(mode="json"), sort_keys=False)
+    if file is None:
+        body_text = _open_editor_or_abort(seed)
+    elif file == "-":
+        body_text = sys.stdin.read()
+    else:
+        body_text = _read_file_or_abort(file)
+    body = _parse_yaml_or_abort(body_text, WatchInput)
+    _run_mutation(ac, body, watch_id=watch_id, dry_run=dry_run, yes=yes)
+
+
+@watch_app.command("delete")
+@_handle_api_errors
+def delete(
+    watch_id: str = typer.Argument(..., help="Watch id."),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation prompt. Required for piped input."),
+) -> None:
+    """Delete one watch (and its action chain + run history). Not reversible."""
+    ac = app_ctx()
+    detail = ac.api.watch.get(watch_id)
+    if not yes:
+        if not sys.stdin.isatty():
+            console.warn(f"Piped input: can't prompt. Re-run with --yes to delete {detail.name} ({detail.id}).")
+            raise typer.Exit(code=1)
+        console.error(f"Delete watch {detail.name} ({detail.id})? This cannot be undone.")
+        if not typer.confirm("Delete?"):
+            console.warn("Aborted.")
+            raise typer.Exit(code=1)
+    ac.api.watch.delete(watch_id)
+    console.success(f"Deleted watch {detail.name} ({detail.id})")
+
+
+# ── List ───────────────────────────────────────────────────────────────
+
+
+@watch_app.command("list")
+@_handle_api_errors
+def list_(
+    limit: int = typer.Option(_DEFAULT_LIST_LIMIT, "--limit", "-l", help="Max watches per page."),
+    after: str | None = typer.Option(None, "--after", "-a", help="Cursor (watch id) to fetch the page after."),
+    all_: bool = typer.Option(False, "--all", help="Page through every watch in the account."),
+) -> None:
+    """List watches in the caller's account, newest first.
+
+    Cursor-paginated: a single call shows up to `--limit` watches. Pass
+    the `--after <id>` cursor printed at the bottom for the next page, or
+    `--all` to follow the cursor across pages automatically.
+    """
+    api = app_ctx().api.watch
+    seen_any = False
+    while True:
+        page = api.list(after=after, limit=limit)
+        for it in page.items:
+            feeds = ", ".join(it.feed_ids) or "(no feeds)"
+            console.log(f"  {it.name} | {console.active_or_paused(it.is_active)} | feeds: {feeds} | {it.id}")
+        seen_any = seen_any or bool(page.items)
+        if not all_ or not page.next_cursor:
+            if page.next_cursor:
+                console.log(f"  (more available; rerun with --after {page.next_cursor}, or --all)")
+            break
+        after = page.next_cursor
+    if not seen_any:
+        console.log("No watches yet. Try `magpie watch template`.")
+
+
+# ── Helpers ────────────────────────────────────────────────────────────
+
+
+def _edit_template_or_abort() -> str:
+    edited = typer.edit(WATCH_TEMPLATE_YAML, extension=".yaml")
+    if edited is None:
+        console.warn("Edit cancelled.")
+        raise typer.Exit(code=1) from None
+    return edited
+
+
+def _reject_if_unmodified_template(body_text: str) -> None:
+    if body_text.strip() == WATCH_TEMPLATE_YAML.strip():
+        console.warn(
+            "This is the unmodified template (nothing filled in). Edit it and pass it with "
+            "-f, or run `magpie watch create` (no -f) to fill it in interactively."
+        )
+        raise typer.Exit(code=1)
+
+
+def _mutate(ac: AppContext, envelope: WatchInput, *, dry_run: bool, watch_id: str | None) -> WatchMutationResponse:
+    body = envelope.model_dump(mode="json")
+    if watch_id is None:
+        return ac.api.watch.create(body, dry_run=dry_run)
+    return ac.api.watch.update(watch_id, body, dry_run=dry_run)
+
+
+def _run_mutation(ac: AppContext, body: WatchInput, *, watch_id: str | None, dry_run: bool, yes: bool) -> None:
+    is_edit = watch_id is not None
+    noun = "update" if is_edit else "create"
+
+    preview = _mutate(ac, body, dry_run=True, watch_id=watch_id)
+    if not preview.dry_run or (preview.id and not is_edit):
+        raise _abort_unexpected(
+            "asked for a dry run but the server reported a persisted watch", preview.id, noun="watch"
+        )
+    _print_watch(preview, f"Would {noun} this watch:")
+
+    if dry_run:
+        console.warn("Dry run only. Nothing was changed.")
+        return
+
+    if not yes:
+        if not sys.stdin.isatty():
+            console.warn(
+                f"Piped input: can't prompt for confirmation. Re-run with --yes to {noun}, "
+                f"--dry-run to validate only, or run the command without -f to use $EDITOR."
+            )
+            raise typer.Exit(code=1)
+        if not typer.confirm(f"{noun.capitalize()} this watch?"):
+            console.warn("Aborted.")
+            raise typer.Exit(code=1)
+
+    result = _mutate(ac, body, dry_run=False, watch_id=watch_id)
+    if result.dry_run or not result.id:
+        raise _abort_unexpected(f"{noun} did not confirm persistence", result.id, noun="watch")
+    done = "Updated" if is_edit else "Created"
+    console.success(f"{done} watch {result.name} ({result.id})")
+
+
+def _edit_seed(detail: WatchView) -> WatchInput:
+    """The editable envelope for `edit`, projected from the current watch.
+
+    Drops server-managed read-only fields (id, user_id, created_at) and
+    flattens the action chain back to the `{config}` input shape so the
+    operator edits the same structure they'd write by hand."""
+    return WatchInput(
+        name=detail.name,
+        is_active=detail.is_active,
+        feed_ids=detail.feed_ids,
+        actions=[WatchActionInput(kind=a.kind, config=a.config) for a in detail.actions],
+    )
+
+
+def _print_watch(obj: WatchMutationResponse | WatchView, title: str) -> None:
+    """Render a watch's config + action chain for the operator."""
+    console.header(title)
+    console.kv("name", obj.name)
+    console.kv("active", "yes" if obj.is_active else "no")
+    console.kv("feeds", ", ".join(obj.feed_ids) or "(none)")
+    if not obj.actions:
+        console.kv("chain", "(no actions)")
+        return
+    console.kv("chain", f"{len(obj.actions)} action(s)")
+    for a in obj.actions:
+        console.log(f"  {a.rank}. {a.kind} | {a.summary.detail or '(no summary)'}")

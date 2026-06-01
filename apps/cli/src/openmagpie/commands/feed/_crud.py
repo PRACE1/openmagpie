@@ -1,59 +1,37 @@
-"""`magpie feed ...` commands: template, create, list, get, view, edit, delete.
+"""`magpie feed` verbs: template, create, list, get, view, edit, delete.
 
 A Feed is the curated set of sources the server polls; its items are the
-"sort by new and go" surface (`feed view`) and what Watches subscribe
-to. YAML is the on-disk format. `create`
-and `edit` share the validate -> preview -> confirm -> apply flow.
+"sort by new and go" surface (`feed view`) and what Watches subscribe to.
+YAML is the on-disk format. `create` and `edit` share the validate ->
+preview -> confirm -> apply flow. Source-list verbs live in `_sources.py`.
 """
 
 from __future__ import annotations
 
-import json
 import sys
-from importlib import resources
 
 import typer
 import yaml
-from pydantic import ValidationError
 
-from .. import console
-from ..api.feed import FeedEnvelope, FeedMutationResponse, FeedView
-from ..context import AppContext, app_ctx
-from ._shared import (
+from ... import console
+from ...api.feed import FeedEnvelope, FeedMutationResponse, FeedView
+from ...context import AppContext, app_ctx
+from .._shared import (
+    _abort_unexpected,
     _check_format,
+    _emit_doc,
     _handle_api_errors,
     _open_editor_or_abort,
+    _parse_yaml_or_abort,
     _read_file_or_abort,
 )
-
-feed_app = typer.Typer(no_args_is_help=True)
-
-FEED_TEMPLATE_YAML = resources.files("openmagpie").joinpath("feed_template.yaml").read_text(encoding="utf-8")
+from ._apps import FEED_TEMPLATE_YAML, feed_app
 
 _DEFAULT_VIEW_LIMIT = 25
 _DEFAULT_LIST_LIMIT = 50
 
 
 # ── Template ───────────────────────────────────────────────────────────
-
-
-def _emit_doc(yaml_text: str, *, format: str, output: str | None) -> None:
-    """Write a documented YAML template either verbatim (preserving
-    comments) or projected through json. JSON output loses the inline
-    `# ...` annotations: explicit trade-off for the scripted-consumer
-    case where comments aren't load-bearing."""
-    text = yaml_text if format == "yaml" else json.dumps(yaml.safe_load(yaml_text), indent=2)
-    text = text if text.endswith("\n") else text + "\n"
-    if output is None:
-        sys.stdout.write(text)
-        return
-    try:
-        with open(output, "w") as fh:
-            fh.write(text)
-    except OSError as exc:
-        console.error(f"failed to write {output}: {exc}")
-        raise typer.Exit(code=1) from None
-    console.success(f"Wrote template to {output}")
 
 
 @feed_app.command("template")
@@ -92,7 +70,7 @@ def create(
     else:
         body_text = _read_file_or_abort(file)
     _reject_if_unmodified_template(body_text)
-    body = _parse_yaml_or_abort(body_text)
+    body = _parse_yaml_or_abort(body_text, FeedEnvelope)
     _run_mutation(app_ctx(), body, feed_id=None, dry_run=dry_run, yes=yes)
 
 
@@ -154,7 +132,7 @@ def edit(
         body_text = sys.stdin.read()
     else:
         body_text = _read_file_or_abort(file)
-    body = _parse_yaml_or_abort(body_text)
+    body = _parse_yaml_or_abort(body_text, FeedEnvelope)
     _run_mutation(ac, body, feed_id=feed_id, dry_run=dry_run, yes=yes)
 
 
@@ -217,14 +195,6 @@ def list_(
 # ── Helpers ────────────────────────────────────────────────────────────
 
 
-def _abort_unexpected(what: str, maybe_id: str | None) -> typer.Exit:
-    msg = f"Unexpected server response: {what}."
-    if maybe_id:
-        msg += f" A feed may have been created - check id {maybe_id}"
-    console.error(msg)
-    return typer.Exit(code=1)
-
-
 def _edit_template_or_abort() -> str:
     edited = typer.edit(FEED_TEMPLATE_YAML, extension=".yaml")
     if edited is None:
@@ -242,25 +212,6 @@ def _reject_if_unmodified_template(body_text: str) -> None:
         raise typer.Exit(code=1)
 
 
-def _parse_yaml_or_abort(text: str) -> FeedEnvelope:
-    try:
-        parsed = yaml.safe_load(text)
-    except yaml.YAMLError as e:
-        console.error(f"YAML parse error: {e}")
-        raise typer.Exit(code=1) from None
-    if not isinstance(parsed, dict):
-        console.error("Config root must be a YAML mapping (key: value pairs).")
-        raise typer.Exit(code=1)
-    try:
-        return FeedEnvelope.model_validate(parsed)
-    except ValidationError as e:
-        console.error("Config envelope error:")
-        for err in e.errors():
-            path = ".".join(str(p) for p in err["loc"]) or "_"
-            console.error(f"  {path}: {err['msg']}")
-        raise typer.Exit(code=1) from None
-
-
 def _mutate(ac: AppContext, envelope: FeedEnvelope, *, dry_run: bool, feed_id: str | None) -> FeedMutationResponse:
     body = envelope.model_dump(mode="json")
     if feed_id is None:
@@ -274,7 +225,7 @@ def _run_mutation(ac: AppContext, body: FeedEnvelope, *, feed_id: str | None, dr
 
     preview = _mutate(ac, body, dry_run=True, feed_id=feed_id)
     if not preview.dry_run or (preview.id and not is_edit):
-        raise _abort_unexpected("asked for a dry run but the server reported a persisted feed", preview.id)
+        raise _abort_unexpected("asked for a dry run but the server reported a persisted feed", preview.id, noun="feed")
     _print_feed(preview, f"Would {noun} this feed:")
 
     if dry_run:
@@ -294,7 +245,7 @@ def _run_mutation(ac: AppContext, body: FeedEnvelope, *, feed_id: str | None, dr
 
     result = _mutate(ac, body, dry_run=False, feed_id=feed_id)
     if result.dry_run or not result.id:
-        raise _abort_unexpected(f"{noun} did not confirm persistence", result.id)
+        raise _abort_unexpected(f"{noun} did not confirm persistence", result.id, noun="feed")
     done = "Updated" if is_edit else "Created"
     console.success(f"{done} feed {result.name} ({result.id})")
 

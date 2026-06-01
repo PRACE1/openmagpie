@@ -52,6 +52,12 @@ class FeedService:
         """Raises Feed.DoesNotExist if missing (or owned by another account)."""
         return Feed.objects.get(id=id, account_id=self.account_id)
 
+    def existing_ids(self, ids: list[str], /) -> set[str]:
+        """Of `ids`, the subset that are feeds in THIS account. One query;
+        callers diff against the input to find unknown / cross-account ids
+        (e.g. validating a watch's feed subscription set)."""
+        return set(Feed.objects.filter(account_id=self.account_id, id__in=ids).values_list("id", flat=True))
+
     def list(self, *, after: str | None = None, limit: int = 50) -> list[Feed]:
         """This account's feeds, newest first (by ULID pk).
 

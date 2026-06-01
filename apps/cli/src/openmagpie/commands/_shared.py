@@ -10,12 +10,17 @@ commands package — they are not part of any public surface.
 from __future__ import annotations
 
 import functools
+import json
+import sys
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import httpx
 import typer
+import yaml
+from pydantic import BaseModel
+from pydantic import ValidationError as PydanticValidationError
 
 from .. import console
 from ..http import ApiError, AuthError
@@ -125,3 +130,59 @@ def _check_format(format: str) -> str:
         console.error(f"--format must be one of {FORMAT_CHOICES!r}, got {format!r}")
         raise typer.Exit(code=1)
     return fmt
+
+
+# ── Shared create/edit (`magpie <resource> template|create|edit`) plumbing ──
+# These are byte-identical across the feed + watch command groups (only the
+# noun / envelope class vary), so they live here once. The resource-specific
+# mutation flow (_run_mutation / _print_* / _edit_seed) stays per-module ; it
+# differs in real ways (api resource, fields, output layout) that a 2-caller
+# parameterization would only obscure.
+
+
+def _emit_doc(yaml_text: str, *, format: str, output: str | None) -> None:
+    """Write a documented YAML template verbatim (yaml; comments preserved)
+    or projected through json (comments dropped; for scripted consumers)."""
+    text = yaml_text if format == "yaml" else json.dumps(yaml.safe_load(yaml_text), indent=2)
+    text = text if text.endswith("\n") else text + "\n"
+    if output is None:
+        sys.stdout.write(text)
+        return
+    try:
+        with open(output, "w") as fh:
+            fh.write(text)
+    except OSError as exc:
+        console.error(f"failed to write {output}: {exc}")
+        raise typer.Exit(code=1) from None
+    console.success(f"Wrote template to {output}")
+
+
+def _abort_unexpected(what: str, maybe_id: str | None, *, noun: str) -> typer.Exit:
+    """One clean exit for a server response that doesn't match the dry-run
+    contract. `noun` is the resource word (feed / watch)."""
+    msg = f"Unexpected server response: {what}."
+    if maybe_id:
+        msg += f" A {noun} may have been created | check id {maybe_id}"
+    console.error(msg)
+    return typer.Exit(code=1)
+
+
+def _parse_yaml_or_abort[T: BaseModel](text: str, envelope_cls: type[T]) -> T:
+    """Parse a YAML config body into `envelope_cls`, with clean CLI errors
+    for a non-mapping root, a YAML syntax error, or a shape mismatch."""
+    try:
+        parsed = yaml.safe_load(text)
+    except yaml.YAMLError as e:
+        console.error(f"YAML parse error: {e}")
+        raise typer.Exit(code=1) from None
+    if not isinstance(parsed, dict):
+        console.error("Config root must be a YAML mapping (key: value pairs).")
+        raise typer.Exit(code=1)
+    try:
+        return envelope_cls.model_validate(parsed)
+    except PydanticValidationError as e:
+        console.error("Config envelope error:")
+        for err in e.errors():
+            path = ".".join(str(p) for p in err["loc"]) or "_"
+            console.error(f"  {path}: {err['msg']}")
+        raise typer.Exit(code=1) from None

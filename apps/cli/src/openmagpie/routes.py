@@ -15,6 +15,7 @@ from __future__ import annotations
 API_VERSION = "v1"
 _AUTH = f"/{API_VERSION}/auth"
 _FEEDS = f"/{API_VERSION}/feeds"
+_WATCHES = f"/{API_VERSION}/watches"
 _ENGINES = f"/{API_VERSION}/engines"
 
 
@@ -52,6 +53,24 @@ class feeds:
     @staticmethod
     def source_detail(feed_id: str, source_id: str) -> str:
         return f"{_FEEDS}/{feed_id}/sources/{source_id}"
+
+
+class watches:
+    """`/v1/watches/*` routes the CLI consumes."""
+
+    collection = _WATCHES
+
+    @staticmethod
+    def detail(watch_id: str) -> str:
+        return f"{_WATCHES}/{watch_id}"
+
+    @staticmethod
+    def actions(watch_id: str) -> str:
+        return f"{_WATCHES}/{watch_id}/actions"
+
+    @staticmethod
+    def action_detail(watch_id: str, action_id: str) -> str:
+        return f"{_WATCHES}/{watch_id}/actions/{action_id}"
 
 
 class engines:
