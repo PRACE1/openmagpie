@@ -2,14 +2,14 @@
 
 One file per concern:
   - `connector.py`, the Connector implementation(s) + polling logic
-  - `observations.py`, our internal Observation subclasses
-    (feedparser owns the raw-XML projection so there's no payloads.py)
+  - `payloads.py`, our internal SourcePayload subclasses
+    (feedparser owns the raw-XML projection)
 
 Add new Reddit variants (user feed, search, comments, ...) as additional
 connector classes alongside `RedditSubRedditConnector`.
 """
 
 from .connector import RedditSubRedditConnector
-from .observations import NewRedditPostObservation
+from .payloads import NewRedditPostPayload
 
-__all__ = ["NewRedditPostObservation", "RedditSubRedditConnector"]
+__all__ = ["NewRedditPostPayload", "RedditSubRedditConnector"]

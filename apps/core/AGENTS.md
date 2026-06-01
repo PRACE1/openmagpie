@@ -9,13 +9,17 @@ core/
   common/          BaseModel (ULID PK + timestamps), ULIDField, /healthz view
   accounts/        User (email login), Account, UserProfile + services/
   auth_api/        DRF auth surface: signup / login / logout / me + tokens/* + device-sessions/*
-  listeners/       Listener model + SemanticListenerConfig (Pydantic) + polling orchestrator
-  events/          Event model + Observation hierarchy + per-(source,kind) registry
-  sources/         Connectors (RedditSubRedditConnector, ...) + per-kind observation classes
+  sources/         Connectors (RedditSubRedditConnector, ...) + SourcePayload hierarchy + per-(source,kind) registry
+  feeds/           Feed + Source + FeedItem models, poll orchestrator, item log
   engine/          Engine Protocol + OllamaEngine + registry
-  notifications/   Notifier Protocol (Webhook, Log) + instant/digest delivery
   conf/            settings (base + local override), urls, wsgi
 ```
+
+The v2 `watches/` app (Watch + WatchPath + Action + ActionRun + WatchCursor
+primitives, the side-effect chain a watch runs over a feed's items) lands in a
+later v2 commit. Sections below that still describe the legacy
+Listener / Event / notifier pipeline are SUPERSEDED and will be rewritten when
+`watches/` lands; treat them as historical until then.
 
 ## File shape per app
 
@@ -146,7 +150,7 @@ app/
 ```
 
 - Adding a new plugin = one file + one registry entry.
-- Connector classes declare both `kind: str` and `observations: list[type[Observation]]`. The `register(...)` call at the bottom of the connector module references the class attrs; no string duplication.
+- Connector classes declare both `kind: str` and `payloads: list[type[SourcePayload]]`. The `register(...)` call at the bottom of the connector module references the class attrs; no string duplication.
 - App `ready()` hooks import the registry so plugins self-register at Django startup, not lazily.
 
 ## HTTP API
@@ -203,8 +207,9 @@ When persisting structured state in `django.core.cache`:
 /v1/auth/device-sessions/{id}/deny       POST   browser  decline (IsAuthenticated)
 /v1/auth/device-sessions/{id}/complete   POST   browser  authorize (IsAuthenticated)
 
-/v1/listeners                            POST   either   create listener (IsAuthenticated)
-/v1/listeners                            GET    either   list listeners in account (IsAuthenticated)
+/v1/feeds                                POST   either   create feed (IsAuthenticated)
+/v1/feeds                                GET    either   list feeds in account (IsAuthenticated)
+/v1/engines                              GET    either   registered engines + reachability
 
 /healthz                                 GET    public   DB + cache pings
 ```

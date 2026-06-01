@@ -3,8 +3,8 @@ import re
 from datetime import UTC, datetime
 from typing import Any, ClassVar
 
-from events.observations import Observation
 from openmagpie_schema.configs import RedditSubredditSourceSpec
+from sources.payloads import SourcePayload
 
 # Reddit wraps the post body in `<!-- SC_OFF --> ... <!-- SC_ON -->` and
 # appends a "submitted by ... [link] [comments]" trailer. We want just the
@@ -39,15 +39,16 @@ def _feedparser_content_html(entry: Any) -> str:
     return first.get("value", "") if isinstance(first, dict) else str(first)
 
 
-class NewRedditPostObservation(Observation):
+class NewRedditPostPayload(SourcePayload):
     """A new top-level post observed in a watched subreddit."""
 
-    EVENT_KIND: ClassVar[str] = "new_post"
+    PAYLOAD_KIND: ClassVar[str] = "new_post"
 
-    # Reddit-specific fields. `author` lives here (not on Observation base) because
-    # "who emitted this" is a source-shaped concept, Slack has `user`, scheduled
-    # jobs have nothing, etc. score/comments/ratio are not on the Atom feed; add
-    # them back when this connector switches to authenticated oauth.reddit.com.
+    # Reddit-specific fields. `author` lives here (not on SourcePayload base)
+    # because "who emitted this" is a source-shaped concept, Slack has `user`,
+    # scheduled jobs have nothing, etc. score/comments/ratio are not on the
+    # Atom feed; add them back when this connector switches to authenticated
+    # oauth.reddit.com.
     author: str = ""
     permalink: str
     subreddit: str = ""
@@ -58,7 +59,7 @@ class NewRedditPostObservation(Observation):
         return self.subreddit
 
     @classmethod
-    def sample(cls, variant: int = 0) -> "NewRedditPostObservation":
+    def sample(cls, variant: int = 0) -> "NewRedditPostPayload":
         # 1-indexed for the operator-visible id/url/title (so `variant=0`
         # reads as "post 1", `variant=1` as "post 2"). Keeps every field
         # that the receiver might key on (external_id, url, permalink,
@@ -67,11 +68,11 @@ class NewRedditPostObservation(Observation):
         slug = f"1example{n}"
         return cls(
             external_id=slug,
-            kind=cls.EVENT_KIND,
+            kind=cls.PAYLOAD_KIND,
             occurred_at=datetime(2026, 5, 27, 12, 0, tzinfo=UTC),
             source=RedditSubredditSourceSpec.SOURCE_KIND,
-            title=f"Example post {n}: matched this listener",
-            content="(Observation.content ; included in payload only if `include_fields` lists it.)",
+            title=f"Example post {n}: matched this watch",
+            content="(SourcePayload.content ; included in payload only if `include_fields` lists it.)",
             url=f"https://www.reddit.com/r/example/comments/{slug}/example_post_{n}/",
             parent_external_id="",
             subreddit="example",
@@ -85,7 +86,7 @@ class NewRedditPostObservation(Observation):
         entry: Any,
         spec: RedditSubredditSourceSpec,
         published: datetime,
-    ) -> "NewRedditPostObservation":
+    ) -> "NewRedditPostPayload":
         # Atom id is `t3_<post-id>`; the post id alone matches what the JSON
         # endpoint returned, so existing FeedItems keyed on the bare id stay
         # de-duped across the connector swap.
@@ -100,7 +101,7 @@ class NewRedditPostObservation(Observation):
         subreddit = tags[0].get("term", "") if tags and isinstance(tags[0], dict) else ""
         return cls(
             external_id=post_id,
-            kind=cls.EVENT_KIND,
+            kind=cls.PAYLOAD_KIND,
             occurred_at=published,
             source=spec.kind,
             title=entry.get("title", ""),

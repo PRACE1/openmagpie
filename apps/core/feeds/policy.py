@@ -1,8 +1,8 @@
 """Server-side Feed-config POLICY (the Django/settings-coupled guards
 that can't live in the pure shared `openmagpie-schema` package).
 
-Mirrors `listeners.policy`. `enforce_policy` runs at the validation
-seams (serializer -> 400; service). Idempotent; pure predicates.
+`enforce_policy` runs at the validation seams (serializer -> 400;
+service). Idempotent; pure predicates.
 
 Guards on the feed config:
   - retention_days in [1, 365] (0/negative would prune everything;
@@ -55,8 +55,7 @@ def default_and_enforce_source_watermark(value: datetime | None) -> datetime:
 
 
 def _enforce_source_url_safety(spec: SourceSpec) -> None:
-    """settings-driven SSRF policy on Source URLs. Mirrors the
-    `_enforce_webhooks` shape from `listeners.policy` ; structural URL
+    """settings-driven SSRF policy on Source URLs ; structural URL
     checks (scheme + host present) already ran in the schema
     (`RssSourceSpec._validate_url_structural`). This adds the operational
     private-IP gate at the create seam so an IP-literal URL pointing at

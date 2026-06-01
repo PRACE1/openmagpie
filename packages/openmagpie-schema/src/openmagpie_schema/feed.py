@@ -1,16 +1,12 @@
 """Pure typed config + wire schemas for a Feed.
 
 SHARED, zero-Django source of truth (imported by core *and* the magpie
-CLI). A Feed is a curated set of Source rows a Listener subscribes to:
+CLI). A Feed is a curated set of Source rows a Watch subscribes to:
 the Feed owns the poll loop + a readable item log; per-source state
 (spec + watermark + meta + field_map) lives on `feeds.Source` rows.
 This module carries only *shape* + pure transforms; the
 Django/settings-coupled *policy* (no future watermark, retention
 bounds) lives in core `feeds.policy`.
-
-Mirrors `configs.py` (config base + concrete kind) and `wire.py`
-(response envelope quartet) for Listener, deliberately, so the two
-primitives are structurally identical.
 """
 
 from datetime import datetime
@@ -39,8 +35,7 @@ class FeedConfig(BaseModel):
     """Base for every feed-kind config.
 
     Declares the contract every kind MUST implement; no working defaults
-    (a silent default would show a blank preview or reset watermarks).
-    Mirrors `ListenerConfig`."""
+    (a silent default would show a blank preview or reset watermarks)."""
 
     def redacted_dump(self) -> dict[str, Any]:
         raise NotImplementedError(
@@ -140,7 +135,7 @@ class SourceWire(BaseModel):
 class FeedItemWire(BaseModel):
     """One persisted FeedItem on the wire ; the "sort by new and go" unit.
 
-    `data` is the connector Observation's dump (opaque to the CLI; the
+    `data` is the connector SourcePayload's dump (opaque to the CLI; the
     server owns the per-source schema). Datetimes stay real; the renderer
     ISO-encodes them.
 
@@ -159,8 +154,7 @@ class FeedItemWire(BaseModel):
 
 class FeedWire(BaseModel):
     """The kind-independent envelope every `/v1/feeds` response item
-    carries. List-item shape and base for detail / mutation responses.
-    Mirrors `ListenerWire`."""
+    carries. List-item shape and base for detail / mutation responses."""
 
     id: str
     name: str

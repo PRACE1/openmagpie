@@ -1,8 +1,8 @@
 """`magpie feed ...` commands: template, create, list, get, view, edit, delete.
 
 A Feed is the curated set of sources the server polls; its items are the
-"sort by new and go" surface (`feed view`) and what Listeners subscribe
-to. YAML is the on-disk format (same rationale as listeners). `create`
+"sort by new and go" surface (`feed view`) and what Watches subscribe
+to. YAML is the on-disk format. `create`
 and `edit` share the validate -> preview -> confirm -> apply flow.
 """
 

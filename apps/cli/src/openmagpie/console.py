@@ -12,7 +12,7 @@ is implicit in the intent, not duplicated at every call site:
 Plus small value formatters:
 
   active_or_paused(is_active) -> "active" | "paused"   — canonical label for
-  the `is_active` flag carried on feeds + listeners.
+  the `is_active` flag carried on feeds + watches.
   rate(numerator, denominator) -> "X%" or "—"   — percentage label,
   rendered "—" when the denominator is zero.
 

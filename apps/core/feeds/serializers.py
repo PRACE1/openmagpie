@@ -4,7 +4,7 @@ Input: `FeedCreateSerializer` (the HTTP request-validation boundary,
 delegating the `data` blob to the Pydantic registry). Output: plain
 builders (`feed_wire` / `feed_view` / `feed_mutation`) populating the
 shared `openmagpie_schema.feed` models, so the server is their authority
-and the CLI imports the same classes. Mirrors `listeners.serializers`.
+and the CLI imports the same classes.
 """
 
 from __future__ import annotations
@@ -92,8 +92,8 @@ _EMPTY_SUMMARY = FeedConfigSummary()
 
 def _redacted_data(feed: Feed) -> dict[str, Any]:
     """`feed.data` validated through the kind's typed config and redacted.
-    Per-row fail-safe (mirrors listeners): a corrupt row degrades to a
-    sentinel, never 500s a `many` list."""
+    Per-row fail-safe: a corrupt row degrades to a sentinel, never 500s a
+    `many` list."""
     try:
         return load_config(feed).redacted_dump()
     except Exception:

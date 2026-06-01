@@ -8,8 +8,8 @@ class FeedItem(BaseModel):
     """One item a Feed pulled from a Source ; the persisted, browsable log.
 
     Holds ALL polled items (not hit-only): this is the "sort by new and
-    go" surface and the input Listeners judge. `data` is the connector
-    Observation's dump. Retention-windowed (pruned in the poll cycle).
+    go" surface and the input Watches judge. `data` is the connector
+    SourcePayload's dump. Retention-windowed (pruned in the poll cycle).
 
     Ordering is by the ULID pk (`-id` = ingestion order). Hot queries
     (judgment scan, retention prune, recent-items listing) all share the
@@ -32,7 +32,7 @@ class FeedItem(BaseModel):
     external_id = models.CharField(_("external id"), max_length=255)
     # Display label of the producing source (e.g. "r/foo"), set at record
     # time from the SourceSpec's display(). Cheap per-row attribution for
-    # the feed-view UI; no role in filtering (listeners see every source
+    # the feed-view UI; no role in filtering (watches see every source
     # in their Feed).
     source_label = models.CharField(_("source label"), max_length=255, default="")
     # Operator-supplied tags carried over from the producing Source's
@@ -42,7 +42,7 @@ class FeedItem(BaseModel):
     # Source timestamp (when the item was created at the source), for
     # display. NOT the ordering key (that's the ULID pk). Unindexed.
     occurred_at = models.DateTimeField(_("occurred at"), null=True, blank=True)
-    data = models.JSONField(_("data"), default=dict, help_text=_("Connector Observation dump"))
+    data = models.JSONField(_("data"), default=dict, help_text=_("Connector SourcePayload dump"))
 
     class Meta:
         verbose_name = _("feed item")

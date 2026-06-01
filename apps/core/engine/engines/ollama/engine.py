@@ -1,6 +1,6 @@
 """OllamaEngine: calls a local Ollama server's /api/chat for relevance
 scoring, with structured JSON output constrained by JudgmentJSON's
-schema. Also exposes /api/tags for the listener-config policy check
+schema. Also exposes /api/tags for the action-config policy check
 that verifies a pinned `engine.model` is actually loaded.
 """
 
@@ -9,9 +9,8 @@ import time
 import httpx
 from pydantic import ValidationError
 
-from events.observations import Observation
-from listeners.models import Listener
 from openmagpie_schema.engine import EngineStatus
+from sources.payloads import SourcePayload
 
 from ..base import EngineModelInvalid, JudgmentJSON, JudgmentResult
 from .prompts import CONTENT_TRUNCATE, SYSTEM_PROMPT, USER_PROMPT_TEMPLATE
@@ -25,7 +24,7 @@ class OllamaEngine:
 
     def __init__(self, url: str, default_model: str) -> None:
         self.url = url.rstrip("/")
-        # `default_model` is the fallback when a Listener's config leaves
+        # `default_model` is the fallback when a caller's config leaves
         # `engine.model` empty. Named "default_model" (not "model") because
         # judge() also takes a per-call `model` override; calling the instance
         # attribute `self.model` made `model or self.model` read ambiguously.
@@ -33,31 +32,32 @@ class OllamaEngine:
 
     def judge(
         self,
-        observation: Observation,
-        listener: Listener,
+        payload: SourcePayload,
         *,
+        instructions: str,
         model: str | None = None,
     ) -> JudgmentResult:
-        # Per-call model override: listener's `SemanticListenerConfig.engine.model`
-        # threads through judgment.py; None means "use this OllamaEngine
-        # instance's default" (settings.OLLAMA_DEFAULT_MODEL from env).
+        # Per-call model override: a semantic-filter action's
+        # `engine.model` threads through the action runner; None means
+        # "use this OllamaEngine instance's default"
+        # (settings.OLLAMA_DEFAULT_MODEL from env).
         use_model = model or self.default_model
         user_prompt = USER_PROMPT_TEMPLATE.format(
-            listener_instructions=str(listener.instructions),
-            source=observation.source,
-            title=observation.title,
-            content=observation.content[:CONTENT_TRUNCATE],
+            instructions=instructions,
+            source=payload.source,
+            title=payload.title,
+            content=payload.content[:CONTENT_TRUNCATE],
         )
         # `format` here is Ollama's structured-output knob: when given a JSON
         # schema, Ollama constrains the model's output to conform to it. That's
         # what makes message.content a JSON string matching JudgmentJSON below.
         # If a model/Ollama-version ever ignores it, JudgmentJSON.model_validate_json
         # raises ValidationError → caught by polling._RECOVERABLE_ERRORS.
-        payload = {
+        request_body = {
             "model": use_model,
             "format": JudgmentJSON.model_json_schema(),
             "stream": False,
-            # temperature=0 → greedy decoding. We want the same observation +
+            # temperature=0 → greedy decoding. We want the same payload +
             # prompt to produce the same score across runs so the prompt itself
             # is what's under test, not LLM noise. (Tiny residual non-determinism
             # from inference parallelism is still possible but bounded.)
@@ -68,7 +68,7 @@ class OllamaEngine:
             ],
         }
         started = time.perf_counter()
-        response = httpx.post(f"{self.url}/api/chat", json=payload, timeout=120.0)
+        response = httpx.post(f"{self.url}/api/chat", json=request_body, timeout=120.0)
         response.raise_for_status()
         elapsed_ms = int((time.perf_counter() - started) * 1000)
 
@@ -90,7 +90,7 @@ class OllamaEngine:
         Raises httpx.HTTPError on unreachable server and
         pydantic.ValidationError if Ollama's tags-response shape ever
         drifts (e.g. renamed `models` field). Both bubble up; the
-        listener-config policy callsite wraps them in
+        action-config policy callsite wraps them in
         EngineModelInvalid with operator-facing detail.
         """
         response = httpx.get(f"{self.url}/api/tags", timeout=5.0)
@@ -101,7 +101,7 @@ class OllamaEngine:
     def status(self) -> EngineStatus:
         """Probe /api/tags once; map success or any failure into an
         `EngineStatus`. Never raises — callers (the /v1/engines view,
-        the quickstart wizard) render `unreachable_reason` and
+        a pre-flight UI) render `unreachable_reason` and
         `how_to_fix` directly, so a probe error here is not the same
         as a server error."""
         try:
@@ -139,7 +139,7 @@ class OllamaEngine:
 
     def validate_model(self, model: str) -> None:
         """Confirm `model` is loaded on this Ollama server. Engine-policy
-        hook called from listener config save (see Engine protocol).
+        hook called from action config save (see Engine protocol).
         Raises EngineModelInvalid when the server is unreachable OR the
         model isn't in the loaded set — message names the URL and the
         available list so the operator can fix the YAML or pull the

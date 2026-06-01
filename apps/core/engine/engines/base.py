@@ -3,9 +3,8 @@ from typing import Protocol
 
 from pydantic import BaseModel, Field
 
-from events.observations import Observation
-from listeners.models import Listener
 from openmagpie_schema.engine import EngineStatus
+from sources.payloads import SourcePayload
 
 
 class JudgmentJSON(BaseModel):
@@ -25,8 +24,8 @@ class JudgmentJSON(BaseModel):
 @dataclass(frozen=True)
 class JudgmentResult:
     """In-memory verdict from an Engine. The engine scores relevance (0.0-1.0);
-    the *hit* decision is made by the caller against a Listener-configured
-    threshold (`SemanticListenerConfig.hit_threshold`)."""
+    the pass / fail decision is made by the caller against a configured
+    threshold (a semantic-filter action's `hit_threshold`)."""
 
     score: float
     reason: str
@@ -36,14 +35,14 @@ class JudgmentResult:
 
 
 class EngineModelInvalid(ValueError):
-    """The model a listener pinned can't be used by this engine
-    instance — not loaded on the upstream server, doesn't match the
-    provider's name pattern, etc. Raised by `Engine.validate_model`;
-    listener policy translates to a PolicyError at the save boundary.
+    """The model a caller pinned can't be used by this engine instance ;
+    not loaded on the upstream server, doesn't match the provider's name
+    pattern, etc. Raised by `Engine.validate_model`; the caller's config
+    policy translates it to a PolicyError at the save boundary.
 
-    Lives in the engine layer (not in listeners.policy) because the
-    engine knows the failure modes; the listener layer just runs the
-    check and maps the result to HTTP-shaped errors."""
+    Lives in the engine layer because the engine knows the failure modes;
+    the calling layer just runs the check and maps the result to
+    HTTP-shaped errors."""
 
 
 class Engine(Protocol):
@@ -53,23 +52,23 @@ class Engine(Protocol):
 
     def judge(
         self,
-        observation: Observation,
-        listener: Listener,
+        payload: SourcePayload,
         *,
+        instructions: str,
         model: str | None = None,
     ) -> JudgmentResult:
-        """Score how relevant the observation is to the listener's interest.
+        """Score how relevant the payload is to the caller's `instructions`.
 
         `model` lets the caller override the engine's default model on a
-        per-listener basis (so `SemanticListenerConfig.engine.model` isn't
-        a no-op). None means "use the engine instance's configured default."
+        per-call basis (so a pinned `engine.model` isn't a no-op). None
+        means "use the engine instance's configured default."
         """
         ...
 
     def validate_model(self, model: str) -> None:
         """Confirm `model` is usable by this engine instance. Called by
-        listener config policy at save time when the listener pins a
-        non-empty `engine.model`, so the operator finds out at create/
+        the caller's config policy at save time when a non-empty
+        `engine.model` is pinned, so the operator finds out at create/
         update if their choice can't be served (vs every judge cycle
         500ing).
 

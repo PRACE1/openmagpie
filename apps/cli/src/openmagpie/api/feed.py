@@ -1,6 +1,6 @@
 """Feeds API resource client.
 
-Wraps the `/v1/feeds` endpoints. Mirrors `api/listener.py`: response
+Wraps the `/v1/feeds` endpoints. Response
 models live ONCE in the shared `openmagpie_schema.feed` package
 (populated by the server, imported verbatim here). Only `FeedEnvelope`
 (the request envelope the CLI *constructs*) is CLI-owned.

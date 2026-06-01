@@ -4,7 +4,7 @@
 handles GET / PUT / DELETE on `/v1/feeds/<id>`; its GET is the "sort
 by new and go" reader (returns the feed + its recent items, with
 optional ?limit). `FeedSourcesView` + `FeedSourceDetailView` cover the
-`/sources` sub-router. Mirrors `listeners.views`.
+`/sources` sub-router.
 
 The `/v1/feeds/<id>/...` views inherit `FeedScopedAPIView` and read
 `self.feed` directly ; a missing feed raises `FeedNotFound`, DRF
@@ -175,7 +175,7 @@ class FeedSourcesView(SourceSvcMixin, FeedScopedAPIView):
         # `_parse_set_payload` accepts that shape, so a hand-rolled
         # client easily sends it). `.get(...)` on a list raises
         # AttributeError -> 500. Reject up front with a 400 naming the
-        # required shape ; mirrors `listeners/views.py:220`.
+        # required shape.
         body = request.data
         if not isinstance(body, dict):
             return Response(

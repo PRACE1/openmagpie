@@ -3,9 +3,9 @@ from datetime import datetime
 from typing import Protocol
 
 import httpx
+from pydantic import BaseModel
 
-from events.observations import Observation
-from openmagpie_schema.configs import SourceSpec
+from sources.payloads import SourcePayload
 
 
 class ConnectorParseError(Exception):
@@ -38,29 +38,36 @@ def read_response_capped(response: httpx.Response, *, max_bytes: int, url_label:
     return bytes(body)
 
 
-class Connector(Protocol):
+class Connector[SpecT: BaseModel](Protocol):
     """A pluggable source connector.
+
+    Generic over `SpecT`, the connector's concrete `SourceSpec` variant
+    (e.g. `RssSourceSpec`). Binding the variant lets `poll` keep typed
+    access to its own spec fields (`spec.url`, `spec.subreddit`) while
+    still satisfying this protocol ; the kind-keyed registry holds
+    `Connector[Any]` because dispatch erases the variant at the call seam.
 
     Each implementation:
       - declares its `kind` (matches `SourceSpec.kind`),
-      - declares its `observations` (Observation subclasses it produces, used
-        by `events.registry` to hydrate stored data back to typed Observations),
-      - yields typed Observations for a given stream_spec.
+      - declares its `payloads` (SourcePayload subclasses it produces, used
+        by `sources.payload_registry` to hydrate stored data back to typed
+        SourcePayloads),
+      - yields typed SourcePayloads for a given stream_spec.
 
     Connectors are tenant-agnostic: the Feed drives polling, so `poll` takes
-    only the source spec + watermark (no listener/account).
+    only the source spec + watermark (no watch/account).
     """
 
     kind: str
-    observations: list[type[Observation]]
+    payloads: list[type[SourcePayload]]
 
     def poll(
         self,
-        spec: SourceSpec,
+        spec: SpecT,
         since: datetime | None,
         field_map: dict[str, str] | None = None,
-    ) -> Iterator[Observation]:
-        """Yield typed Observations for one source, newer than `since`.
+    ) -> Iterator[SourcePayload]:
+        """Yield typed SourcePayloads for one source, newer than `since`.
 
         `field_map` is the EFFECTIVE map for this source ; the polling
         orchestrator merges the feed's `default_field_map` with the
@@ -72,10 +79,10 @@ class Connector(Protocol):
 
     def count(
         self,
-        spec: SourceSpec,
+        spec: SpecT,
         since: datetime | None,
     ) -> int:
-        """Exact count of observations newer than `since`. Used by the
+        """Exact count of payloads newer than `since`. Used by the
         polling op's warm path to give progress UIs an `N/total` and
         an ETA.
 
@@ -86,32 +93,36 @@ class Connector(Protocol):
         ...
 
 
-class BaseConnector:
+class BaseConnector[SpecT: BaseModel]:
     """Concrete base supplying the universal `count` implementation.
 
+    Generic over `SpecT` like `Connector` ; a subclass binds the variant
+    (`BaseConnector[RssSourceSpec]`) so its `poll` override keeps the same
+    spec type and doesn't trip a Liskov check.
+
     Inherit this and a new connector gets a correct `count` for free:
-    it re-walks `poll` and discards each Observation. That doubles the
-    upstream bandwidth for a warm cycle, but the Observation construction
-    is microseconds, negligible next to per-observation LLM judging.
+    it re-walks `poll` and discards each payload. That doubles the
+    upstream bandwidth for a warm cycle, but the payload construction
+    is microseconds, negligible next to per-payload LLM judging.
     Override `count` only if your upstream has a cheaper exact-count path.
 
     `BaseConnector` itself is NOT a `Connector` (it has no `kind` /
-    `observations`); a concrete subclass that declares those plus `poll`
+    `payloads`); a concrete subclass that declares those plus `poll`
     is what structurally satisfies the Protocol. This class only supplies
     the `count` default, it is opt-in, not a required parent.
     """
 
     def count(
         self,
-        spec: SourceSpec,
+        spec: SpecT,
         since: datetime | None,
     ) -> int:
         return sum(1 for _ in self.poll(spec, since=since))
 
     def poll(
         self,
-        spec: SourceSpec,
+        spec: SpecT,
         since: datetime | None,
         field_map: dict[str, str] | None = None,
-    ) -> Iterator[Observation]:  # pragma: no cover - subclass responsibility
+    ) -> Iterator[SourcePayload]:  # pragma: no cover - subclass responsibility
         raise NotImplementedError

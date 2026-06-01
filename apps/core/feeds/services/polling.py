@@ -1,6 +1,6 @@
 """Feed poll orchestrator: fetch each source, persist items, prune.
 
-The Feed owns polling (Listeners judge the resulting items). For each
+The Feed owns polling (Watches judge the resulting items). For each
 Source row on the feed this fetches via the connector keyed by
 `spec.kind`, persists new items as FeedItems (idempotent), advances
 the row's `last_event_at` watermark, and prunes the item log to the
@@ -28,14 +28,13 @@ from django.utils import timezone
 from pydantic import TypeAdapter, ValidationError
 
 from common.locks import poll_lock
-from events.observations import Observation
 from feeds.configs import CuratedFeedConfig
 from feeds.models import Feed, Source
 from feeds.registry import load_config
-from listeners.services import ListenerService
 from openmagpie_schema.configs import SourceSpec
 from sources import registry as source_registry
 from sources.connectors.base import ConnectorParseError
+from sources.payloads import SourcePayload
 
 _SPEC_ADAPTER = TypeAdapter(SourceSpec)
 
@@ -84,9 +83,9 @@ class FeedPollResult:
 
 def _ensure_aware(value: datetime) -> datetime:
     """Tag a naive datetime as UTC; pass through aware datetimes
-    untouched. Defensive belt for the `_ObservedSource.newest`
+    untouched. Defensive belt for the `_PolledSource.newest`
     comparison ; `Source.last_event_at` is always tz-aware (Django
-    DateTimeField), but the `Observation.occurred_at` contract isn't
+    DateTimeField), but the `SourcePayload.occurred_at` contract isn't
     enforced anywhere, so a future connector returning a naive
     datetime would crash the comparison with `TypeError` and abort
     the source mid-poll. Normalizing at this seam keeps the watermark
@@ -96,47 +95,47 @@ def _ensure_aware(value: datetime) -> datetime:
     return value
 
 
-class _ObservedSource:
+class _PolledSource:
     """Connector iterator wrapped so the caller can read `count` + `newest`
     occurred_at after `record_items` has consumed it.
 
     Keeps the poll loop streaming (no list materialization) while still
     surfacing the count + watermark the caller needs for progress + the
     per-source watermark advance. A recoverable error while pulling the
-    next observation (one malformed payload, a paging hiccup) skips that
+    next payload (one malformed payload, a paging hiccup) skips that
     one item ; the rest of the source's items still flow through to
     record_items.
     """
 
-    def __init__(self, observations: Iterator[Observation], *, initial_newest: datetime) -> None:
-        self._observations = observations
+    def __init__(self, payloads: Iterator[SourcePayload], *, initial_newest: datetime) -> None:
+        self._payloads = payloads
         self.newest = _ensure_aware(initial_newest)
         self.observed = 0
         self.dropped = 0
 
-    def __iter__(self) -> Iterator[Observation]:
-        obs_iter = iter(self._observations)
+    def __iter__(self) -> Iterator[SourcePayload]:
+        payload_iter = iter(self._payloads)
         while True:
             try:
-                obs = next(obs_iter)
+                payload = next(payload_iter)
             except StopIteration:
                 return
             except _RECOVERABLE_ERRORS as exc:
-                # Per-observation guard: a single malformed payload (or a
+                # Per-payload guard: a single malformed payload (or a
                 # transient HTTP hiccup mid-pagination) skips one item
                 # instead of aborting the rest of the source this cycle.
                 self.dropped += 1
                 logger.warning(
-                    "dropped observation: %s: %s",
+                    "dropped payload: %s: %s",
                     type(exc).__name__,
                     exc,
                 )
                 continue
             self.observed += 1
-            occurred_at = _ensure_aware(obs.occurred_at)
+            occurred_at = _ensure_aware(payload.occurred_at)
             if occurred_at > self.newest:
                 self.newest = occurred_at
-            yield obs
+            yield payload
 
 
 class FeedPollOperation:
@@ -212,7 +211,7 @@ class FeedPollOperation:
 
         # Skip prune on the same full-outage signal. A sustained connector
         # outage would otherwise erode the retention window with no fresh
-        # data flowing in ; by day retention+1 the listener cursors would
+        # data flowing in ; by day retention+1 the watch cursors would
         # be pointing at pruned ids with nothing to judge once it clears.
         if full_outage:
             logger.warning(
@@ -222,15 +221,13 @@ class FeedPollOperation:
             )
             pruned = 0
         else:
-            # Floor prune by the slowest active subscriber's cursor so a
-            # lagging listener can't silently lose items pruned out from
-            # under it. None = no active subscribers (prune at retention).
-            min_cursor = ListenerService.Global.min_cursor_for_feed(self.feed)
+            # Plain retention prune. The subscriber-cursor floor (so a
+            # lagging Watch can't lose items pruned from under it) returns
+            # with WatchCursor.
             pruned = self.feed_item_svc.prune_items(
                 self.feed,
                 retention_days=self.config.retention_days,
                 now=started_at,
-                min_subscriber_cursor=min_cursor,
             )
         return FeedPollResult(observed=observed, recorded=recorded, pruned=pruned)
 
@@ -250,7 +247,7 @@ class FeedPollOperation:
         don't read field_map accept and ignore it."""
         field_map = {**self.config.default_field_map, **(source.field_map or {})}
         connector = source_registry.get(spec.kind)
-        obs_iter = _ObservedSource(
+        payload_iter = _PolledSource(
             connector.poll(spec, since=source.last_event_at, field_map=field_map),
             initial_newest=source.last_event_at,
         )
@@ -258,12 +255,12 @@ class FeedPollOperation:
             self.feed,
             source_label=spec.display(),
             source_meta=source.meta or {},
-            observations=obs_iter,
+            payloads=payload_iter,
         )
-        if obs_iter.newest != source.last_event_at:
-            self.source_svc.advance_watermark(source, obs_iter.newest)
-        self.on_progress(SourcePolled(self.feed, spec.display(), obs_iter.observed, recorded))
-        return obs_iter.observed, recorded
+        if payload_iter.newest != source.last_event_at:
+            self.source_svc.advance_watermark(source, payload_iter.newest)
+        self.on_progress(SourcePolled(self.feed, spec.display(), payload_iter.observed, recorded))
+        return payload_iter.observed, recorded
 
 
 def poll_feed(feed: Feed, *, on_progress: FeedPollProgressCallback | None = None) -> FeedPollResult | None:

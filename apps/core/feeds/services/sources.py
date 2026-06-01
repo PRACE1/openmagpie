@@ -20,6 +20,7 @@ Uniqueness is enforced by `(account_id, feed_id, spec_hash)` where
 never see the hash ; it's pure dedup plumbing.
 """
 
+import builtins
 import hashlib
 import json
 import logging
@@ -152,7 +153,7 @@ class SourceService:
     def set_sources(
         self,
         feed: Feed,
-        items: list[SourceInput],
+        items: builtins.list[SourceInput],
         *,
         dry_run: bool = False,
     ) -> SourceSetResult:

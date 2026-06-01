@@ -6,7 +6,7 @@ from common.models import BaseModel
 
 # Floor for Feed.poll_interval_seconds. Reddit's anonymous JSON endpoint
 # rate-limits below ~60s/req; tighter cadences also burn fetch budget for no
-# real signal gain. (Poll cadence moved here from Listener: the Feed polls.)
+# real signal gain. (The Feed owns the poll cadence.)
 MIN_POLL_INTERVAL_SECONDS = 60
 
 
@@ -17,7 +17,7 @@ class Feed(BaseModel):
     Feed row carries the schedule + kind-specific config in `data`
     (validated by the Pydantic class registered for `kind` in
     `feeds.registry`). Every polled item is persisted as a FeedItem
-    (the browsable "sort by new" log). Listeners subscribe to a Feed
+    (the browsable "sort by new" log). Watches subscribe to a Feed
     and judge its items.
     """
 
