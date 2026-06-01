@@ -20,6 +20,7 @@ from rest_framework import status
 from rest_framework.response import Response
 
 from accounts.api import AccountScopedAPIView
+from common.api_params import is_truthy, parse_limit
 from common.pydantic_errors import pydantic_errors_to_drf
 from openmagpie_schema.feed import FeedListResponse
 
@@ -37,24 +38,6 @@ from .services.sources import ConcurrentSetSourcesError
 
 logger = logging.getLogger("feeds")
 
-_TRUTHY = {"1", "true", "yes", "on"}
-_DEFAULT_ITEM_LIMIT = 50
-_MAX_ITEM_LIMIT = 200
-
-
-def _is_truthy(value: str | None) -> bool:
-    return value is not None and value.strip().lower() in _TRUTHY
-
-
-def _parse_limit(request) -> int:
-    raw = request.query_params.get("limit")
-    if raw is None:
-        return _DEFAULT_ITEM_LIMIT
-    try:
-        return max(1, min(_MAX_ITEM_LIMIT, int(raw)))
-    except ValueError:
-        return _DEFAULT_ITEM_LIMIT
-
 
 class FeedListCreateView(FeedSvcMixin, AccountScopedAPIView):
     """POST /v1/feeds (create), GET /v1/feeds (list)."""
@@ -64,7 +47,7 @@ class FeedListCreateView(FeedSvcMixin, AccountScopedAPIView):
         serializer.is_valid(raise_exception=True)
         d = serializer.validated_data
 
-        if _is_truthy(request.query_params.get("dry_run")):
+        if is_truthy(request.query_params.get("dry_run")):
             preview = self.feed_svc.build(
                 user_id=str(request.user.id),
                 name=d["name"],
@@ -90,7 +73,7 @@ class FeedListCreateView(FeedSvcMixin, AccountScopedAPIView):
         )
 
     def get(self, request):
-        limit = _parse_limit(request)
+        limit = parse_limit(request)
         after = request.query_params.get("after") or None
         feeds = self.feed_svc.list(after=after, limit=limit)
         # Page is "full" iff we got `limit` rows; if so, more pages may exist
@@ -106,7 +89,7 @@ class FeedDetailView(FeedItemSvcMixin, FeedScopedAPIView):
     'sort by new and go' reader (feed + recent items, ?limit)."""
 
     def get(self, request, feed_id: str):
-        items = self.feed_item_svc.list_recent_items(self.feed, limit=_parse_limit(request))
+        items = self.feed_item_svc.list_recent_items(self.feed, limit=parse_limit(request))
         return Response(
             feed_view(self.feed, recent_items=items).model_dump(mode="json"),
             status=status.HTTP_200_OK,
@@ -134,7 +117,7 @@ class FeedDetailView(FeedItemSvcMixin, FeedScopedAPIView):
         # Policy runs on the merged config inside build_update/update;
         # map PolicyError -> 400 (same shape create uses).
         try:
-            if _is_truthy(request.query_params.get("dry_run")):
+            if is_truthy(request.query_params.get("dry_run")):
                 preview = self.feed_svc.build_update(self.feed, **edit_kwargs)
                 return Response(
                     feed_mutation(preview, dry_run=True).model_dump(mode="json"),

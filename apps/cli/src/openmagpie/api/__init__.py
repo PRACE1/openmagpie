@@ -19,6 +19,7 @@ from ..http import MagpieClient
 from .auth import AuthApi
 from .engine import EngineApi
 from .feed import FeedApi
+from .watch import WatchApi
 
 
 class Api:
@@ -34,8 +35,12 @@ class Api:
         return FeedApi(self._http)
 
     @cached_property
+    def watch(self) -> WatchApi:
+        return WatchApi(self._http)
+
+    @cached_property
     def engine(self) -> EngineApi:
         return EngineApi(self._http)
 
 
-__all__ = ["Api", "AuthApi", "EngineApi", "FeedApi"]
+__all__ = ["Api", "AuthApi", "EngineApi", "FeedApi", "WatchApi"]

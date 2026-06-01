@@ -1,0 +1,29 @@
+# Magpie watch config.
+#
+# A watch subscribes to one or more feeds and runs an ordered chain of
+# actions over each new item. v1 chains start with a semantic_filter (an
+# LLM relevance gate) ; delivery actions (webhook, log) arrive later.
+# Save and run:
+#   magpie watch create -f watch.yaml
+#
+# Or pipe through stdin (--yes required, no TTY to confirm on):
+#   magpie watch template | magpie watch create -f - --yes
+
+name: my-watch
+is_active: true
+
+# Feeds this watch subscribes to (one or more feed ids). New items from
+# any subscribed feed flow through the action chain below.
+feed_ids:
+  - REPLACE_WITH_FEED_ID
+
+# The ordered action chain. Each action is `{kind, config}`: `kind`
+# selects the action type, `config` is its kind-specific settings. A
+# semantic_filter scores each item against `instructions` and GATES the
+# chain (stops it) when the score is below `threshold`.
+actions:
+  - kind: semantic_filter
+    config:
+      instructions: posts about an interesting new open-source LLM release
+      threshold: 0.7   # pass when relevance >= this (0.0 < threshold <= 1.0)
+      # engine: {kind: "", model: ""}   # optional; empty = server default

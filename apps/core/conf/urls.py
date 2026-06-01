@@ -21,5 +21,6 @@ urlpatterns = [
     path("healthz", healthz, name="healthz"),
     api_include(f"{_V1}/auth", "auth_api.urls"),
     api_include(f"{_V1}/feeds", "feeds.urls"),
+    api_include(f"{_V1}/watches", "watches.urls"),
     api_include(f"{_V1}/engines", "engine.urls"),
 ]
