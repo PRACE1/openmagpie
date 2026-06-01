@@ -5,12 +5,14 @@ from common.models import BaseModel
 
 
 class WatchAction(BaseModel):
-    """One side-effect node in a watch path's linear chain.
+    """One node in a watch path's linear chain ; a filter or a delivery.
 
     ONE table, kind-discriminated (see `watches.constants.WatchActionKind`):
-    semantic_filter (LLM relevance), webhook, log, digest. `config` is
-    the kind-specific blob, validated server-side by a kind-keyed
-    Pydantic registry (later commit) ; opaque here.
+    semantic_filter (gates the chain), webhook / log (deliver outward).
+    Delivery cadence (instant vs digest) is a field in a delivery action's
+    `config`, not its own kind. `config` is the kind-specific blob,
+    validated server-side by a kind-keyed Pydantic registry (later
+    commit) ; opaque here.
 
     Ordering is a dense integer `rank` (0..N-1, contiguous) WITHIN a
     path, unique on `(path_id, rank)`. Chain entry = `rank == 0`; "next"
@@ -32,9 +34,12 @@ class WatchAction(BaseModel):
         verbose_name = _("watch action")
         verbose_name_plural = _("watch actions")
         constraints = [
+            # account_id-first for scoping + index coverage (the scoped
+            # "actions in this path" read filters account_id + path_id);
+            # (path, rank) is already globally unique.
             models.UniqueConstraint(
-                fields=["path_id", "rank"],
-                name="uniq_watchaction_path_rank",
+                fields=["account_id", "path_id", "rank"],
+                name="uniq_watchaction_account_path_rank",
             ),
         ]
 

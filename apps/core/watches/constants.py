@@ -11,14 +11,23 @@ from enum import StrEnum
 
 
 class WatchActionKind(StrEnum):
-    """The kind of side-effect node in a watch's action chain. The action
-    registry (later commit) maps each kind to its implementation + its
-    strict config / result contract."""
+    """The kind of node in a watch's action chain. The action registry
+    (later commit) maps each kind to its implementation + its strict
+    config / result contract.
+
+    Two families:
+      - FILTER:   semantic_filter ; gates the chain (a pass=false GATES).
+      - DELIVERY: webhook, log ; emit the item outward. Delivery cadence
+                  (instant vs digest) is a `delivery` field in the action's
+                  config, NOT a separate kind ; a digest is just an
+                  outbound action batching a window of items into one
+                  emission. (No `choices=` on the column means adding /
+                  removing a kind here never needs a migration.)
+    """
 
     SEMANTIC_FILTER = "semantic_filter"
     WEBHOOK = "webhook"
     LOG = "log"
-    DIGEST = "digest"
 
 
 class WatchActionRunState(StrEnum):

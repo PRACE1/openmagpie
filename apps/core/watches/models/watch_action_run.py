@@ -42,14 +42,18 @@ class WatchActionRun(BaseModel):
         verbose_name = _("watch action run")
         verbose_name_plural = _("watch action runs")
         constraints = [
+            # account_id-first for scoping + index coverage; the
+            # (watch, action, feed_item) triple is already globally unique
+            # (idempotency key for "this action already ran on this item").
             models.UniqueConstraint(
-                fields=["watch_id", "action_id", "feed_item_id"],
-                name="uniq_watchactionrun_watch_action_item",
+                fields=["account_id", "watch_id", "action_id", "feed_item_id"],
+                name="uniq_watchactionrun_account_watch_action_item",
             ),
         ]
         indexes = [
             # The cron drain pulls due PENDING runs ordered by schedule;
-            # spans accounts, so this is the hot scheduler index.
+            # DELIBERATELY account-agnostic ; the drain is a Global
+            # cross-tenant scan, so no account_id prefix here.
             models.Index(fields=["state", "scheduled_at"], name="watchrun_state_sched_idx"),
             # Per-action audit log (magpie watch action runs <id>).
             models.Index(fields=["account_id", "action_id", "id"], name="watchrun_acct_action_idx"),

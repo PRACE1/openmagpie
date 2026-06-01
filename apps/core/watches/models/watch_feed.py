@@ -37,14 +37,19 @@ class WatchFeed(BaseModel):
         verbose_name = _("watch feed")
         verbose_name_plural = _("watch feeds")
         constraints = [
+            # account_id-first so the account-scoped read (filter by
+            # account_id + watch_id) rides this constraint's index as a
+            # left-prefix ; the (watch, feed) pair is already globally
+            # unique (ULID watch_id), the account prefix is for scoping +
+            # index coverage, matching feeds.Source.
             models.UniqueConstraint(
-                fields=["watch_id", "feed_id"],
-                name="uniq_watchfeed_watch_feed",
+                fields=["account_id", "watch_id", "feed_id"],
+                name="uniq_watchfeed_account_watch_feed",
             ),
         ]
         indexes = [
-            # "feeds this watch subscribes to" ; the unique constraint's
-            # left prefix already covers watch_id lookups.
+            # "watches subscribed to this feed" (the reverse lookup the
+            # constraint's left-prefix doesn't cover).
             models.Index(fields=["account_id", "feed_id"], name="watchfeed_acct_feed_idx"),
         ]
 
