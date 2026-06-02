@@ -286,11 +286,25 @@ class WatchActionRunService:
         return run
 
     def list_for_action(
-        self, action_id: str, /, *, after: str | None = None, limit: int = 50
+        self,
+        action_id: str,
+        /,
+        *,
+        watch_id: str | None = None,
+        after: str | None = None,
+        limit: int = 50,
+        state: str | None = None,
     ) -> builtins.list[WatchActionRun]:
         """This account's runs for one action, newest-first (ULID pk).
-        Cursor-paginated for the audit-log CLI (commit 8)."""
+        Cursor-paginated for the audit CLI ; `state` filters by run state.
+        Pass `watch_id` to scope the query to that watch (the runs table
+        denormalizes it), so cross-watch isolation holds in the query, not
+        only the caller's guard."""
         qs = WatchActionRun.objects.filter(account_id=self.account_id, action_id=action_id)
+        if watch_id:
+            qs = qs.filter(watch_id=watch_id)
+        if state:
+            qs = qs.filter(state=state)
         if after:
             qs = qs.filter(id__lt=after)
         return builtins.list(qs.order_by("-id")[:limit])

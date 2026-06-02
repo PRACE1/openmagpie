@@ -13,6 +13,8 @@ from typing import Any
 import typer
 import yaml
 
+from openmagpie_schema.watch_enums import WatchActionRunState, choices
+
 from ... import console
 from ...context import app_ctx
 from .._shared import _handle_api_errors, _read_file_or_abort
@@ -83,6 +85,38 @@ def action_remove(
             raise typer.Exit(code=1)
     ac.api.watch.remove_action(watch_id, action_id)
     console.success(f"Removed action {action_id}")
+
+
+@action_app.command("activity")
+@_handle_api_errors
+def action_activity(
+    watch_id: str = typer.Argument(..., help="Watch id."),
+    action_id: str = typer.Argument(..., help="Action id."),
+    state: str | None = typer.Option(
+        None, "--state", "-s", help=f"Filter by run state ({choices(WatchActionRunState)})."
+    ),
+    after: str | None = typer.Option(None, "--after", "-a", help="Cursor (run id) to fetch the page after."),
+    limit: int | None = typer.Option(None, "--limit", "-n", help="Max rows to show."),
+) -> None:
+    """Show an action's recent runs (newest first): what it did to each item."""
+    resp = app_ctx().api.watch.action_runs(watch_id, action_id, state=state, after=after, limit=limit)
+    if not resp.items:
+        if after:
+            console.log("No more runs.")
+        elif state:
+            console.log(f"No runs in state {state!r}.")
+        else:
+            console.log("No runs yet.")
+        return
+    for r in resp.items:
+        when = r.completed_at or r.started_at or r.scheduled_at
+        parts = [str(r.state), f"item {r.feed_item_id}", str(when)]
+        if r.error:
+            parts.append(r.error)
+        parts.append(r.id)
+        console.log("  " + " | ".join(parts))
+    if resp.next_cursor:
+        console.log(f"\nNext page: --after {resp.next_cursor}")
 
 
 def _parse_action_or_abort(text: str) -> tuple[str, dict[str, Any]]:

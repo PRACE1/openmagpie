@@ -12,6 +12,12 @@ removing a value never forces a migration.
 from enum import StrEnum
 
 
+def choices(enum: type[StrEnum]) -> str:
+    """Pipe-joined enum values for help text / error messages, derived from
+    the enum so a hand-listed copy can't drift ("no state magic strings")."""
+    return " | ".join(e.value for e in enum)
+
+
 class WatchActionKind(StrEnum):
     """The kind of node in a watch's action chain ; selects the impl + the
     config/result contract.

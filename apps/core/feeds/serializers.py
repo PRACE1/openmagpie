@@ -18,6 +18,7 @@ from rest_framework import serializers
 
 from common.pydantic_errors import pydantic_errors_to_drf
 from feeds.models import Feed, FeedItem, Source
+from feeds.models.feed import MIN_POLL_INTERVAL_SECONDS
 from feeds.policy import PolicyError
 from feeds.registry import get_config_class, load_config, validate_config
 from feeds.services.sources import SourceService
@@ -34,8 +35,6 @@ from openmagpie_schema.feed import (
 # The single adapter shared across the request-validation seams
 # (serializer + sub-router PUT). One definition, one shape.
 SOURCE_INPUT_LIST_ADAPTER = TypeAdapter(list[SourceInput])
-
-from .models.feed import MIN_POLL_INTERVAL_SECONDS
 
 logger = logging.getLogger("feeds")
 

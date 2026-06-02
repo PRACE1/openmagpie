@@ -20,7 +20,8 @@ from rest_framework.response import Response
 from accounts.api import AccountScopedAPIView
 from common.api_params import is_truthy, parse_limit
 from common.pydantic_errors import pydantic_errors_to_drf
-from openmagpie_schema.watch import WatchActionInput, WatchListResponse
+from openmagpie_schema.watch import WatchActionInput, WatchActionRunListResponse, WatchListResponse
+from openmagpie_schema.watch_enums import WatchActionRunState, choices
 
 from .api import (
     WatchActionScopedAPIView,
@@ -31,6 +32,7 @@ from .policy import PolicyError
 from .registry import KNOWN_KINDS
 from .serializers import (
     WatchCreateSerializer,
+    watch_action_run_wire,
     watch_action_wire,
     watch_mutation,
     watch_view,
@@ -39,6 +41,8 @@ from .serializers import (
 from .services.watches._actions import ConcurrentChainError
 
 logger = logging.getLogger("watches")
+
+_RUN_STATES = frozenset(s.value for s in WatchActionRunState)
 
 
 def _validate_kind(kind: object) -> Response | None:
@@ -236,6 +240,28 @@ class WatchActionDetailView(WatchActionScopedAPIView):
         except ConcurrentChainError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_409_CONFLICT)
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class WatchActionRunsView(WatchActionScopedAPIView):
+    """GET /v1/watches/<id>/actions/<action_id>/runs: the action's run log,
+    newest-first, cursor-paginated. `?state=` filters by run state."""
+
+    def get(self, request, watch_id: str, action_id: str):
+        action = self.action  # 404 if the action isn't on this watch
+        state = request.query_params.get("state") or None
+        if state is not None and state not in _RUN_STATES:
+            return Response(
+                {"state": [f"unknown state {state!r}; known: {choices(WatchActionRunState)}"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        limit = parse_limit(request)
+        after = request.query_params.get("after") or None
+        runs = self.run_svc.list_for_action(
+            str(action.id), watch_id=str(self.watch.id), after=after, limit=limit, state=state
+        )
+        next_cursor = str(runs[-1].id) if len(runs) == limit else None
+        items = [watch_action_run_wire(r) for r in runs]
+        return Response(WatchActionRunListResponse(items=items, next_cursor=next_cursor).model_dump(mode="json"))
 
 
 def _preview_action_wire(action: WatchActionInput, rank: int) -> dict:
