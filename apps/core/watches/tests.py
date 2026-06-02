@@ -7,7 +7,7 @@ from openmagpie_schema.watch_actions import WebhookConfig
 from watches.models import WatchAction, WatchActionRun
 from watches.policy import PolicyError
 from watches.registry import load_config
-from watches.services import WatchService
+from watches.services import WatchActionRunService, WatchService
 
 
 class ReplaceChainUpsertTests(TestCase):
@@ -122,3 +122,31 @@ class ReplaceChainUpsertTests(TestCase):
                     ),
                 ],
             )
+
+
+class ActionRunListTests(TestCase):
+    """list_for_action: newest-first, scoped to the action, state filter."""
+
+    def setUp(self) -> None:
+        self.account_id = ulid.ulid()
+        self.runs = WatchActionRunService(account_id=self.account_id)
+
+    def _run(self, action_id: str, state: str) -> WatchActionRun:
+        return WatchActionRun.objects.create(
+            account_id=self.account_id,
+            watch_id=ulid.ulid(),
+            action_id=action_id,
+            feed_item_id=ulid.ulid(),
+            state=state,
+            scheduled_at=timezone.now(),
+        )
+
+    def test_newest_first_state_filter_and_scoping(self) -> None:
+        aid = ulid.ulid()
+        made = [self._run(aid, s) for s in ("succeeded", "gated", "succeeded")]
+        # newest-first = descending id (ULIDs in one ms aren't creation-ordered).
+        expected = sorted((str(r.id) for r in made), reverse=True)
+        self.assertEqual([str(r.id) for r in self.runs.list_for_action(aid)], expected)
+        succeeded = {str(made[0].id), str(made[2].id)}
+        self.assertEqual({str(r.id) for r in self.runs.list_for_action(aid, state="succeeded")}, succeeded)
+        self.assertEqual(self.runs.list_for_action(ulid.ulid()), [])

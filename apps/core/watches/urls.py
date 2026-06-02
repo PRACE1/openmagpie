@@ -23,4 +23,9 @@ urlpatterns = [
         views.WatchActionDetailView.as_view(),
         name="watch_action_detail",
     ),
+    api_path(
+        "<str:watch_id>/actions/<str:action_id>/runs",
+        views.WatchActionRunsView.as_view(),
+        name="watch_action_runs",
+    ),
 ]

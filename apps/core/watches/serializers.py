@@ -20,13 +20,15 @@ from common.pydantic_errors import pydantic_errors_to_drf
 from feeds.services import FeedService
 from openmagpie_schema.watch import (
     WatchActionInput,
+    WatchActionRunWire,
     WatchActionWire,
     WatchMutationResponse,
     WatchView,
     WatchWire,
 )
 from openmagpie_schema.watch_actions import WatchActionConfigSummary
-from watches.models import Watch, WatchAction
+from openmagpie_schema.watch_enums import WatchActionRunState
+from watches.models import Watch, WatchAction, WatchActionRun
 from watches.policy import PolicyError
 from watches.registry import KNOWN_KINDS, load_config, validate_config
 
@@ -134,6 +136,24 @@ def watch_action_wire(action: WatchAction) -> WatchActionWire:
         config=_action_redacted(action),
         summary=_action_summary(action),
         created_at=action.created_at,
+    )
+
+
+def watch_action_run_wire(run: WatchActionRun) -> WatchActionRunWire:
+    """One run's wire shape (the audit-log row). `state` coerces to the
+    WatchActionRunState enum; `result` is the opaque kind-specific blob."""
+    return WatchActionRunWire(
+        id=str(run.id),
+        watch_id=str(run.watch_id),
+        action_id=str(run.action_id),
+        feed_item_id=str(run.feed_item_id),
+        state=WatchActionRunState(run.state),
+        result=run.result or {},
+        error=run.error,
+        scheduled_at=run.scheduled_at,
+        started_at=run.started_at,
+        completed_at=run.completed_at,
+        created_at=run.created_at,
     )
 
 

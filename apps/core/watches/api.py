@@ -17,7 +17,7 @@ from rest_framework.exceptions import APIException
 from accounts.api import AccountScopedAPIView, AccountScopedRequest
 
 from .models import Watch, WatchAction
-from .services import WatchActionService, WatchService
+from .services import WatchActionRunService, WatchActionService, WatchService
 
 
 class WatchScopedRequest(AccountScopedRequest):
@@ -75,6 +75,10 @@ class WatchSvcMixin:
     @cached_property
     def action_svc(self) -> WatchActionService:
         return WatchActionService(account_id=self.request.account_id)
+
+    @cached_property
+    def run_svc(self) -> WatchActionRunService:
+        return WatchActionRunService(account_id=self.request.account_id)
 
 
 class WatchScopedAPIView(WatchSvcMixin, AccountScopedAPIView):

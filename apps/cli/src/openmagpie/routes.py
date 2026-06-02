@@ -72,6 +72,10 @@ class watches:
     def action_detail(watch_id: str, action_id: str) -> str:
         return f"{_WATCHES}/{watch_id}/actions/{action_id}"
 
+    @staticmethod
+    def action_runs(watch_id: str, action_id: str) -> str:
+        return f"{_WATCHES}/{watch_id}/actions/{action_id}/runs"
+
 
 class engines:
     """`/v1/engines/*` routes the CLI consumes."""

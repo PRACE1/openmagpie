@@ -36,9 +36,9 @@ from sources import registry as source_registry
 from sources.connectors.base import ConnectorParseError
 from sources.payloads import SourcePayload
 
-_SPEC_ADAPTER = TypeAdapter(SourceSpec)
-
 from .feeds import FeedItemService, FeedService
+
+_SPEC_ADAPTER = TypeAdapter(SourceSpec)
 
 if TYPE_CHECKING:
     from .sources import SourceService
