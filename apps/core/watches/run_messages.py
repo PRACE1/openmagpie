@@ -20,6 +20,8 @@ NO_EXECUTOR = "This action type can't be run by the current server."
 ITEM_UNREADABLE = "The source item couldn't be read (its stored format is no longer recognized)."
 CONFIG_INVALID = "This action's configuration is invalid and can't be run."
 ENGINE_UNAVAILABLE = "The configured engine isn't available on this server."
+WEBHOOK_BLOCKED = "The webhook destination is not allowed by server policy."
+WEBHOOK_REJECTED = "The webhook endpoint rejected the request (check the URL and credentials)."
 
 # Transient failures (run state FAILED) ; retried until attempts run out.
 TRANSIENT = "A temporary problem occurred while running this action; it will be retried."

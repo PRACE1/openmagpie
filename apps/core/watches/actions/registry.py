@@ -2,16 +2,20 @@
 
 The EXECUTION-layer registry, distinct from `watches.registry` (the
 CONFIG-layer kind -> Pydantic config class). The drain looks up the impl
-for a run's `action.kind` here and calls `.run(...)`. New action kinds
-(webhook, log in commit 7) register their impl here ; same shape as
-`engine.registry` / `sources.registry`.
+for a run's `action.kind` here and calls `.run(...)`. A new action kind
+registers its impl here ; same shape as `engine.registry` /
+`sources.registry`.
 """
 
+from .log import LogAction
 from .protocol import Action
 from .semantic_filter import SemanticFilterAction
+from .webhook import WebhookAction
 
 _REGISTRY: dict[str, Action] = {
     SemanticFilterAction.kind: SemanticFilterAction(),
+    WebhookAction.kind: WebhookAction(),
+    LogAction.kind: LogAction(),
 }
 
 

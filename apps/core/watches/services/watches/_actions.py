@@ -17,12 +17,13 @@ import builtins
 
 from django.db import transaction
 from django.utils import timezone
+from pydantic import ValidationError
 
 from common.locks import path_chain_lock
 from openmagpie_schema.watch import WatchActionInput
-from openmagpie_schema.watch_actions import WatchActionConfigBase
 from watches.models import WatchAction
-from watches.registry import load_config, merge_config, validate_config
+from watches.policy import PolicyError
+from watches.registry import load_config, merge_config, parse_config, validate_config
 
 
 class ConcurrentChainError(RuntimeError):
@@ -68,70 +69,102 @@ class WatchActionService:
     # ── Writes ─────────────────────────────────────────────────────────
 
     def replace_chain(self, *, path_id: str, actions: builtins.list[WatchActionInput]) -> builtins.list[WatchAction]:
-        """Replace a path's whole chain with `actions` (list order = rank
-        0..N-1). Used by watch create/update ; an empty `actions` clears
-        the chain (a watch with no actions yet). Each input's `config` is
-        re-validated (shape + policy) so the persisted blob is normalized ;
-        `kind` is the spec's top-level discriminator (the registry
-        validates the blob against it).
+        """Reconcile a path's chain to `actions` (list order = rank 0..N-1).
+        Used by watch create/update ; an empty `actions` clears the chain.
+        Each input's `config` is re-validated (shape + policy) so the
+        persisted blob is normalized ; `kind` is the spec's discriminator.
 
-        Takes `path_chain_lock` like `add`/`remove`: a blind delete-all +
-        bulk-insert is self-consistent against another replace, but it
-        still races the read-modify-write verbs (an `add` snapshotting +
-        renumbering rows this is deleting). The lock serializes all three
-        chain-mutators on the path. Raises `ConcurrentChainError` if a
-        chain edit is already in progress.
+        UPSERT BY ID, not delete-and-recreate. Each spec carries an optional
+        `id`: a spec WITH a known id updates that existing row IN PLACE, so
+        the action's id and its `WatchActionRun` audit history survive an
+        edit, and its masked secret restores from THAT same row (matched by
+        id, never by list position). A spec with no id is a brand-new action
+        (server mints the id). An existing row absent from `actions` is
+        deleted. Ranks are renumbered densely by submitted order, so a
+        reorder just rewrites `rank` ; nothing is destroyed.
 
-        Self-locking (not the caller's job) because the lock is chain
-        state, not watch state ; the WatchService create/update wraps only
-        the watch-scalar + feed writes in its own transaction. A new path
-        in create has no concurrent traffic, so the lock is uncontended
-        there ; on edit it's the real serialization point.
+        Identity-by-id is what makes a reorder safe: there is no
+        position-pairing to mis-restore a secret across endpoints (the old
+        index heuristic's auth-token-leak edge is gone by construction). The
+        only masked-secret refusal left is the one that's genuinely
+        unrestorable: a masked secret with no SAME-KIND prior to restore
+        from (a brand-new action, or one whose kind changed).
 
-        Edit-round-trip secrets are carried forward via `merge_preserving`:
-        a whole-chain replace has no stable per-action identity, so the
-        new i-th action OF A KIND pairs with the prior i-th action of that
-        same kind (the index-within-kind heuristic feeds uses for its
-        notifier list). The prior chain is read INSIDE the lock so the
-        snapshot can't race a concurrent edit. Today's semantic_filter has
-        no secrets (merge returns self) ; the wiring is for the
-        secret-bearing kinds (webhook/log)."""
+        Takes `path_chain_lock` (like `add`/`remove`) so concurrent chain
+        mutators on the path serialize ; the snapshot of existing rows is
+        read INSIDE the lock. Self-locking because the lock is chain state,
+        not watch state. Raises `ConcurrentChainError` on contention, or
+        `PolicyError` (-> 400) on an unknown id / unrestorable masked secret."""
         with path_chain_lock(path_id) as acquired:
             if not acquired:
                 raise ConcurrentChainError(f"another chain edit is in progress on path {path_id}; retry")
-            priors_by_kind = self._priors_by_kind(path_id)
-            seen_by_kind: dict[str, int] = {}
-            rows: builtins.list[WatchAction] = []
-            for rank, spec in enumerate(actions):
-                i = seen_by_kind.get(spec.kind, 0)
-                seen_by_kind[spec.kind] = i + 1
-                same_kind = priors_by_kind.get(spec.kind, [])
-                prior = same_kind[i] if i < len(same_kind) else None
-                merged = merge_config(spec.kind, spec.config, prior)
-                rows.append(
-                    WatchAction(
-                        account_id=self.account_id,
-                        path_id=path_id,
-                        kind=spec.kind,
-                        config=merged.model_dump(mode="json"),
-                        rank=rank,
+            existing = {str(a.id): a for a in self.list_for_path(path_id)}
+            ordered: builtins.list[WatchAction] = []  # final chain order (updated + new)
+            updated: builtins.list[WatchAction] = []
+            created: builtins.list[WatchAction] = []
+            kept_ids: set[str] = set()
+            temp_rank = len(existing) + 1  # park new rows past any existing rank
+            for spec in actions:
+                sid = (spec.id or "").strip()
+                prior_row = self._resolve_prior(sid, existing, kept_ids)
+                # A same-kind prior is the only thing a masked secret can
+                # restore from. Without one (new action, or kind changed),
+                # a masked secret is unrestorable -> refuse, don't persist ***.
+                same_kind_prior = prior_row if prior_row is not None and str(prior_row.kind) == spec.kind else None
+                if same_kind_prior is None and self._submitted_has_masked_secret(spec):
+                    raise PolicyError(
+                        f"{spec.kind!r} action has a masked secret (***) but no matching prior to restore it "
+                        f"from (a new action, or a changed kind); provide the real value"
                     )
-                )
+                merged = merge_config(spec.kind, spec.config, load_config(same_kind_prior) if same_kind_prior else None)
+                blob = merged.model_dump(mode="json")
+                if prior_row is not None:
+                    kept_ids.add(str(prior_row.id))
+                    prior_row.kind = spec.kind
+                    prior_row.config = blob
+                    updated.append(prior_row)
+                    ordered.append(prior_row)
+                else:
+                    row = WatchAction(
+                        account_id=self.account_id, path_id=path_id, kind=spec.kind, config=blob, rank=temp_rank
+                    )
+                    temp_rank += 1
+                    created.append(row)
+                    ordered.append(row)
+            removed_ids = [sid for sid in existing if sid not in kept_ids]
             with transaction.atomic():
-                WatchAction.objects.filter(account_id=self.account_id, path_id=path_id).delete()
-                if rows:
-                    WatchAction.objects.bulk_create(rows)
+                if removed_ids:
+                    WatchAction.objects.filter(account_id=self.account_id, id__in=removed_ids).delete()
+                if updated:
+                    WatchAction.objects.bulk_update(updated, ["kind", "config"])  # updated_at set by _renumber
+                if created:
+                    WatchAction.objects.bulk_create(created)
+                if ordered:
+                    self._renumber(ordered)
         return self.list_for_path(path_id)
 
-    def _priors_by_kind(self, path_id: str) -> dict[str, builtins.list[WatchActionConfigBase]]:
-        """The path's current action configs grouped by kind, in rank order.
-        Feeds the index-within-kind pairing in `replace_chain` (the i-th
-        new action of a kind merges against the i-th prior of that kind).
-        Call inside the chain lock so the snapshot is race-free."""
-        out: dict[str, builtins.list[WatchActionConfigBase]] = {}
-        for action in self.list_for_path(path_id):
-            out.setdefault(str(action.kind), []).append(load_config(action))
-        return out
+    def _resolve_prior(self, sid: str, existing: dict[str, WatchAction], kept_ids: set[str]) -> WatchAction | None:
+        """The existing row a submitted `id` refers to, or None for a new
+        action (empty id). Raises PolicyError on an id that isn't on this
+        path (stale / cross-path) or one submitted twice."""
+        if not sid:
+            return None
+        if sid not in existing:
+            raise PolicyError(f"action {sid!r} is not on this watch; omit `id` to add a new action")
+        if sid in kept_ids:
+            raise PolicyError(f"action {sid!r} appears more than once in the chain")
+        return existing[sid]
+
+    def _submitted_has_masked_secret(self, spec: WatchActionInput) -> bool:
+        """Whether a submitted action arrives with a still-masked secret.
+        Parses shape-only (no policy). An unknown kind (KeyError) or invalid
+        shape (ValidationError) returns False so the REAL error surfaces from
+        `merge_config` right after, not as a confusing guard failure ; any
+        other exception is a genuine bug and propagates."""
+        try:
+            return parse_config(spec.kind, spec.config).has_masked_secret()
+        except (KeyError, ValidationError):
+            return False
 
     def add(self, *, path_id: str, action: WatchActionInput, rank: int | None = None) -> WatchAction:
         """Insert one action into the chain. `rank=None` appends ; an
@@ -197,21 +230,17 @@ class WatchActionService:
                 self._renumber(self.list_for_path(path_id))
 
     def _renumber(self, ordered: builtins.list[WatchAction]) -> None:
-        """Assign dense ranks 0..N-1 in list order and persist. All rows
-        must already be saved (bulk_update only UPDATEs).
+        """Assign dense ranks 0..N-1 in list order (all rows already saved).
 
-        Two-phase to dodge the unique `(path_id, rank)` constraint: first
-        offset every row past the max live rank, then write the final
-        ranks. A single-pass update would transiently collide (row B
-        taking row A's old rank before A has moved).
-
-        `updated_at` is set by hand on the final pass: `bulk_update` does
-        NOT fire the `auto_now` the model relies on, so without this the
-        stale in-memory timestamp would be rewritten unchanged. The first
-        (offset) pass writes `rank` only ; it's a transient internal state,
-        not a real edit, so it deliberately doesn't touch `updated_at`."""
+        Two-phase to dodge the unique `(path_id, rank)` constraint: offset
+        past the max LIVE rank, then write finals. The offset is
+        `max(rank)+1`, NOT `len(ordered)`: replace_chain parks new rows
+        above the survivor count, and SQLite checks the constraint per-row
+        mid-`UPDATE`, so a count-based offset can collide with a parked
+        rank. `updated_at` is set by hand on the final pass (bulk_update
+        skips `auto_now`); the offset pass writes `rank` only."""
         now = timezone.now()
-        offset = len(ordered) + 1
+        offset = max((row.rank for row in ordered), default=0) + 1
         for i, row in enumerate(ordered):
             row.rank = i + offset
         WatchAction.objects.bulk_update(ordered, ["rank"])

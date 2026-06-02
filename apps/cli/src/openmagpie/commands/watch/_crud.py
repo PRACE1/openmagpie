@@ -228,15 +228,14 @@ def _run_mutation(ac: AppContext, body: WatchInput, *, watch_id: str | None, dry
 
 def _edit_seed(detail: WatchView) -> WatchInput:
     """The editable envelope for `edit`, projected from the current watch.
-
-    Drops server-managed read-only fields (id, user_id, created_at) and
-    flattens the action chain back to the `{config}` input shape so the
-    operator edits the same structure they'd write by hand."""
+    Keeps each action's `id` so the server matches by id (in-place update,
+    preserving run history) instead of recreating rows. Drops the
+    watch-level read-only fields (user_id, created_at)."""
     return WatchInput(
         name=detail.name,
         is_active=detail.is_active,
         feed_ids=detail.feed_ids,
-        actions=[WatchActionInput(kind=a.kind, config=a.config) for a in detail.actions],
+        actions=[WatchActionInput(id=a.id, kind=a.kind, config=a.config) for a in detail.actions],
     )
 
 

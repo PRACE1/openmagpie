@@ -8,12 +8,19 @@ explicitly (it lives on the WatchAction row / write envelope, NOT inside
 the `config` blob), so the blob is the pure kind-specific shape.
 """
 
-from openmagpie_schema.watch_actions import SemanticFilterConfig, WatchActionConfigBase
+from openmagpie_schema.watch_actions import (
+    LogConfig,
+    SemanticFilterConfig,
+    WatchActionConfigBase,
+    WebhookConfig,
+)
 from watches.models import WatchAction
 from watches.policy import PolicyError, enforce_action_policy
 
 _REGISTRY: dict[str, type[WatchActionConfigBase]] = {
     SemanticFilterConfig.CONFIG_KIND: SemanticFilterConfig,
+    WebhookConfig.CONFIG_KIND: WebhookConfig,
+    LogConfig.CONFIG_KIND: LogConfig,
 }
 
 # The kinds the server accepts on a write ; the serializer/view checks

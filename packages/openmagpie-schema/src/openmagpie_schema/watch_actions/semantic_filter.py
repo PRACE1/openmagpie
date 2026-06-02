@@ -1,28 +1,12 @@
-"""Per-kind WatchAction config + result contracts (the tight shapes
-behind the opaque `config` / `result` blobs on WatchAction / WatchActionRun).
+"""The semantic_filter kind: LLM relevance gate config + result."""
 
-SHARED, zero-Django source of truth. The DB columns are opaque
-(`ConfigBlob` / `ResultBlob`) ; these are the strict models the server
-validates a `config` against at the API write boundary, and the strict
-`result` the runner writes when it persists a run. Settings-coupled
-policy (engine kind registered, threshold bounds beyond the structural
-gt/le, SSRF on future webhook URLs) lives server-side, not here.
-
-`kind` is NOT a field on these configs ; it lives one level up (the
-WatchAction.kind column + the write envelope's `kind`), and the server's
-`watches.registry` maps `kind -> config class` to validate the blob. So
-the persisted `config` is the PURE kind-specific shape, no discriminator
-nested inside it. Mirrors how `feeds` keeps `Feed.kind` off `Feed.data`.
-
-v1 ships the FILTER family (semantic_filter). The DELIVERY family
-(webhook, log) lands with its implementations in a later commit ; each
-adds its config + result class and a registry entry. Adding / removing a
-kind is a pure-Python change (no `choices=` on the column, no migration).
-"""
+from __future__ import annotations
 
 from typing import Any, ClassVar
 
 from pydantic import BaseModel, Field
+
+from .base import WatchActionConfigBase, WatchActionConfigSummary
 
 
 class EngineSpec(BaseModel):
@@ -35,48 +19,6 @@ class EngineSpec(BaseModel):
 
     kind: str = ""
     model: str = ""
-
-
-class WatchActionConfigSummary(BaseModel):
-    """Display-only projection of an action config for the CLI preview.
-
-    Built server-side from the typed config (the only place that knows
-    the schema), so the CLI prints it without parsing the `config` blob ;
-    no shadow schema on the client. `detail` is presentation, not a
-    contract ; the action's `kind` is carried separately (the column /
-    wire), so it isn't repeated here."""
-
-    detail: str = ""
-
-
-class WatchActionConfigBase(BaseModel):
-    """Base for every action-kind config.
-
-    Declares the read-path contract every kind MUST implement. No working
-    defaults: a silent `summary()` shows a blank preview and a default
-    `redacted_dump()` would leak a future kind's secrets. Fail loudly
-    here, don't ship a silent hole. Mirrors `FeedConfig`.
-
-    No `kind` field: the discriminator lives on the WatchAction row /
-    write envelope, and the registry maps it to the right subclass. The
-    concrete config is the pure kind-specific shape."""
-
-    def redacted_dump(self) -> dict[str, Any]:
-        raise NotImplementedError(
-            f"{type(self).__name__} must implement redacted_dump() (no safe default: the fallback would leak secrets)"
-        )
-
-    def summary(self) -> WatchActionConfigSummary:
-        raise NotImplementedError(f"{type(self).__name__} must implement summary()")
-
-    def merge_preserving(self, prior: "WatchActionConfigBase") -> "WatchActionConfigBase":
-        """Edit round-trip: return self with state that must NOT reset on
-        an edit, carried from `prior` (e.g. a future webhook's masked
-        secret). No safe default: a silent passthrough would corrupt
-        secrets to the redaction sentinel."""
-        raise NotImplementedError(
-            f"{type(self).__name__} must implement merge_preserving() (no safe default: would corrupt secrets)"
-        )
 
 
 class SemanticFilterConfig(WatchActionConfigBase):
@@ -119,7 +61,7 @@ class SemanticFilterConfig(WatchActionConfigBase):
         engine = f"{kind} | {self.engine.model}" if self.engine.model else f"engine({kind})"
         return WatchActionConfigSummary(detail=f"{engine} >= {self.threshold:.2f}")
 
-    def merge_preserving(self, prior: "WatchActionConfigBase") -> "SemanticFilterConfig":
+    def merge_preserving(self, prior: WatchActionConfigBase) -> SemanticFilterConfig:
         """Nothing to carry forward: a semantic filter has no masked
         secrets or runtime state, so the submitted config wins wholesale."""
         return self

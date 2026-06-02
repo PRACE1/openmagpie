@@ -78,6 +78,8 @@ class WatchListCreateView(WatchSvcMixin, AccountScopedAPIView):
                 feed_ids=d["feed_ids"],
                 actions=actions,
             )
+        except PolicyError as exc:
+            return Response({"actions": [str(exc)]}, status=status.HTTP_400_BAD_REQUEST)
         except ConcurrentChainError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_409_CONFLICT)
         return Response(

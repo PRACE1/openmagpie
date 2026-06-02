@@ -225,6 +225,10 @@ OLLAMA_DEFAULT_MODEL = os.environ["OLLAMA_DEFAULT_MODEL"]
 # targets. Set stricter values via env for multi-tenant / public deployments.
 WEBHOOK_REQUIRE_HTTPS = env_bool("WEBHOOK_REQUIRE_HTTPS", "false")
 WEBHOOK_BLOCK_PRIVATE_IPS = env_bool("WEBHOOK_BLOCK_PRIVATE_IPS", "false")
+# Per-POST timeout for a webhook delivery. One run is one POST; a hung
+# receiver shouldn't tie up a drain slot, and the drain's stale-reaper is
+# the backstop above this. 30s matches the v1 notifier.
+WEBHOOK_TIMEOUT_SECONDS = int(os.environ.get("WEBHOOK_TIMEOUT_SECONDS", "30"))
 
 # Source-fetch SSRF gate. Parallel to WEBHOOK_BLOCK_PRIVATE_IPS but for
 # OUTBOUND-from-connector fetches (RSS, future HTTP-based connectors).

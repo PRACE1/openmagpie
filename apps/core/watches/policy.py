@@ -12,8 +12,15 @@ Guards today:
 
 from django.conf import settings
 
+from common.ssrf import destination_block_reason
 from engine import registry as engine_registry
-from openmagpie_schema.watch_actions import SemanticFilterConfig, WatchActionConfigBase
+from openmagpie_schema.watch_actions import (
+    LogConfig,
+    SemanticFilterConfig,
+    WatchActionConfigBase,
+    WebhookConfig,
+)
+from openmagpie_schema.watch_enums import WatchActionDelivery
 
 
 class PolicyError(ValueError):
@@ -27,7 +34,36 @@ def enforce_action_policy(config: WatchActionConfigBase) -> WatchActionConfigBas
     settings-coupled policy pass straight through."""
     if isinstance(config, SemanticFilterConfig):
         _enforce_engine_registered(config)
+    elif isinstance(config, WebhookConfig):
+        _reject_unsupported_delivery(config.delivery)
+        _enforce_webhook_url_safety(config)
+    elif isinstance(config, LogConfig):
+        _reject_unsupported_delivery(config.delivery)
     return config
+
+
+def _reject_unsupported_delivery(delivery: WatchActionDelivery) -> None:
+    """Only INSTANT delivery runs today. The `delivery` field + DIGEST enum
+    value exist (forward-stable wire shape), but digest windowing isn't
+    built, so a DIGEST config would enqueue runs nothing ever flushes ;
+    reject it at the write boundary until that lands."""
+    if delivery == WatchActionDelivery.DIGEST:
+        raise PolicyError("digest delivery is not supported yet; use instant")
+
+
+def _enforce_webhook_url_safety(config: WebhookConfig) -> None:
+    """Write-time SSRF gate: reject a require-https violation or an
+    IP-literal host in a blocked range. DNS resolution is deferred to send
+    time (the impl re-checks with resolve_dns=True), since a hostname's
+    address can change between create and delivery."""
+    reason = destination_block_reason(
+        config.url,
+        require_https=settings.WEBHOOK_REQUIRE_HTTPS,
+        block_private_ips=settings.WEBHOOK_BLOCK_PRIVATE_IPS,
+        resolve_dns=False,
+    )
+    if reason:
+        raise PolicyError(f"webhook url rejected: {reason}")
 
 
 def _enforce_engine_registered(config: SemanticFilterConfig) -> None:
