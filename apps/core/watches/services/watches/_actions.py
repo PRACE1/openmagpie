@@ -48,6 +48,23 @@ class WatchActionService:
         """Raises WatchAction.DoesNotExist if missing / other-account."""
         return WatchAction.objects.get(id=action_id, account_id=self.account_id)
 
+    def next_in_chain(self, action: WatchAction, /) -> WatchAction | None:
+        """The next action down the same path, or None if `action` is the
+        chain tail. The drain calls this to advance after a SUCCEEDED run.
+
+        'Next' = the smallest rank STRICTLY GREATER than this one, not
+        `rank + 1` ; today's chain is dense so they coincide, but querying
+        next-greater stays correct if ranks ever go sparse (the planned
+        gap/rebalance optimization) instead of silently dead-ending the
+        chain on a gap. Rides the `(account, path, rank)` unique index as a
+        range seek (order matches the index), so it's a point lookup, not a
+        scan."""
+        return (
+            WatchAction.objects.filter(account_id=self.account_id, path_id=action.path_id, rank__gt=action.rank)
+            .order_by("rank")
+            .first()
+        )
+
     # ── Writes ─────────────────────────────────────────────────────────
 
     def replace_chain(self, *, path_id: str, actions: builtins.list[WatchActionInput]) -> builtins.list[WatchAction]:
