@@ -75,7 +75,8 @@ class WatchCreateSerializer(serializers.Serializer):
             except PolicyError as exc:
                 errors[str(i)] = {"config": [str(exc)]}
                 continue
-            validated_actions.append(WatchActionInput(kind=kind, config=typed.model_dump(mode="json")))
+            action_id = raw.get("id") if isinstance(raw.get("id"), str) else ""
+            validated_actions.append(WatchActionInput(id=action_id, kind=kind, config=typed.model_dump(mode="json")))
         if errors:
             raise serializers.ValidationError({"actions": errors})
         attrs["actions"] = validated_actions
@@ -101,24 +102,25 @@ class WatchCreateSerializer(serializers.Serializer):
 
 def _action_summary(action: WatchAction) -> WatchActionConfigSummary:
     """Display projection from the typed config; per-row fail-safe so one
-    corrupt blob never 500s a list. The narrow set is what `load_config` +
+    corrupt blob never 500s a list. The set is what `load_config` +
     `summary` can raise on a bad at-rest row: KeyError (kind no longer
     registered), PydanticValidationError (stored shape drift),
-    NotImplementedError (a kind missing its summary contract)."""
+    NotImplementedError (a kind missing its summary contract), ValueError
+    (a degenerate stored value, e.g. an out-of-range URL port)."""
     try:
         return load_config(action).summary()
-    except (KeyError, PydanticValidationError, NotImplementedError):
+    except (KeyError, PydanticValidationError, NotImplementedError, ValueError):
         logger.exception("action %s config failed summary (kind=%s)", action.id, action.kind)
         return _EMPTY_SUMMARY
 
 
 def _action_redacted(action: WatchAction) -> dict[str, Any]:
     """`action.config` through the typed config's redacted_dump; fail-safe
-    to a sentinel rather than 500 a `many` list. Same narrow set as
+    to a sentinel rather than 500 a `many` list. Same set as
     `_action_summary`."""
     try:
         return load_config(action).redacted_dump()
-    except (KeyError, PydanticValidationError, NotImplementedError):
+    except (KeyError, PydanticValidationError, NotImplementedError, ValueError):
         logger.exception("action %s config failed redaction (kind=%s)", action.id, action.kind)
         return {"error": "config_unreadable"}
 

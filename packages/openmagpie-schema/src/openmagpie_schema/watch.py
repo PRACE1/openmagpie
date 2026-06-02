@@ -46,14 +46,22 @@ class WatchActionWire(BaseModel):
 
 
 class WatchActionInput(BaseModel):
-    """One action on a create / add-action request: `{kind, config}` with
-    `kind` adjacent to its blob (k8s-style). `kind` selects the action
-    type ; the server validates `config` against it via the registry, so
-    the persisted blob is the pure kind-specific shape (no `kind` nested
-    inside). `rank` is optional on input (append when omitted); the server
-    owns the dense renumber. Extra keys ignored so an edit seed's
-    read-only fields drop on round-trip."""
+    """One action on a create / edit / add-action request: `{id?, kind,
+    config}` with `kind` adjacent to its blob (k8s-style). `kind` selects
+    the action type ; the server validates `config` against it via the
+    registry, so the persisted blob is the pure kind-specific shape (no
+    `kind` nested inside). `rank` is optional on input (append when
+    omitted); the server owns the dense renumber. Extra keys ignored so an
+    edit seed's read-only fields drop on round-trip.
 
+    `id` is the STABLE identity of an existing action, carried back on a
+    whole-chain edit so the server matches by id (NOT list position):
+    matched actions are updated in place ; their id + run history survive,
+    and a masked secret restores from that same row. Omit `id` (or leave it
+    empty) for a brand-new action ; the server mints its id. A non-empty id
+    that isn't on the watch is rejected."""
+
+    id: str = ""
     kind: str
     config: ConfigBlob = Field(default_factory=dict)
     rank: int | None = None
@@ -94,7 +102,7 @@ class WatchListResponse(BaseModel):
 
 
 class WatchView(WatchWire):
-    """`GET /v1/watches/<id>` — the read view: the envelope plus the
+    """`GET /v1/watches/<id>`, the read view: the envelope plus the
     ordered action chain of the watch's initial path. v1 has exactly one
     path, so `actions` is that path's actions by `rank` ; the path layer
     stays hidden on the wire until multi-path ships."""
