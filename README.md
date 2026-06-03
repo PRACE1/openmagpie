@@ -32,12 +32,13 @@ graph TD
 
     subgraph OpenMagpie
         FEED[Feed<br/>curated streams + item log]
-        LISTENER[Listener<br/>attention: feed + filter + engine]
+        WATCH[Watch<br/>subscribes to feeds]
+        FILTER[semantic_filter<br/>action]
         ENGINE[Relevance Engine<br/>BYO LLM]
-        EVENTS[(Events<br/>hit-only)]
+        DELIVER[webhook / log<br/>delivery action]
     end
 
-    subgraph Notifiers
+    subgraph Out
         WEBHOOK[Webhooks]
         LOG[Log]
         FUTURE[email / Slack / ...]
@@ -49,35 +50,35 @@ graph TD
     GDOCS --> FEED
     OTHER --> FEED
 
-    FEED -- "subscribe + filter" --> LISTENER
-    LISTENER --> ENGINE
+    FEED -- "new items" --> WATCH
+    WATCH -- "action chain" --> FILTER
+    FILTER --> ENGINE
     ENGINE -. "your LLM" .-> LLM["Ollama / Anthropic /
     OpenAI / ..."]
-    ENGINE -- "hit only" --> EVENTS
+    FILTER -- "passes -> next action" --> DELIVER
 
-    EVENTS --> WEBHOOK
-    EVENTS --> LOG
-    EVENTS --> FUTURE
+    DELIVER --> WEBHOOK
+    DELIVER --> LOG
+    DELIVER --> FUTURE
 
-    YOU((You)) -- "feedback on matches" --> LISTENER
+    YOU((You)) -- "feedback on matches" --> WATCH
 ```
 
 ## Features
 
-- **Feed → Listener primitive**: `Feed`s are reusable, curated streams (e.g. `r/ClaudeAI` + `r/AI_Agents`). `Listener`s subscribe to a Feed and apply a plain-English filter via your engine. One feed, many listeners; pay for source polling once.
-- **Source-agnostic**: every connector yields a typed `Observation`; engines and notifiers operate on the same shape no matter the source.
-- **Plain-English listeners**: describe what you care about; no filter chains, no DSL.
-- **Bring your own LLM**: Ollama (local) today; the `Engine` Protocol + `validate_model` hook makes adding Anthropic/OpenAI/others a four-file change with no listener-layer churn.
-- **Hit-only persistence**: `Event`s exist in the DB only when a Listener's engine judged the observation relevant. Misses live and die in memory.
-- **Instant or digest delivery**: fire notifiers per-hit, or batch them on a cadence.
-- **Pluggable notifiers**: webhook + log out of the box; same `Notifier` Protocol for adding Slack/email/etc.
-- **Per-receiver payload preview**: `magpie listener payload-sample <id>` runs the same `render()` your real webhook would, so you can wire and test receivers without firing real hits.
-- **Cursor rewind**: `magpie listener rewind <id>` re-judges the retention window after you refine instructions or lower a threshold.
+- **Feed → Watch primitive**: `Feed`s are reusable, curated streams (e.g. `r/ClaudeAI` + `r/AI_Agents`). A `Watch` subscribes to one or more Feeds and runs an ordered **action chain** over each new item. One feed, many watches; pay for source polling once.
+- **Composable action chain**: a watch is a sequence of actions — a `semantic_filter` (plain-English, LLM-judged) gates the chain, and downstream `webhook` / `log` actions deliver what passes. Filters and deliveries are siblings, not a fixed pipeline.
+- **Source-agnostic**: every connector yields a typed `SourcePayload`; engines and actions operate on the same shape no matter the source.
+- **Bring your own LLM**: Ollama (local) today; the `Engine` Protocol + `validate_model` hook makes adding Anthropic/OpenAI/others a small change with no watch-layer churn.
+- **Per-run audit log**: every action execution is a `WatchActionRun` row (pending → succeeded / gated / failed / errored), inspectable via `magpie watch action activity`. A filter that scores below threshold is `gated` and stops the chain.
+- **Instant or digest delivery**: delivery actions fire per item, or batch a rolling window into one emission on a cadence.
+- **Pluggable action kinds**: `semantic_filter`, `webhook`, `log` out of the box; one config class + one impl + two registry entries to add a kind.
 - **Self-hostable**: Django + SQLite; Docker Compose dev loop; your data and credentials stay yours.
 
 ### Planned (not yet shipped)
 
-- **Learns from feedback**: ✅/❌ on past hits become few-shot examples for the next pass. Engine layer is in place; the feedback ingest + retrieval loop is the open piece.
+- **Learns from feedback**: ✅/❌ on past matches become few-shot examples for the next pass. Engine layer is in place; the feedback ingest + retrieval loop is the open piece.
+- **Branching & parallel chains**: the data model already carries `WatchPath` (parallel chains) and dense action ranks; multi-path and DAG branching are post-v1.
 
 ### What's implemented today
 
@@ -85,8 +86,8 @@ graph TD
 |---|---|
 | Connectors | Reddit (`reddit_subreddit`) |
 | Engines | Ollama (`ollama`) |
-| Notifiers | Webhook, Log |
-| Listener kinds | Semantic (LLM-judged) |
+| Action kinds | `semantic_filter` (LLM-judged), `webhook`, `log` |
+| Delivery modes | instant, digest |
 
 ## Quick start
 
@@ -114,17 +115,21 @@ Then either:
 
 **Browser**: visit http://localhost:3001 and create an account; you'll be signed in.
 
-**CLI**: install + sign in, then run the wizard.
+**CLI**: install + sign in, then create a feed and a watch over it.
 
 ```bash
 make dev-cli-sync                       # uv sync into the workspace .venv
 make dev-cli ARGS="auth login"          # opens browser device flow
 # Sign in, click Authorize, return to the terminal.
-make dev-cli ARGS="quickstart"          # two questions, one working listener
-make dev-tick                           # poll + judge once now (vs waiting for the scheduler)
+
+make dev-cli ARGS="feed create"         # opens $EDITOR on a feed template (sources + retention)
+make dev-cli ARGS="watch create"        # opens $EDITOR on a watch template (feeds + action chain)
+make dev-tick                           # poll + run the chain once now (vs waiting for the scheduler)
+
+make dev-cli ARGS="watch action activity <watch_id> <action_id>"   # inspect the run log
 ```
 
-`magpie quickstart` creates a feed + listener pair with sensible defaults and offers an optional backfill window so the first poll has real posts to score. Pick the demo path and you'll see actual hits scored against your criteria in ~30 seconds.
+A watch's `actions:` chain typically starts with a `semantic_filter` (your plain-English criteria + threshold) followed by a `webhook` or `log` delivery. Pick a backfill window when you create the feed and the first `make dev-tick` scores real posts against your criteria immediately, no waiting for the scheduler.
 
 Or invoke directly: `cd apps/cli && uv run magpie auth login`. Run `uv tool install ./apps/cli` to put `magpie` on your `PATH` globally.
 
@@ -149,15 +154,13 @@ uv workspace; one root `uv.lock` for everything Python.
 ```
 apps/
   core/                       Django backend (deployable)
-    common/                   BaseModel (ULID PK + timestamps), ULIDField, /healthz
+    common/                   BaseModel (ULID PK + timestamps), ULIDField, locks, db ceilings, /healthz
     accounts/                 User / Account / UserProfile + services + AccountScopedAPIView mixin
     auth_api/                 signup / login / logout / me + tokens/* + device-flow handshake (DRF)
-    feeds/                    Feed + FeedItem models + poll orchestrator + item log
-    listeners/                Listener model + Pydantic config + judgment + preview services
-    events/                   Event model (hit = a kind of event) + Observation hierarchy + registry
-    sources/                  Connectors (Reddit subreddit, ...) + observation classes
+    sources/                  Connectors (Reddit subreddit, ...) + SourcePayload classes + registry
+    feeds/                    Feed + Source + FeedItem models + poll orchestrator + item log
     engine/                   Engine Protocol + OllamaEngine package + registry
-    notifications/            Notifier Protocol (Webhook, Log) + instant/digest delivery + render() preview
+    watches/                  Watch + WatchFeed + WatchPath + WatchAction + WatchActionRun (chain + trigger/drain/flush crons)
     conf/                     settings (base/local), urls, wsgi
   cli/                        magpie CLI (Typer + httpx + Pydantic); distributed as a standalone wheel
 packages/
@@ -167,7 +170,7 @@ make/                         Per-concern Makefile targets
 scripts/                      Helper scripts (whitespace check, make-help)
 ```
 
-See [AGENTS.md](AGENTS.md) for design conventions (char pointers, typed-blob pattern, hit-only persistence, etc.).
+See [AGENTS.md](AGENTS.md) for design conventions (char pointers, typed-blob pattern, the watch trigger/drain/flush execution model, etc.).
 
 ## License
 

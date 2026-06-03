@@ -77,9 +77,12 @@ class WatchTriggerOperation:
     def run(self) -> WatchTriggerResult:
         now = timezone.now()
 
-        # The chain's first action (rank 0) is the only enqueue target ;
-        # the drain advances rank+1 on success. An actionless watch has
-        # nothing to trigger (a legit empty chain, not corruption).
+        # The chain's first action is the only enqueue target ; the drain
+        # advances to the next-greater rank on success. `head` is the lowest
+        # rank by ORDER (initial_actions is rank-ordered, head = [0]), NOT a
+        # `rank == 0` lookup, so this stays correct if ranks ever go sparse.
+        # An actionless watch has nothing to trigger (a legit empty chain,
+        # not corruption).
         actions = self.watch_svc.initial_actions(self.watch)
         if not actions:
             return WatchTriggerResult(feeds_scanned=0, runs_enqueued=0)

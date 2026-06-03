@@ -4,7 +4,7 @@ Conventions for the `magpie` CLI. Cross-cutting rules live in [../AGENTS.md](../
 
 ## Stack
 
-Typer + httpx + Pydantic + PyYAML. Binary name: `magpie`. Config: `~/.magpie/config.json` (mode `0600`, Pydantic-validated). YAML is the on-disk format for config blobs the CLI feeds the server (e.g. listener configs); the server only speaks JSON. Convert with `yaml.safe_load` at the CLI boundary.
+Typer + httpx + Pydantic + PyYAML. Binary name: `magpie`. Config: `~/.magpie/config.json` (mode `0600`, Pydantic-validated). YAML is the on-disk format for config blobs the CLI feeds the server (e.g. feed source sets, watch action chains); the server only speaks JSON. Convert with `yaml.safe_load` at the CLI boundary.
 
 ## Config shape
 
@@ -66,8 +66,8 @@ ac.sign_out()                    # returns bool: server-side revoke success
 Resource clients in `api/` **return parsed Pydantic models, never raw
 `dict`**. A method that does `return self._http.get(...)` straight to the
 caller is a bug: parse the `raw` through a model first (see
-`api/auth.py`, and `ListenerListResponse` / `ListenerMutationResponse`
-in `api/listener.py`). The point is that a command author reads response
+`api/auth.py`, and `WatchListResponse` / `WatchMutationResponse`
+in `api/watch.py`). The point is that a command author reads response
 shapes from the CLI's own models, never by diving into the server.
 
 `Any` / `dict[str, Any]` is allowed in exactly three places, and only
@@ -79,7 +79,7 @@ these:
 2. **The opaque request body.** User-authored config (YAML → `dict`) is
    posted to the server-as-sole-validator. Typing it CLI-side would mean
    mirroring the server's Pydantic registry and re-versioning on every
-   new listener kind, the drift the dry-run design exists to avoid. The
+   new action kind, the drift the dry-run design exists to avoid. The
    honest type for "arbitrary config we deliberately don't validate
    here" is `dict[str, Any]`.
 3. **Polymorphic error bodies.** `ApiError.body` / `_flatten_errors` walk
@@ -123,13 +123,13 @@ The CLI never opens a server-supplied URL blindly. `_safe_authorize_url` require
 
 ## File-driven config commands
 
-Commands that create server-side resources from operator-authored config (currently just `magpie listener create`) accept YAML on disk or stdin, plus a no-argument variant that opens `$EDITOR` on a template:
+Commands that create / edit server-side resources from operator-authored config (`magpie feed create`, `magpie watch create`, and their `edit` / `set-sources` siblings) accept YAML on disk or stdin, plus a no-argument variant that opens `$EDITOR` on a template:
 
-- `magpie listener create -f listener.yaml`
-- `magpie listener create -f -` (stdin)
-- `magpie listener create` (opens `$EDITOR` on the template via `typer.edit`)
-- `magpie listener template` emits the skeleton to stdout for piping or redirecting
+- `magpie watch create -f watch.yaml`
+- `magpie watch create -f -` (stdin)
+- `magpie watch create` (opens `$EDITOR` on the template via `typer.edit`)
+- `magpie watch template` emits the skeleton to stdout for piping or redirecting
 
 A creating command validates server-side before it mutates: it POSTs once with `?dry_run=true` (server runs the identical serializer/service validation and returns the would-be record without persisting), prints a preview, then prompts to confirm. `--dry-run` stops after the preview; `--yes` skips the prompt and is required when stdin is not a TTY so a pipe can't silently create. Dry-run is a parameter on the real endpoint, not a separate validate route, so the preview's *validation* cannot drift from the create path. It is a validation preview, not a create-success guarantee (persistence can still fail).
 
-YAML round-trips via `yaml.safe_load` into a `dict` and posts straight at the server's JSON endpoint. The server is the single source of validation truth; the CLI's job is to surface DRF's nested 400 error dict (`{"data": {"streams[0].spec.kind": ["..."]}}`) as one line per leaf path. New file-driven commands should follow the same modes + template emitter + dry-run/confirm convention.
+YAML round-trips via `yaml.safe_load` into a `dict` and posts straight at the server's JSON endpoint. The server is the single source of validation truth; the CLI's job is to surface DRF's nested 400 error dict (e.g. `{"actions": {"0": {"kind": ["..."]}}}`) as one line per leaf path. New file-driven commands should follow the same modes + template emitter + dry-run/confirm convention.
