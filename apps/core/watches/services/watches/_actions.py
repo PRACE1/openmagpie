@@ -21,7 +21,8 @@ from pydantic import ValidationError
 
 from common.locks import path_chain_lock
 from openmagpie_schema.watch import WatchActionInput
-from watches.models import WatchAction
+from openmagpie_schema.watch_actions import DeliveryConfigBase
+from watches.models import WatchAction, WatchActionDigestWindow
 from watches.policy import PolicyError
 from watches.registry import load_config, merge_config, parse_config, validate_config
 
@@ -103,6 +104,7 @@ class WatchActionService:
             updated: builtins.list[WatchAction] = []
             created: builtins.list[WatchAction] = []
             kept_ids: set[str] = set()
+            windows_to_clear: builtins.list[str] = []  # edited away from digest
             temp_rank = len(existing) + 1  # park new rows past any existing rank
             for spec in actions:
                 sid = (spec.id or "").strip()
@@ -118,12 +120,18 @@ class WatchActionService:
                     )
                 merged = merge_config(spec.kind, spec.config, load_config(same_kind_prior) if same_kind_prior else None)
                 blob = merged.model_dump(mode="json")
+                is_digest = isinstance(merged, DeliveryConfigBase) and merged.is_digest()
                 if prior_row is not None:
                     kept_ids.add(str(prior_row.id))
                     prior_row.kind = spec.kind
                     prior_row.config = blob
                     updated.append(prior_row)
                     ordered.append(prior_row)
+                    # An existing row edited away from digest must lose its
+                    # window or its now-instant runs strand (see
+                    # _clear_digest_windows). New rows have no window yet.
+                    if not is_digest:
+                        windows_to_clear.append(str(prior_row.id))
                 else:
                     row = WatchAction(
                         account_id=self.account_id, path_id=path_id, kind=spec.kind, config=blob, rank=temp_rank
@@ -135,6 +143,8 @@ class WatchActionService:
             with transaction.atomic():
                 if removed_ids:
                     WatchAction.objects.filter(account_id=self.account_id, id__in=removed_ids).delete()
+                # Removed actions + edits leaving digest both shed their windows.
+                self._clear_digest_windows(removed_ids + windows_to_clear)
                 if updated:
                     WatchAction.objects.bulk_update(updated, ["kind", "config"])  # updated_at set by _renumber
                 if created:
@@ -154,6 +164,18 @@ class WatchActionService:
         if sid in kept_ids:
             raise PolicyError(f"action {sid!r} appears more than once in the chain")
         return existing[sid]
+
+    def _clear_digest_windows(self, action_ids: builtins.list[str]) -> None:
+        """Delete the digest-window rows for these actions. MUST be called
+        whenever an action is removed or its config moves AWAY from digest:
+        claim_due excludes a run purely by its action HAVING a window row
+        (ignoring close_at), so a lingering row strands the action's
+        now-instant runs PENDING forever (the flush stops surfacing them once
+        a close clears close_at). Idempotent — a no-op when no row exists
+        (instant actions never have one). Mirrors WatchService.delete's
+        window cleanup. Call inside the mutator's transaction."""
+        if action_ids:
+            WatchActionDigestWindow.objects.filter(account_id=self.account_id, action_id__in=action_ids).delete()
 
     def _submitted_has_masked_secret(self, spec: WatchActionInput) -> bool:
         """Whether a submitted action arrives with a still-masked secret.
@@ -195,39 +217,53 @@ class WatchActionService:
 
     def set_config(self, action: WatchAction, /, *, spec: WatchActionInput) -> WatchAction:
         """Replace one action's config in place (same rank, same row).
-        `action` is the existing row ; `spec` is the new desired state.
+                `action` is the existing row ; `spec` is the new desired state.
 
-        The new config is re-validated (shape + merge + policy) so the
-        persisted blob is normalized ; `kind` is the spec's top-level
-        discriminator and MAY change (a node can switch kind, e.g. swap one
-        filter for another). When the kind is UNCHANGED, the prior config
-        is fed to `merge_preserving` so edit-round-trip state (a redacted
-        secret the operator left masked) is carried forward ; on a kind
-        change there's no comparable prior, so the submitted config wins
-        wholesale. No rank change and no chain renumber, so no
-        `path_chain_lock` is needed: this touches exactly one row and the
-        unique `(path_id, rank)` is untouched."""
+                The new config is re-validated (shape + merge + policy) so the
+                persisted blob is normalized ; `kind` is the spec's top-level
+                discriminator and MAY change (a node can switch kind, e.g. swap one
+                filter for another). When the kind is UNCHANGED, the prior config
+                is fed to `merge_preserving` so edit-round-trip state (a redacted
+                secret the operator left masked) is carried forward ; on a kind
+                change there's no comparable prior, so the submitted config wins
+                wholesale.
+
+        t        No chain lock: rank is irrelevant here (a digest is allowed at any
+                position, head included), so there's no chain-state race to guard. The
+                row write + window cleanup share one transaction so an edit AWAY from
+                digest can't half-apply (config instant but window lingering = stranded
+                runs, since claim_due excludes a run while its action has a window). An
+                edit INTO digest just leaves any existing window alone; the trigger or
+                the advance opens one when the next item arrives."""
         if str(action.account_id) != self.account_id:
             raise ValueError(f"action account_id mismatch: {action.account_id!r} not in scope {self.account_id!r}")
         prior = load_config(action) if str(action.kind) == spec.kind else None
         merged = merge_config(spec.kind, spec.config, prior)
         action.kind = spec.kind
         action.config = merged.model_dump(mode="json")
-        action.save(update_fields=["kind", "config", "updated_at"])
+        is_digest = isinstance(merged, DeliveryConfigBase) and merged.is_digest()
+        with transaction.atomic():
+            action.save(update_fields=["kind", "config", "updated_at"])
+            if not is_digest:
+                self._clear_digest_windows([str(action.id)])
         return action
 
     def remove(self, action: WatchAction, /) -> None:
-        """Delete one action and close the rank gap on its path. Raises
-        `ConcurrentChainError` if another chain mutation holds the lock."""
+        """Delete one action and close the rank gap on its path. Drops the
+        removed action's digest window (if any). Raises `ConcurrentChainError`
+        if another chain mutation holds the lock."""
         if str(action.account_id) != self.account_id:
             raise ValueError(f"action account_id mismatch: {action.account_id!r} not in scope {self.account_id!r}")
         path_id = str(action.path_id)
+        action_id = str(action.id)  # capture before delete() nulls it in memory
         with path_chain_lock(path_id) as acquired:
             if not acquired:
                 raise ConcurrentChainError(f"another chain edit is in progress on path {path_id}; retry")
             with transaction.atomic():
                 action.delete()
-                self._renumber(self.list_for_path(path_id))
+                self._clear_digest_windows([action_id])
+                chain = self.list_for_path(path_id)
+                self._renumber(chain)
 
     def _renumber(self, ordered: builtins.list[WatchAction]) -> None:
         """Assign dense ranks 0..N-1 in list order (all rows already saved).

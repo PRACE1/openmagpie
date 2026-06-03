@@ -15,7 +15,7 @@ from functools import cached_property
 from django.db import transaction
 
 from openmagpie_schema.watch import WatchActionInput
-from watches.models import Watch, WatchAction, WatchActionRun, WatchFeed, WatchPath
+from watches.models import Watch, WatchAction, WatchActionDigestWindow, WatchActionRun, WatchFeed, WatchPath
 
 from ._actions import WatchActionService
 from ._global import WatchGlobal
@@ -174,9 +174,10 @@ class WatchService:
 
     def delete(self, watch: Watch, /) -> None:
         """Delete a Watch and everything under it: WatchFeed subscriptions,
-        the WatchPath(s), their WatchActions, and the WatchActionRun audit
-        rows. Plain CharField pointers (no FK cascade), so the service
-        owns the cleanup ; atomic so a mid-cascade failure can't orphan."""
+        the WatchPath(s), their WatchActions (and any digest-window rows
+        keyed on those actions), and the WatchActionRun audit rows. Plain
+        CharField pointers (no FK cascade), so the service owns the cleanup ;
+        atomic so a mid-cascade failure can't orphan."""
         self._assert_scope(str(watch.account_id), "watch")
         with transaction.atomic():
             WatchActionRun.objects.filter(account_id=self.account_id, watch_id=watch.id).delete()
@@ -184,6 +185,18 @@ class WatchService:
                 WatchPath.objects.filter(account_id=self.account_id, watch_id=watch.id).values_list("id", flat=True)
             )
             if path_ids:
+                action_ids = builtins.list(
+                    WatchAction.objects.filter(account_id=self.account_id, path_id__in=path_ids).values_list(
+                        "id", flat=True
+                    )
+                )
+                if action_ids:
+                    # Digest windows are keyed on action_id (not watch_id), so
+                    # they don't fall out of the watch/path deletes ; clear them
+                    # explicitly or a deleted watch leaves orphan window rows.
+                    WatchActionDigestWindow.objects.filter(
+                        account_id=self.account_id, action_id__in=action_ids
+                    ).delete()
                 WatchAction.objects.filter(account_id=self.account_id, path_id__in=path_ids).delete()
             WatchPath.objects.filter(account_id=self.account_id, watch_id=watch.id).delete()
             WatchFeed.objects.filter(account_id=self.account_id, watch_id=watch.id).delete()

@@ -12,19 +12,18 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, Field, field_validator
 
-from openmagpie_schema.watch_enums import WatchActionDelivery
-
+from ._delivery import DeliveryConfigBase
 from ._secrets import REDACTED, looks_redacted_url, redact_url
 from .base import WatchActionConfigBase, WatchActionConfigSummary
 
 
-class WebhookConfig(WatchActionConfigBase):
+class WebhookConfig(DeliveryConfigBase):
     """Config for a WatchAction with kind == 'webhook'.
 
     POSTs the item to `url` with `headers` (sent verbatim, so they carry
     any auth token). `include_fields` whitelists which item fields are sent
-    (empty = all). `delivery` is the cadence; only INSTANT runs today (the
-    server policy rejects DIGEST until digest windowing lands).
+    (empty = all). `delivery` / `digest_interval_seconds` (from the base)
+    pick instant vs batched delivery.
 
     Secret-bearing: `url` path/query and every header VALUE are masked by
     `redacted_dump` and carried forward by `merge_preserving` when the
@@ -35,7 +34,6 @@ class WebhookConfig(WatchActionConfigBase):
     url: str
     headers: dict[str, str] = Field(default_factory=dict)
     include_fields: list[str] = Field(default_factory=list)
-    delivery: WatchActionDelivery = WatchActionDelivery.INSTANT
 
     model_config = {"extra": "ignore"}
 
@@ -72,7 +70,7 @@ class WebhookConfig(WatchActionConfigBase):
 
     def summary(self) -> WatchActionConfigSummary:
         host = urlsplit(self.url).hostname or "?"
-        return WatchActionConfigSummary(detail=f"POST {host} ({self.delivery.value})")
+        return WatchActionConfigSummary(detail=f"POST {host} ({self.delivery_label()})")
 
     def merge_preserving(self, prior: WatchActionConfigBase) -> WebhookConfig:
         """Restore secrets the operator left masked from `prior`.

@@ -6,24 +6,28 @@ from typing import Any, ClassVar
 
 from pydantic import BaseModel, Field
 
-from openmagpie_schema.watch_enums import WatchActionDelivery
-
+from ._delivery import DeliveryConfigBase
 from .base import WatchActionConfigBase, WatchActionConfigSummary
 
 
-class LogConfig(WatchActionConfigBase):
+class LogConfig(DeliveryConfigBase):
     """Config for a WatchAction with kind == 'log'.
 
     Writes the item to the server log under `prefix`. `include_fields`
-    whitelists item fields (empty = all). `delivery` cadence; INSTANT only
-    today (policy rejects DIGEST). No secrets, so the dump is plain and an
-    edit replaces wholesale."""
+    whitelists item fields (empty = all). `delivery` /
+    `digest_interval_seconds` (from the base) pick instant vs batched. No
+    secrets, so the dump is plain and an edit replaces wholesale.
+
+    Digest log delivery is best-effort AT-LEAST-ONCE: a crash after the batch
+    is logged but before it's marked done re-logs the line on the next flush
+    (a log line carries no idempotency key to dedup on, unlike webhook). A
+    duplicate log line is harmless ; don't treat the log as an exactly-once
+    record."""
 
     CONFIG_KIND: ClassVar[str] = "log"
 
     prefix: str = "[watch]"
     include_fields: list[str] = Field(default_factory=list)
-    delivery: WatchActionDelivery = WatchActionDelivery.INSTANT
 
     model_config = {"extra": "ignore"}
 
@@ -32,7 +36,7 @@ class LogConfig(WatchActionConfigBase):
         return self.model_dump(mode="json")
 
     def summary(self) -> WatchActionConfigSummary:
-        return WatchActionConfigSummary(detail=f"log {self.prefix} ({self.delivery.value})")
+        return WatchActionConfigSummary(detail=f"log {self.prefix} ({self.delivery_label()})")
 
     def merge_preserving(self, prior: WatchActionConfigBase) -> LogConfig:
         """Nothing to carry forward: no secrets, the submitted config wins."""

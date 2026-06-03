@@ -1,9 +1,16 @@
+from unittest import mock
+
+import httpx
 import ulid
 from django.test import TestCase
 from django.utils import timezone
 
 from openmagpie_schema.watch import WatchActionInput
 from openmagpie_schema.watch_actions import WebhookConfig
+from openmagpie_schema.watch_enums import WatchActionRunState
+from watches import run_messages
+from watches.actions.protocol import ActionOutcome
+from watches.actions.webhook import WebhookAction
 from watches.models import WatchAction, WatchActionRun
 from watches.policy import PolicyError
 from watches.registry import load_config
@@ -150,3 +157,27 @@ class ActionRunListTests(TestCase):
         succeeded = {str(made[0].id), str(made[2].id)}
         self.assertEqual({str(r.id) for r in self.runs.list_for_action(aid, state="succeeded")}, succeeded)
         self.assertEqual(self.runs.list_for_action(ulid.ulid()), [])
+
+
+class WebhookDeliveryTests(TestCase):
+    """WebhookAction._deliver HTTP-status classification (no DB needed:
+    load_config is pure shape validation on the in-memory action)."""
+
+    def _run_with_status(self, status: int) -> ActionOutcome:
+        action = WatchAction(id=ulid.ulid(), kind="webhook", config={"url": "https://h.example.com/hook"})
+        req = httpx.Request("POST", "https://h.example.com/hook")
+        resp = httpx.Response(status, headers={"Location": "https://elsewhere.example/x"}, request=req)
+        # follow_redirects stays off, so a 3xx is a returned response, not a hop.
+        with (
+            mock.patch("watches.actions.webhook.destination_block_reason", return_value=None),
+            mock.patch("watches.actions.webhook.httpx.post", return_value=resp),
+        ):
+            return WebhookAction().run(action, item_data={"source": "x", "external_id": "1"})
+
+    def test_redirect_is_permanent_error_not_transient(self) -> None:
+        # A 3xx never reaches the receiver and re-redirects on retry, so it's a
+        # permanent misconfig -> ERRORED (not a retryable raise, not SUCCEEDED).
+        outcome = self._run_with_status(302)
+        self.assertEqual(outcome.state, WatchActionRunState.ERRORED)
+        self.assertEqual(outcome.error, run_messages.WEBHOOK_REDIRECT)
+        self.assertEqual(outcome.result["http_status"], 302)

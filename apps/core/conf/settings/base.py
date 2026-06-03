@@ -197,6 +197,20 @@ WATCH_RUN_STALE_SECONDS = int(os.environ.get("WATCH_RUN_STALE_SECONDS", "600"))
 # of headroom if the DB is briefly slow.
 REFRESH_TOKEN_LOCK_TIMEOUT_SECONDS = int(os.environ.get("REFRESH_TOKEN_LOCK_TIMEOUT_SECONDS", "30"))
 
+# Digest delivery: bounds on a digest action's window length. The window
+# open/close is coordinated by select_for_update on the window row (in the
+# enqueueing / flushing transaction), not a cache lock, so it composes with
+# the drain's completion transaction.
+DIGEST_MIN_INTERVAL_SECONDS = int(os.environ.get("DIGEST_MIN_INTERVAL_SECONDS", "60"))
+DIGEST_MAX_INTERVAL_SECONDS = int(os.environ.get("DIGEST_MAX_INTERVAL_SECONDS", str(7 * 86400)))
+# Max items emitted in ONE digest flush. This is the MEMORY/payload bound: the
+# flush loads every batched item's data to build one payload, so the cap is
+# what keeps that bounded. A window with more pending runs drains over
+# successive flushes, cap items each, oldest first ; the window stays open
+# until fully drained. (Separately, the batch's id__in is chunked under the DB
+# parameter ceiling — see common.db.ID_IN_CHUNK — so the cap can exceed it.)
+DIGEST_MAX_BATCH_ITEMS = int(os.environ.get("DIGEST_MAX_BATCH_ITEMS", "500"))
+
 # Single-flight lock for scheduled jobs (SingleFlightCommand): a second
 # run of the same command skips while one is in flight. TTL is purely a
 # CRASH failsafe, set deliberately LONG. A drain pass judges items

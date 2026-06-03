@@ -30,6 +30,10 @@ class WatchActionRun(BaseModel):
         default=WatchActionRunState.PENDING.value,
         help_text=_("WatchActionRunState value"),
     )
+    # When this run becomes relevant (the drain claims scheduled_at <= now).
+    # A run is "digest" not by any field here but by its ACTION having a
+    # WatchActionDigestWindow ; the drain excludes those and the flush
+    # batches them, so digest-ness is the action's property, not the run's.
     scheduled_at = models.DateTimeField(_("scheduled at"), null=True, blank=True)
     started_at = models.DateTimeField(_("started at"), null=True, blank=True)
     completed_at = models.DateTimeField(_("completed at"), null=True, blank=True)
@@ -64,6 +68,15 @@ class WatchActionRun(BaseModel):
             models.Index(fields=["state", "scheduled_at"], name="watchrun_state_sched_idx"),
             # Per-action audit log (magpie watch action runs <id>).
             models.Index(fields=["account_id", "action_id", "id"], name="watchrun_acct_action_idx"),
+            # The digest flush gathers a digest action's PENDING runs ordered
+            # least-tried-then-oldest (WatchActionRunService.digest_batch). This
+            # covers the filter (account, action, state) AND the (attempts, id)
+            # sort, so each capped slice is an index scan + LIMIT with no sort,
+            # even for large multi-slice windows.
+            models.Index(
+                fields=["account_id", "action_id", "state", "attempts", "id"],
+                name="watchrun_digest_gather_idx",
+            ),
         ]
 
     def __str__(self) -> str:
