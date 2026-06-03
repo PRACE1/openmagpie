@@ -16,7 +16,9 @@ from unittest import mock
 
 import ulid
 from django.test import SimpleTestCase, TestCase
+from rest_framework.test import APIClient
 
+from auth_api.operations.signup import SignupOperation
 from feeds.models import Feed
 from feeds.services.polling import FeedPollOperation
 from feeds.services.sources import _hash_spec
@@ -62,6 +64,35 @@ class PollHeartbeatTests(TestCase):
         with mock.patch.object(op, "_poll_source", return_value=(0, 0)) as poll:
             op.run()
         self.assertEqual(poll.call_count, 1)  # stopped, didn't poll the other 4
+
+
+class FeedCreateDryRunTests(TestCase):
+    """The create dry-run reports the would-be source count without
+    persisting anything (the preview feed is built without Source rows, so
+    the count must come from the validated request)."""
+
+    def setUp(self) -> None:
+        self.user = SignupOperation(email="dryrun@example.com", password="Str0ng-Passw0rd!").run()
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    def test_dry_run_reports_submitted_source_count(self) -> None:
+        body = {
+            "name": "f",
+            "kind": "curated",
+            "poll_interval_seconds": 300,
+            "data": {"retention_days": 30},
+            "sources": [
+                {"spec": {"kind": "rss", "url": "https://a.test/rss", "name": "A"}},
+                {"spec": {"kind": "rss", "url": "https://b.test/rss", "name": "B"}},
+            ],
+        }
+        resp = self.client.post("/v1/feeds?dry_run=true", body, format="json")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertTrue(data["dry_run"])
+        self.assertEqual(data["source_count"], 2)  # would-be count, not the persisted 0
+        self.assertEqual(Feed.objects.count(), 0)  # nothing persisted
 
 
 class SpecHashCanonicalTests(SimpleTestCase):
