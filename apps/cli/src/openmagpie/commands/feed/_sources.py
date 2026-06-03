@@ -28,6 +28,7 @@ from pydantic import ValidationError
 from openmagpie_schema.feed import SourceInput, SourceSetPayload
 
 from ... import console
+from ...api.feed import SourceWire
 from ...context import app_ctx
 from .._shared import _check_format, _handle_api_errors, _read_file_or_abort
 from ._apps import feed_app
@@ -119,16 +120,19 @@ def _parse_set_payload(text: str, source_path: str) -> list[SourceInput]:
     raise typer.Exit(code=1)
 
 
-def _print_source(s, *, prefix: str = "  ") -> None:
-    # SourceWire.spec is the typed SourceSpec union (a Pydantic model
-    # instance), not a dict ; `.display()` + `.kind` are on every
-    # variant, so they're the safe accessors.
-    meta = f" meta={s.meta}" if s.meta else ""
-    fm = f" field_map={s.field_map}" if s.field_map else ""
-    console.log(f"{prefix}{s.id} | {s.spec.display()} | {s.spec.kind} | last_event_at={s.last_event_at}{meta}{fm}")
-
-
 # ── list ───────────────────────────────────────────────────────────────
+
+
+# SourceWire.spec is the typed SourceSpec union (a Pydantic model instance),
+# not a dict ; `.display()` + `.kind` are on every variant.
+_SOURCE_COLUMNS: list[console.Column[SourceWire]] = [
+    console.Column("ID", lambda s: s.id),
+    console.Column("SOURCE", lambda s: s.spec.display()),
+    console.Column("KIND", lambda s: s.spec.kind),
+    console.Column("LAST EVENT", lambda s: str(s.last_event_at)),
+    console.Column("META", lambda s: str(s.meta) if s.meta else "-"),
+    console.Column("FIELD MAP", lambda s: str(s.field_map) if s.field_map else "-"),
+]
 
 
 @feed_app.command("list-sources")
@@ -136,12 +140,9 @@ def _print_source(s, *, prefix: str = "  ") -> None:
 def list_sources(feed_id: str = typer.Argument(..., help="Feed id.")) -> None:
     """List the sources attached to a feed."""
     sources = app_ctx().api.feed.list_sources(feed_id)
-    if not sources:
-        console.log("No sources on this feed yet.")
-        return
     console.header(f"{len(sources)} source(s)")
-    for s in sources:
-        _print_source(s)
+    if not console.table(sources, _SOURCE_COLUMNS):
+        console.log("No sources on this feed yet.")
 
 
 # ── remove (single, by id) ─────────────────────────────────────────────

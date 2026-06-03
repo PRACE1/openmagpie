@@ -104,7 +104,26 @@ OS / Python runtime details are intentionally OUT: they're noise on a security U
 
 `MagpieClient.get` / `post` accept an optional `headers` parameter for one-off concerns like the device-flow `X-Device-Secret` polling proof. Resource clients in `api/` build those at the call site rather than threading them through the client.
 
-## Concurrent-safe config writes
+## List output: `console.table`
+
+Every `list`-style view (feeds, watches, sources, action chains, run
+activity, feed items) renders through `console.table(rows, columns)` — the
+default styling. Don't hand-roll `console.log(f"  {a} | {b}")` rows.
+
+- `columns` is a `list[console.Column[T]]`; each `Column(label, render)`
+  pairs a header label with `render(row) -> str`, formatting straight off
+  the typed wire object (`FeedWire`, `WatchActionRunWire`, ...). Annotate the
+  list with the wire type so the lambdas stay typed.
+- `table` prints a labeled header + aligned dashed divider, pads columns to
+  the widest cell so headers line up over values, and returns `False` for an
+  empty set so the caller prints its own empty-state message.
+- Cells are truncated (ellipsis) to `Column.width` (default
+  `_DEFAULT_COL_WIDTH`) so one long value can't blow out the line; set a
+  per-column `width` to let a column run wider.
+- **When a column is the row's pk (`id`), it goes FIRST.** Other identifiers
+  (a source's `external_id`) are not the pk and stay where they read best.
+- Paginated views accumulate the page items into one list, then make a
+  single `table` call + the cursor hint.
 
 `config.save()` uses `tempfile.NamedTemporaryFile` so two concurrent CLI processes can't half-overwrite each other's tokens. Permissions are `0600` from the moment the file is created (not chmod'd after).
 
