@@ -16,7 +16,7 @@ not the parent of a webhook.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 from openmagpie_schema.watch_enums import WatchActionRunState
 from watches.models import WatchAction
@@ -62,3 +62,15 @@ class Action(Protocol):
     kind: str
 
     def run(self, action: WatchAction, *, item_data: dict) -> ActionOutcome: ...
+
+
+@runtime_checkable
+class BatchAction(Protocol):
+    """A DELIVERY action that can emit a digest: one outcome for a batch of
+    items, not one per item. The flush dispatches a digest window through
+    `run_batch`. Only delivery kinds (webhook, log) implement it ; a filter
+    is never digested, so it stays a plain `Action`. `items` are the live
+    `FeedItem.data` dumps (read at flush time, like the instant path's
+    `item_data`), in batch order ; gone items are dropped before this call."""
+
+    def run_batch(self, action: WatchAction, *, items: list[dict]) -> ActionOutcome: ...

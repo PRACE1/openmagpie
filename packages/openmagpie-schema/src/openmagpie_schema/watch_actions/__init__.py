@@ -22,12 +22,14 @@ column, no migration) ; import the public names from here, not the
 submodules.
 """
 
+from ._delivery import DeliveryConfigBase
 from .base import WatchActionConfigBase, WatchActionConfigSummary
 from .log import LogConfig, LogResult
 from .semantic_filter import EngineSpec, SemanticFilterConfig, SemanticFilterResult
 from .webhook import WebhookConfig, WebhookResult
 
 __all__ = [
+    "DeliveryConfigBase",
     "EngineSpec",
     "LogConfig",
     "LogResult",

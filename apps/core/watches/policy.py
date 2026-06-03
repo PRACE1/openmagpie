@@ -15,12 +15,11 @@ from django.conf import settings
 from common.ssrf import destination_block_reason
 from engine import registry as engine_registry
 from openmagpie_schema.watch_actions import (
-    LogConfig,
+    DeliveryConfigBase,
     SemanticFilterConfig,
     WatchActionConfigBase,
     WebhookConfig,
 )
-from openmagpie_schema.watch_enums import WatchActionDelivery
 
 
 class PolicyError(ValueError):
@@ -34,21 +33,24 @@ def enforce_action_policy(config: WatchActionConfigBase) -> WatchActionConfigBas
     settings-coupled policy pass straight through."""
     if isinstance(config, SemanticFilterConfig):
         _enforce_engine_registered(config)
-    elif isinstance(config, WebhookConfig):
-        _reject_unsupported_delivery(config.delivery)
+    if isinstance(config, DeliveryConfigBase):
+        _enforce_digest_interval(config)
+    if isinstance(config, WebhookConfig):
         _enforce_webhook_url_safety(config)
-    elif isinstance(config, LogConfig):
-        _reject_unsupported_delivery(config.delivery)
     return config
 
 
-def _reject_unsupported_delivery(delivery: WatchActionDelivery) -> None:
-    """Only INSTANT delivery runs today. The `delivery` field + DIGEST enum
-    value exist (forward-stable wire shape), but digest windowing isn't
-    built, so a DIGEST config would enqueue runs nothing ever flushes ;
-    reject it at the write boundary until that lands."""
-    if delivery == WatchActionDelivery.DIGEST:
-        raise PolicyError("digest delivery is not supported yet; use instant")
+def _enforce_digest_interval(config: DeliveryConfigBase) -> None:
+    """A digest delivery's window length must be a sane bound (the flush
+    cron's cadence). Only checked when delivery == DIGEST ; instant ignores
+    the field."""
+    if not config.is_digest():
+        return
+    lo, hi = settings.DIGEST_MIN_INTERVAL_SECONDS, settings.DIGEST_MAX_INTERVAL_SECONDS
+    if not (lo <= config.digest_interval_seconds <= hi):
+        raise PolicyError(
+            f"digest_interval_seconds must be between {lo} and {hi} (got {config.digest_interval_seconds})"
+        )
 
 
 def _enforce_webhook_url_safety(config: WebhookConfig) -> None:

@@ -30,6 +30,8 @@ from watches.actions.protocol import ActionOutcome
 from watches.models import WatchAction, WatchActionRun
 from watches.services import WatchActionRunService, WatchActionService
 
+from .advance import enqueue_next
+
 logger = logging.getLogger("watches")
 
 
@@ -76,15 +78,9 @@ class WatchDrainOperation:
             if committed is None:
                 return None  # lost the claim; the fresh winner owns the advance
             if outcome.state == WatchActionRunState.SUCCEEDED and action is not None:
-                nxt = self.action_svc.next_in_chain(action)
-                if nxt is not None:
-                    self.run_svc.enqueue(
-                        watch_id=str(self.action_run.watch_id),
-                        action_id=str(nxt.id),
-                        feed_item_id=str(self.action_run.feed_item_id),
-                        scheduled_at=self.now,
-                        prior_run_id=str(self.action_run.id),
-                    )
+                # Advance to the next action (instant now, or into a digest
+                # window) ; same helper the flush uses, so the path is shared.
+                enqueue_next(self.action_run, action, now=self.now)
         return outcome
 
     def _resolve(self) -> tuple[WatchAction | None, ActionOutcome]:

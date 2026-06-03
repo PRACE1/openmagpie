@@ -10,14 +10,12 @@ from __future__ import annotations
 
 import logging
 
-from pydantic import ValidationError
-
 from openmagpie_schema.watch_actions import LogConfig, LogResult
 from openmagpie_schema.watch_enums import WatchActionKind, WatchActionRunState
 from watches import run_messages
 from watches.models import WatchAction
-from watches.registry import load_config
 
+from ._config import load_typed
 from .protocol import ActionOutcome
 
 logger = logging.getLogger("watches")
@@ -29,18 +27,24 @@ class LogAction:
     kind = WatchActionKind.LOG.value
 
     def run(self, action: WatchAction, *, item_data: dict) -> ActionOutcome:
-        try:
-            config = load_config(action)
-        except ValidationError as exc:
-            logger.exception("log: invalid config for action=%s: %s", action.id, exc)
+        config = load_typed(action, LogConfig, log_label="log")
+        if config is None:
             return ActionOutcome(state=WatchActionRunState.ERRORED, error=run_messages.CONFIG_INVALID)
-        assert isinstance(config, LogConfig)  # registry guarantees by kind
-
         line = _render(config, item_data)
         logger.info(line)
         return ActionOutcome(
-            state=WatchActionRunState.SUCCEEDED,
-            result=LogResult(rendered=line).model_dump(mode="json"),
+            state=WatchActionRunState.SUCCEEDED, result=LogResult(rendered=line).model_dump(mode="json")
+        )
+
+    def run_batch(self, action: WatchAction, *, items: list[dict]) -> ActionOutcome:
+        config = load_typed(action, LogConfig, log_label="log")
+        if config is None:
+            return ActionOutcome(state=WatchActionRunState.ERRORED, error=run_messages.CONFIG_INVALID)
+        lines = [f"{_render(config, item)} ({i + 1}/{len(items)})" for i, item in enumerate(items)]
+        rendered = f"{config.prefix} digest of {len(items)}:\n" + "\n".join(lines)
+        logger.info(rendered)
+        return ActionOutcome(
+            state=WatchActionRunState.SUCCEEDED, result=LogResult(rendered=rendered).model_dump(mode="json")
         )
 
 

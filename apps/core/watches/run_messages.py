@@ -22,6 +22,7 @@ CONFIG_INVALID = "This action's configuration is invalid and can't be run."
 ENGINE_UNAVAILABLE = "The configured engine isn't available on this server."
 WEBHOOK_BLOCKED = "The webhook destination is not allowed by server policy."
 WEBHOOK_REJECTED = "The webhook endpoint rejected the request (check the URL and credentials)."
+WEBHOOK_REDIRECT = "The webhook endpoint returned a redirect; point the URL at its final destination."
 
 # Transient failures (run state FAILED) ; retried until attempts run out.
 TRANSIENT = "A temporary problem occurred while running this action; it will be retried."
@@ -29,3 +30,6 @@ TIMED_OUT = "The run exceeded its time limit and was reset to retry."
 # Terminal: timed out AND ran out of retries (claim won't re-take it). NOT
 # "will retry" ; that lie is exactly what this distinct message exists to avoid.
 TIMED_OUT_EXHAUSTED = "The run repeatedly timed out and has exhausted its retry attempts."
+# Terminal: a digest item kept failing to deliver and ran out of retries (the
+# flush won't re-gather it). Mirrors TIMED_OUT_EXHAUSTED for the batch path.
+TRANSIENT_EXHAUSTED = "This item repeatedly failed to deliver and has exhausted its retry attempts."

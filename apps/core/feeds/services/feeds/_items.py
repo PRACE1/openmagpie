@@ -7,12 +7,14 @@ the judge cycle and detail views need.
 """
 
 import builtins
+import itertools
 import logging
 from collections.abc import Iterable, Iterator
 from datetime import datetime, timedelta
 
 from django.utils import timezone
 
+from common.db import ID_IN_CHUNK
 from common.fields import min_ulid_at
 from feeds.models import Feed, FeedItem
 from sources.payloads import SourcePayload
@@ -136,6 +138,23 @@ class FeedItemService:
         if missing / other-account. The drain loads `item.data` (the stored
         SourcePayload dump) here to hand to an action."""
         return FeedItem.objects.get(id=item_id, account_id=self.account_id)
+
+    def get_many(self, item_ids: Iterable[str], /) -> builtins.dict[str, FeedItem]:
+        """The requested FeedItems by id (account-scoped), as {id: item}.
+        Missing / other-account ids are simply absent from the map (the caller
+        decides what a gone item means). The digest flush uses this to fetch a
+        whole batch's items without an N+1.
+
+        Memory is O(number of ids): the result dict holds every found item, so
+        the CALLER bounds how many ids it passes (the digest flush caps its
+        batch at DIGEST_MAX_BATCH_ITEMS). The `id__in` is chunked only to stay
+        under the DB's per-statement parameter ceiling (common.db.ID_IN_CHUNK)
+        — that bounds the per-statement width, NOT peak memory."""
+        result: builtins.dict[str, FeedItem] = {}
+        for chunk in itertools.batched(item_ids, ID_IN_CHUNK, strict=False):
+            rows = FeedItem.objects.filter(account_id=self.account_id, id__in=chunk)
+            result.update((str(item.id), item) for item in rows)
+        return result
 
     def newest_item_id(self, feed: Feed, /) -> str | None:
         """ULID pk of the newest FeedItem in this feed, or None if empty.

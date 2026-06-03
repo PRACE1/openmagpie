@@ -25,12 +25,14 @@ from collections.abc import Iterable, Iterator
 from datetime import datetime, timedelta
 
 from django.conf import settings
-from django.db.models import F
+from django.db.models import Exists, F, OuterRef
 from django.utils import timezone
 
 from openmagpie_schema.watch_enums import WatchActionRunState
 from watches import run_messages
-from watches.models import WatchActionRun
+from watches.models import WatchActionDigestWindow, WatchActionRun
+
+from ._run_batches import DigestBatchMixin
 
 _PENDING = WatchActionRunState.PENDING.value
 _RUNNING = WatchActionRunState.RUNNING.value
@@ -103,12 +105,24 @@ class WatchActionRunGlobal:
         so a row another drain grabbed in between is simply skipped."""
         ts = now or timezone.now()
         max_attempts = settings.WATCH_RUN_MAX_ATTEMPTS
+        # Exclude runs of DIGEST actions (those with a window row): they're
+        # the flush's, not the per-item drain's. Digest-ness is the action's
+        # property (its window), so it's derived here, not stored per run.
+        # Correlated anti-join (~Exists): one SQL statement, no ids pulled into
+        # Python, short-circuits on first match, no NOT-IN NULL semantics.
+        # Correlated on BOTH account_id and action_id so the subquery rides the
+        # window table's (account_id, action_id) unique index as a full-key
+        # point lookup (action_id alone wouldn't left-prefix-cover it).
+        has_window = Exists(
+            WatchActionDigestWindow.objects.filter(account_id=OuterRef("account_id"), action_id=OuterRef("action_id"))
+        )
         candidates = (
             WatchActionRun.objects.filter(
                 state__in=_CLAIMABLE,
                 attempts__lt=max_attempts,
                 scheduled_at__lte=ts,
             )
+            .filter(~has_window)
             .order_by("scheduled_at")
             .iterator(chunk_size=100)
         )
@@ -121,8 +135,9 @@ class WatchActionRunGlobal:
                 yield run
 
 
-class WatchActionRunService:
-    """Account-scoped run reads + writes (enqueue, complete)."""
+class WatchActionRunService(DigestBatchMixin):
+    """Account-scoped run reads + writes (enqueue, complete). The digest-batch
+    surface (digest_batch / complete_batch / fail_batch) is the mixin."""
 
     Global = WatchActionRunGlobal
 
@@ -143,8 +158,8 @@ class WatchActionRunService:
         """Create a PENDING run for (watch, action, feed_item). Idempotent
         on that triple (unique constraint) ; returns the new run, or None if
         one already exists (so the trigger can re-scan a window safely and a
-        completed run is never re-queued). `scheduled_at` is the due time
-        (now for instant ; a future window-close for digest delivery).
+        completed run is never re-queued). `scheduled_at` is when it's
+        relevant (now for instant ; the window close for a digest action).
 
         Uses get_or_create, not a bare exists()+create: that was TOCTOU (a
         concurrent enqueue of the same triple between the check and the

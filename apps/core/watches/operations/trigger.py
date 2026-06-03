@@ -16,14 +16,18 @@ retained window), and `feeds` never needs to know about its watchers.
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime
 from functools import cached_property
 
+from django.db import transaction
 from django.utils import timezone
 
 from feeds.models import Feed
 from feeds.services import FeedItemService, FeedService
+from openmagpie_schema.watch_actions import DeliveryConfigBase
 from watches.models import Watch
-from watches.services import WatchActionRunService, WatchService
+from watches.registry import load_config
+from watches.services import WatchActionRunService, WatchDigestWindowService, WatchService
 
 logger = logging.getLogger("watches")
 
@@ -66,6 +70,10 @@ class WatchTriggerOperation:
     def feed_item_svc(self) -> FeedItemService:
         return FeedItemService(account_id=self.account_id)
 
+    @cached_property
+    def digest_svc(self) -> WatchDigestWindowService:
+        return WatchDigestWindowService(account_id=self.account_id)
+
     def run(self) -> WatchTriggerResult:
         now = timezone.now()
 
@@ -75,7 +83,21 @@ class WatchTriggerOperation:
         actions = self.watch_svc.initial_actions(self.watch)
         if not actions:
             return WatchTriggerResult(feeds_scanned=0, runs_enqueued=0)
-        first_action_id = str(actions[0].id)
+        head = actions[0]
+        first_action_id = str(head.id)
+        # A digest head has no preceding action to open its window on advance,
+        # so the trigger opens it here — else claim_due (which excludes only
+        # windowed actions) would deliver these rank-0 runs instant instead of
+        # batching them. Opened lazily on the first feed with new items
+        # (`_digest_scheduled_at`), so a no-op cycle doesn't churn a window.
+        head_cfg = load_config(head)
+        if isinstance(head_cfg, DeliveryConfigBase) and head_cfg.is_digest():
+            head_is_digest = True
+            digest_interval = head_cfg.digest_interval_seconds
+        else:
+            head_is_digest = False
+            digest_interval = 0
+        digest_scheduled_at: datetime | None = None
 
         feeds_scanned = 0
         runs_enqueued = 0
@@ -104,18 +126,33 @@ class WatchTriggerOperation:
             if after_id == through_id:
                 continue
 
-            # Not transactional, deliberately: enqueue-before-advance keeps
-            # the watermark from moving past un-enqueued items, and the only
-            # crash gap (enqueued, not advanced) self-heals next cycle since
-            # enqueue_many is idempotent. A transaction would hold one write
-            # lock across the whole chunked backfill.
+            # A digest head: ensure its window is open BEFORE the runs land
+            # (so claim_due excludes them), in its own short txn — opened once
+            # per cycle and shared by every feed. scheduled_at is the window
+            # close, mirroring the advance path. Instant head: scheduled now.
+            if head_is_digest:
+                if digest_scheduled_at is None:
+                    with transaction.atomic():
+                        digest_scheduled_at = self.digest_svc.open_window(
+                            first_action_id, interval_seconds=digest_interval, now=now
+                        )
+                scheduled_at = digest_scheduled_at
+            else:
+                scheduled_at = now
+
+            # The enqueue itself is NOT transactional, deliberately:
+            # enqueue-before-advance keeps the watermark from moving past
+            # un-enqueued items, and the only crash gap (enqueued, not
+            # advanced) self-heals next cycle since enqueue_many is idempotent.
+            # A transaction would hold one write lock across the whole chunked
+            # backfill.
             enqueued = self.run_svc.enqueue_many(
                 watch_id=str(self.watch.id),
                 action_id=first_action_id,
                 feed_item_ids=self.feed_item_svc.iter_item_ids_in_window(
                     feed, after_id=after_id, through_id=through_id
                 ),
-                scheduled_at=now,
+                scheduled_at=scheduled_at,
             )
             self.watch_svc.advance_watermark(watch_feed, last_item_id=through_id)
             runs_enqueued += enqueued

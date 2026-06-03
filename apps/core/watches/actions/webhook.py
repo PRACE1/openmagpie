@@ -3,9 +3,10 @@
 POSTs the item (optionally field-filtered) to the configured URL. A 2xx
 SUCCEEDS the run ; a transient failure (5xx, timeout, connect error)
 propagates so the drain marks it retryable-FAILED ; a permanent one (a
-blocked destination, a 4xx client error) ERRORS the run. Ports the v1
-webhook notifier into the per-item v2 action interface (batching returns
-with digest delivery).
+blocked destination, a 3xx redirect, a 4xx client error) ERRORS the run.
+Redirects are NOT followed (a redirect Location is an unvetted SSRF hop).
+Ports the v1 webhook notifier into the per-item v2 action interface
+(batching returns with digest delivery).
 """
 
 from __future__ import annotations
@@ -15,15 +16,14 @@ from typing import Any
 
 import httpx
 from django.conf import settings
-from pydantic import ValidationError
 
 from common.ssrf import destination_block_reason
 from openmagpie_schema.watch_actions import WebhookConfig, WebhookResult
 from openmagpie_schema.watch_enums import WatchActionKind, WatchActionRunState
 from watches import run_messages
 from watches.models import WatchAction
-from watches.registry import load_config
 
+from ._config import load_typed
 from .protocol import ActionOutcome
 
 logger = logging.getLogger("watches")
@@ -35,22 +35,40 @@ _RETRYABLE_4XX = frozenset({408, 429})
 
 
 class WebhookAction:
-    """POSTs one item to a URL ; gates the run on the HTTP response."""
+    """POSTs items to a URL ; gates the run on the HTTP response. Instant
+    delivery POSTs one item (`run`) ; digest POSTs a batch (`run_batch`)."""
 
     kind = WatchActionKind.WEBHOOK.value
 
     def run(self, action: WatchAction, *, item_data: dict) -> ActionOutcome:
-        try:
-            config = load_config(action)
-        except ValidationError as exc:
-            logger.exception("webhook: invalid config for action=%s: %s", action.id, exc)
+        config = load_typed(action, WebhookConfig, log_label="webhook")
+        if config is None:
             return ActionOutcome(state=WatchActionRunState.ERRORED, error=run_messages.CONFIG_INVALID)
-        assert isinstance(config, WebhookConfig)  # registry guarantees by kind
+        payload = {"action_id": str(action.id), "item": _filtered(item_data, config.include_fields)}
+        return self._deliver(action, config, payload=payload, idempotency_key=_item_key(item_data))
 
+    def run_batch(self, action: WatchAction, *, items: list[dict]) -> ActionOutcome:
+        config = load_typed(action, WebhookConfig, log_label="webhook")
+        if config is None:
+            return ActionOutcome(state=WatchActionRunState.ERRORED, error=run_messages.CONFIG_INVALID)
+        # Each batch item carries its own identity `key` (source:external_id)
+        # in the body, so the receiver dedups PER ITEM — a digest retry
+        # re-gathers all still-pending runs and may mix in new arrivals, so a
+        # batch-level key would rarely match. `key` survives include_fields
+        # (which can strip identity from `item`). No batch Idempotency-Key
+        # header: per-item is the robust contract.
+        payload = {
+            "action_id": str(action.id),
+            "items": [{"key": _item_key(i), "item": _filtered(i, config.include_fields)} for i in items],
+        }
+        return self._deliver(action, config, payload=payload, idempotency_key=None)
+
+    def _deliver(
+        self, action: WatchAction, config: WebhookConfig, *, payload: dict, idempotency_key: str | None
+    ) -> ActionOutcome:
         # Send-time SSRF re-check (resolve_dns=True): the write-time policy
-        # only caught IP literals, so a hostname that resolves to an
-        # internal address is caught here. A blocked destination is a
-        # permanent config defect -> ERRORED, not a retryable FAILED.
+        # only caught IP literals ; a hostname resolving to an internal
+        # address is caught here. A blocked destination is permanent -> ERRORED.
         reason = destination_block_reason(
             config.url,
             require_https=settings.WEBHOOK_REQUIRE_HTTPS,
@@ -61,18 +79,26 @@ class WebhookAction:
             logger.warning("webhook: blocked destination for action=%s: %s", action.id, reason)
             return ActionOutcome(state=WatchActionRunState.ERRORED, error=run_messages.WEBHOOK_BLOCKED)
 
-        payload = {"action_id": str(action.id), "item": _filtered(item_data, config.include_fields)}
-        # Stable per-item idempotency key (NOT per-attempt): a retry re-POSTs
-        # the same key, so a receiver can dedupe at-least-once delivery.
-        headers = {
-            **config.headers,
-            "Idempotency-Key": f"{item_data.get('source', '')}:{item_data.get('external_id', '')}",
-        }
+        headers = dict(config.headers)
+        if idempotency_key is not None:
+            headers["Idempotency-Key"] = idempotency_key
         try:
             response = httpx.post(config.url, json=payload, headers=headers, timeout=settings.WEBHOOK_TIMEOUT_SECONDS)
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
+            # follow_redirects stays False (a redirect Location is an unvetted
+            # SSRF hop), so raise_for_status raises on 3xx too. A redirect is a
+            # permanent misconfig (endpoint moved / wrong URL) — retrying the
+            # same URL just re-redirects — so ERROR it like a permanent 4xx
+            # instead of burning the retry budget.
             status = exc.response.status_code
+            if 300 <= status < 400:
+                logger.warning("webhook: action=%s redirect %s (not followed)", action.id, status)
+                return ActionOutcome(
+                    state=WatchActionRunState.ERRORED,
+                    result=WebhookResult(http_status=status).model_dump(mode="json"),
+                    error=run_messages.WEBHOOK_REDIRECT,
+                )
             if 400 <= status < 500 and status not in _RETRYABLE_4XX:
                 # Permanent client error (bad url / auth / payload): no retry.
                 logger.warning("webhook: action=%s permanent %s", action.id, status)
@@ -93,6 +119,11 @@ class WebhookAction:
             state=WatchActionRunState.SUCCEEDED,
             result=WebhookResult(http_status=response.status_code).model_dump(mode="json"),
         )
+
+
+def _item_key(item_data: dict) -> str:
+    """An item's stable identity for the Idempotency-Key (source:external_id)."""
+    return f"{item_data.get('source', '')}:{item_data.get('external_id', '')}"
 
 
 def _filtered(item_data: dict, include_fields: list[str]) -> dict[str, Any]:
