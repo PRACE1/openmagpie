@@ -1,8 +1,17 @@
 """Cache-backed try-locks.
 
 `named_lock(name, timeout)` is the general primitive: a non-blocking
-mutex keyed by an opaque name. Built on `cache.add` (atomic). Yields
-True iff acquired; caller decides whether to skip, retry, or 409.
+mutex keyed by an opaque name. Built on `cache.add` (atomic). Yields a
+`LockLease` (truthy iff acquired); caller decides whether to skip, retry,
+or 409.
+
+`timeout` is a LIVENESS lease, not a total-work budget: a holder that
+expects to run longer than `timeout` calls `lease.renew()` as it makes
+progress to re-stamp the TTL, so the lock survives a long-but-live run
+while a crashed holder (no more renewals) still frees after one window.
+This is the etcd-lease / Kubernetes-Lease pattern. We do NOT issue fencing
+tokens: on these paths the only cost of a brief overlap is redundant,
+idempotent work (re-polling a source, re-pruning), never corruption.
 
 The feed poll wrapper (`poll_lock`), the feed set-sources wrapper
 (`feed_set_lock`), and the refresh-rotation wrapper (`refresh_token_lock`)
@@ -18,33 +27,69 @@ from django.conf import settings
 from django.core.cache import cache
 
 
+class LockLease:
+    """A held (or missed) `named_lock`. Truthy iff acquired, so `if not
+    lease:` reads naturally for callers that only skip/retry.
+
+    `renew()` extends the lease while we still own the key, turning the
+    fixed `timeout` into a liveness window: renew as you work and the lock
+    outlives any run; stop renewing (crash) and it frees after one window."""
+
+    def __init__(self, *, name: str, token: str, acquired: bool, timeout: int) -> None:
+        self._name = name
+        self._token = token
+        self._timeout = timeout
+        self.acquired = acquired
+
+    def __bool__(self) -> bool:
+        return self.acquired
+
+    def renew(self) -> bool:
+        """Re-stamp the lease TTL iff we still hold it. Returns whether the
+        lease is still ours: False means it expired and another holder took
+        over (the caller should stop). Same owner-token TOCTOU tolerance as
+        release: a momentary overlap is possible but harmless where overlap
+        only costs redundant idempotent work."""
+        if not self.acquired:
+            return False
+        if cache.get(self._name) != self._token:
+            self.acquired = False  # expired under us; someone else owns it now
+            return False
+        cache.set(self._name, self._token, timeout=self._timeout)
+        return True
+
+
 @contextmanager
-def named_lock(*, name: str, timeout: int) -> Iterator[bool]:
-    """Try-lock keyed by `name`. Yields True iff acquired.
+def named_lock(*, name: str, timeout: int) -> Iterator[LockLease]:
+    """Try-lock keyed by `name`. Yields a `LockLease` (truthy iff acquired).
 
     On release, only deletes the cache key if we're still the owner,
     guards against the case where our work outran `timeout`, the key
     auto-expired, another process re-acquired with a fresh token, and
-    our stale `cache.delete` would otherwise clobber theirs.
+    our stale `cache.delete` would otherwise clobber theirs. (A holder that
+    renews as it works avoids that overrun entirely.)
     """
     token = uuid.uuid4().hex
-    acquired = cache.add(name, token, timeout=timeout)
+    acquired = bool(cache.add(name, token, timeout=timeout))
     try:
-        yield bool(acquired)
+        yield LockLease(name=name, token=token, acquired=acquired, timeout=timeout)
     finally:
         if acquired and cache.get(name) == token:
             cache.delete(name)
 
 
-def poll_lock(feed_id: str) -> AbstractContextManager[bool]:
-    """Lock a feed's poll cycle. Yields True iff acquired."""
+def poll_lock(feed_id: str) -> AbstractContextManager[LockLease]:
+    """Lock a feed's poll cycle. Yields a `LockLease`; the poll renews it
+    per source so a feed of any size polls under one continuously-held lock
+    (`POLL_LOCK_TIMEOUT_SECONDS` is the inter-source liveness window, not a
+    cap on total poll time)."""
     return named_lock(
         name=f"feed_poll_lock:{feed_id}",
         timeout=settings.POLL_LOCK_TIMEOUT_SECONDS,
     )
 
 
-def feed_set_lock(feed_id: str) -> AbstractContextManager[bool]:
+def feed_set_lock(feed_id: str) -> AbstractContextManager[LockLease]:
     """Serialize concurrent `SourceService.set_sources` on one feed.
 
     Two operators racing `magpie feed set-sources` on the same feed
@@ -59,7 +104,7 @@ def feed_set_lock(feed_id: str) -> AbstractContextManager[bool]:
     )
 
 
-def path_chain_lock(path_id: str) -> AbstractContextManager[bool]:
+def path_chain_lock(path_id: str) -> AbstractContextManager[LockLease]:
     """Serialize chain mutations on one WatchPath (add / remove / replace).
 
     Rank uniqueness is per-path (`unique(account_id, path_id, rank)`), so
@@ -75,7 +120,7 @@ def path_chain_lock(path_id: str) -> AbstractContextManager[bool]:
     )
 
 
-def job_lock(name: str) -> AbstractContextManager[bool]:
+def job_lock(name: str) -> AbstractContextManager[LockLease]:
     """Single-flight a scheduled job (a management command) by name.
 
     Skip-if-held: yields True iff acquired ; a run that finds a prior pass
@@ -92,7 +137,7 @@ def job_lock(name: str) -> AbstractContextManager[bool]:
     )
 
 
-def refresh_token_lock(refresh_token: str) -> AbstractContextManager[bool]:
+def refresh_token_lock(refresh_token: str) -> AbstractContextManager[LockLease]:
     """Serialize concurrent refresh-token rotations for a single token.
 
     Hashed so the raw token value never appears as a cache key (db cache

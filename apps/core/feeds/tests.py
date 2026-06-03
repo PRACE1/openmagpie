@@ -11,10 +11,57 @@ spec_hash)` unique constraint is the dedup key on set_sources, so
 a silent hash drift would break re-imports.
 """
 
-from django.test import SimpleTestCase
+from types import SimpleNamespace
+from unittest import mock
 
+import ulid
+from django.test import SimpleTestCase, TestCase
+
+from feeds.models import Feed
+from feeds.services.polling import FeedPollOperation
 from feeds.services.sources import _hash_spec
 from openmagpie_schema.configs import RedditSubredditSourceSpec, RssSourceSpec
+
+
+class PollHeartbeatTests(TestCase):
+    """The poll loop renews its lease per source (so a large feed polls under
+    one held lock) and stops early if the lease is lost."""
+
+    def _op_over_n_sources(self, n: int, *, heartbeat) -> FeedPollOperation:
+        feed = Feed.objects.create(account_id=ulid.ulid(), user_id=ulid.ulid(), name="f", kind="curated", data={})
+        op = FeedPollOperation(feed, heartbeat=heartbeat)
+        sources = [
+            SimpleNamespace(id=f"s{i}", spec={"kind": "rss", "url": f"https://x{i}.test/rss", "name": f"s{i}"})
+            for i in range(n)
+        ]
+        # Inject fake sources before the cached_property fires (no DB rows).
+        op.__dict__["source_svc"] = SimpleNamespace(list=lambda _feed: sources)
+        return op
+
+    def test_heartbeat_called_once_per_source(self) -> None:
+        calls = {"n": 0}
+
+        def hb() -> bool:
+            calls["n"] += 1
+            return True
+
+        op = self._op_over_n_sources(3, heartbeat=hb)
+        with mock.patch.object(op, "_poll_source", return_value=(0, 0)):  # no HTTP
+            op.run()
+        self.assertEqual(calls["n"], 3)
+
+    def test_lost_lease_stops_the_cycle_early(self) -> None:
+        # Lease reported lost after the first source -> the loop must stop.
+        calls = {"n": 0}
+
+        def hb() -> bool:
+            calls["n"] += 1
+            return calls["n"] <= 1
+
+        op = self._op_over_n_sources(5, heartbeat=hb)
+        with mock.patch.object(op, "_poll_source", return_value=(0, 0)) as poll:
+            op.run()
+        self.assertEqual(poll.call_count, 1)  # stopped, didn't poll the other 4
 
 
 class SpecHashCanonicalTests(SimpleTestCase):
