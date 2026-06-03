@@ -15,9 +15,9 @@ When working in `apps/core/`, `apps/cli/`, or `web/`, load the matching `AGENTS.
 An open-source semantic listener. Tell it what to listen for; it picks out what matters from any stream and learns over time.
 
 Three things stay pluggable across the codebase:
-- **Connectors** (Reddit, GitHub, GDocs, Slack, ...) — yield typed `Observation` subclasses from each source
-- **Engines** (Ollama, future Anthropic/OpenAI/keyword) — BYO LLM that judges an Observation against a Listener
-- **Notifiers** (webhook, log, future Slack/email) — deliver hits as side effects
+- **Connectors** (Reddit, GitHub, GDocs, Slack, ...) — yield typed `SourcePayload` subclasses from each source
+- **Engines** (Ollama, future Anthropic/OpenAI/keyword) — BYO LLM that judges a `SourcePayload` for a semantic-filter action
+- **Action kinds** (semantic_filter, webhook, log, future keyword/Slack/email) — the steps a Watch runs over each feed item: filter, then deliver
 
 The product is **only** a listener: watches, judges, learns, notifies. It does NOT auto-reply, post back to sources, run workflows, or generate reports. Scope test: if a feature isn't listening / learning / notifying, it's out.
 
@@ -35,11 +35,12 @@ pyproject.toml + uv.lock    uv workspace root (one lock for all members)
 
 ## Naming (cross-cutting domain vocabulary)
 
-- The unit of attention is a **`Listener`**. Not Context, not Brief, not Beat.
-- An ingested hit is an **`Event`** (Django model). The in-memory typed version is an **`Observation`** (Pydantic).
+- The unit of attention is a **`Watch`**: a subscription over a set of feeds plus an ordered chain of actions. "Listener" survives as the product pitch ("a Watch is a listener"), not a code-level node name.
+- A polled item is a **`FeedItem`** (persisted Django row). The in-memory typed version a connector produces is a **`SourcePayload`** (Pydantic).
+- A single action executing against one feed item is a **`WatchActionRun`** (the audit row). There is no `Event` / hit model; a successful filter is just a `WatchActionRun` that advanced the chain.
 - Source connectors are named for the variant: **`RedditSubRedditConnector`** (kind=`"reddit_subreddit"`). Future Reddit variants get their own connector + kind.
-- Events from sources are named for *what happened*: **`NewRedditPostObservation`** (`EVENT_KIND="new_post"`).
-- The relevance verdict is a **`JudgmentResult`** (in-memory dataclass; no `Judgment` model yet).
+- Payloads from sources are named for *what happened*: **`NewRedditPostPayload`** (`PAYLOAD_KIND="new_post"`).
+- An action's typed result is a per-kind model: **`SemanticFilterResult`** (`{passed, score, reason}`), `WebhookResult`, `LogResult`.
 
 ## Cross-cutting code rules
 
@@ -49,7 +50,7 @@ pyproject.toml + uv.lock    uv workspace root (one lock for all members)
 
 ## Stack
 
-Current v0: **Django + SQLite. That's it.** Postgres-swap is one settings change away if scale demands it.
+**Django + SQLite. That's it.** Postgres-swap is one settings change away if scale demands it.
 
 - Web: pnpm + Next.js 16 + React 19 + Tailwind v4 + zod.
 - CLI: Typer + httpx + Pydantic.

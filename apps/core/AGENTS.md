@@ -6,20 +6,37 @@ Conventions for the Django backend. Cross-cutting rules live in [../AGENTS.md](.
 
 ```
 core/
-  common/          BaseModel (ULID PK + timestamps), ULIDField, /healthz view
+  common/          BaseModel (ULID PK + timestamps), ULIDField, locks, db ceilings, /healthz view
   accounts/        User (email login), Account, UserProfile + services/
   auth_api/        DRF auth surface: signup / login / logout / me + tokens/* + device-sessions/*
   sources/         Connectors (RedditSubRedditConnector, ...) + SourcePayload hierarchy + per-(source,kind) registry
   feeds/           Feed + Source + FeedItem models, poll orchestrator, item log
   engine/          Engine Protocol + OllamaEngine + registry
+  watches/         Watch + WatchFeed + WatchPath + WatchAction + WatchActionRun + WatchActionDigestWindow
   conf/            settings (base + local override), urls, wsgi
 ```
 
-The v2 `watches/` app (Watch + WatchPath + Action + ActionRun + WatchCursor
-primitives, the side-effect chain a watch runs over a feed's items) lands in a
-later v2 commit. Sections below that still describe the legacy
-Listener / Event / notifier pipeline are SUPERSEDED and will be rewritten when
-`watches/` lands; treat them as historical until then.
+A **Watch** is a subscription over a set of feeds plus an ordered chain of
+**actions** run against each new feed item (a filter is one action kind, a
+delivery is another). The `watches/` sub-structure:
+
+```
+watches/
+  models/                 one file per model (Watch, WatchFeed, WatchPath, WatchAction, WatchActionRun, WatchActionDigestWindow)
+  services/
+    watches/              WatchService (+ _actions.py chain ops, _global.py cross-tenant)
+    runs.py               WatchActionRunService (enqueue / claim / complete) + Global
+    _run_batches.py       DigestBatchMixin (digest_batch / complete_batch / fail_batch)
+    digest.py             WatchDigestWindowService (window open/close coordination) + Global
+  actions/                EXECUTION registry: protocol.py (Action / BatchAction), registry.py (kind -> impl),
+                          semantic_filter.py / webhook.py / log.py, _config.py (load_typed)
+  operations/             one-shot orchestrators: trigger.py, drain.py, digest_flush.py, advance.py (enqueue_next)
+  registry.py             CONFIG registry: kind -> Pydantic config class (parse / validate / load_config)
+  policy.py               write-time guards (engine registered, digest interval bound, webhook SSRF)
+  run_messages.py         operator-facing WatchActionRun.error strings (sanitized; raw cause -> logs)
+  management/commands/    process_due_watches (trigger) / process_due_runs (drain) / process_due_digests (flush)
+  api.py / views.py / serializers.py / urls.py / constants.py
+```
 
 ## File shape per app
 
@@ -29,7 +46,7 @@ Listener / Event / notifier pipeline are SUPERSEDED and will be rewritten when
   models/<model>.py         # Django models (no admin)
   apps.py                   # may have ready() to load registries
   migrations/
-  tests.py
+  tests.py                  # split into tests_<topic>.py when it nears the 350-line cap
   views.py                  # only if the app exposes HTTP
 ```
 
@@ -37,135 +54,156 @@ Apps are created with `python manage.py startapp <name>` inside the container (`
 
 ## Models & data access
 
-- **Every model inherits `common.models.BaseModel`** → ULID primary key + `created_at` + `updated_at`.
+- **Every model inherits `common.models.BaseModel`** -> ULID primary key + `created_at` + `updated_at`.
 - **Order by the ULID PK, never `created_at`.** ULIDs are lexicographically sortable by creation time (the timestamp is the high bits), so `order_by("-id")` is newest-first using the indexed primary key. `created_at` is a redundant sort key with worse properties (timestamp ties, clock skew, an extra index). Use `id` for chronological ordering; `created_at`/`updated_at` are for display/audit, not sorting.
-- **No `ForeignKey`. Char pointers only.** Cross-model references are `CharField(max_length=26)` named `<thing>_id`. Stale data is OK; no cascades; no auto-indexes. Add `db_index=True` only when a specific lookup needs it.
+- **No `ForeignKey`. Char pointers only.** Cross-model references are `CharField(max_length=26)` named `<thing>_id`. Stale data is OK; no cascades; no auto-indexes. Add `db_index=True` only when a specific lookup needs it. Because there is no cascade, a service that deletes a parent owns the cleanup of its children (e.g. `WatchService.delete` removes the watch's feeds, paths, actions, runs, AND digest-window rows in one transaction).
 - **No direct `Model.objects.*` outside the model's owning service module.** All access goes through `<app>/services/<resource>.py`.
-- **Services are classes, not loose module functions.** One class per primary entity (e.g. `ListenerService`, `EventService`, `DeliveryService`). Instance methods for account-scoped operations; a nested `class Global:` (with `@staticmethod` methods) for cross-tenant operations.
+- **Services are classes, not loose module functions.** One class per primary entity (e.g. `WatchService`, `WatchActionService`, `FeedService`). Instance methods for account-scoped operations; a nested `class Global:` (with `@staticmethod` methods) for cross-tenant operations.
 - **Account-scoped services bind their scope in `__init__`** and raise `ValueError` if `account_id` is missing or empty. Methods then drop the `account_id=` kwarg; `self.account_id` is the single source of truth. Scoped services also assert that incoming domain objects match `self.account_id` (defense-in-depth at the seam; `ValueError` if a foreign-account object is handed in).
-- **System-level operations live under `<Service>.Global`** as static methods. These are the only place cross-tenant queries happen; reach for them sparingly (schedulers, admin / debug entry points).
-- **One-shot orchestrators are `Operation` classes**, not `Service` classes. Pattern: build with the domain object, call `.run()` once, discard. Use this when an action has internal state across helpers (counters, watermarks) and would otherwise force every helper to thread the same args. Examples: `FeedPollOperation(feed).run()` (poll a feed's streams), `JudgeListenerOperation(listener).run()` (judge a listener's new feed items). The `Service` suffix stays reserved for reusable, account-scoped services; `Operation` signals "single-use, not reusable."
+- **System-level operations live under `<Service>.Global`** as static methods. These are the only place cross-tenant queries happen; reach for them sparingly (schedulers, admin / debug entry points). The drain's `WatchActionRunService.Global.claim_due` and `WatchDigestWindowService.Global.iter_due` are the cross-tenant scans the crons drive.
+- **One-shot orchestrators are `Operation` classes**, not `Service` classes. Build with the domain object, call `.run()` once, discard. Use this when an action has internal state across helpers (counters, watermarks) and would otherwise force every helper to thread the same args. Examples: `FeedPollOperation(feed).run()` (poll a feed's sources), `WatchTriggerOperation(watch).run()` (enqueue runs for new feed items), `WatchDrainOperation(run).run()` (execute one claimed run), `WatchDigestFlushOperation(window).run()` (emit one digest batch). The `Service` suffix stays reserved for reusable, account-scoped services; `Operation` signals "single-use, not reusable."
 - **Operations instantiate scoped services internally** from the domain object's `account_id`; callers just hand in a domain object. Service constructions belong on `@cached_property` so `__init__` stays validation-only.
-- **Function-shaped wrappers** (e.g. `judge_listener(listener)`, `poll_feed(feed)`) may exist alongside an Operation for callers that prefer the function form (mgmt commands, scripts). The wrapper is small: it enters `poll_lock(...)`, returns `None` on contention (caller records a skip), and otherwise runs `Operation(...).run()`.
 - **`get`/`get_by_<field>` raise `DoesNotExist`.** Never return `None`. Type stays `-> Model`; callers handle missing via `try/except`. If "might not exist" is the normal path, add a separate `find_by_<field>` returning `Model | None`.
 - **Return iterators for collections.** Use `.iterator(chunk_size=N)`; callers `list(...)` if they need to materialize. Bulk writes use `.bulk_create()` / `.bulk_update()`.
-- **Every query hits an index.** Every column in a service WHERE must be indexed via `db_index=True`, a `UniqueConstraint`, or `Meta.indexes`. Don't add an explicit index if a `UniqueConstraint` already left-prefix-covers the read path.
+- **Chunk `id__in` / bulk lists under the DB parameter ceiling.** Backends cap host parameters per statement (`common.db.ID_IN_CHUNK`); chunk with `itertools.batched(ids, ID_IN_CHUNK, strict=False)`. This bounds the per-statement width, not peak memory; bound memory separately (e.g. `DIGEST_MAX_BATCH_ITEMS` caps a digest batch before it's loaded).
+- **Every query hits an index.** Every column in a service WHERE must be indexed via `db_index=True`, a `UniqueConstraint`, or `Meta.indexes`. Don't add an explicit index if a `UniqueConstraint` already left-prefix-covers the read path. Correlate cross-table subqueries on the full key so they ride an existing index (e.g. `claim_due`'s `~Exists` over the digest-window table correlates on `(account_id, action_id)`, the window's unique key).
 
 ### Call-site shape
 
 ```python
 # Account-scoped (the common case)
-svc = ListenerService(account_id=account_id)
-listener = svc.get(id)
-svc.advance_judge_cursor(listener, item_id=...)
+svc = WatchService(account_id=account_id)
+watch = svc.get(id)
+actions = svc.action_svc.list_for_path(watch.initial_path_id)
 
 # Cross-tenant (rare; scheduler, admin)
-for listener in ListenerService.Global.list_active():
+for watch in WatchService.Global.iter_active():
     ...
 for feed in FeedService.Global.list_due_for_poll(now=now):
     ...
+for run in WatchActionRunService.Global.claim_due(now=now):
+    ...
 
-# One-shot Operation (recommended)
-result = JudgeListenerOperation(listener).run()
-
-# Or the function-shaped wrapper (locked; identical behavior)
-result = judge_listener(listener)
+# One-shot Operations (the crons)
+WatchTriggerOperation(watch, now=now).run()       # enqueue runs for new items
+WatchDrainOperation(run, now=now).run()           # execute one claimed run
+WatchDigestFlushOperation(window, now=now).run()  # emit one digest batch
 ```
 
 ## Scoping
 
 - **Every domain model carries `account_id` + `user_id`.** `User` and `Account` themselves are exempt; they *are* those entities.
 - **Every account-scoped service query filters by `self.account_id`.** Cross-tenant data leakage is impossible by construction. The only escape hatch is `<Service>.Global.*` for explicit system-level ops.
+- **Unique constraints are `account_id`-first** so an account-scoped read rides the constraint's backing index as a left-prefix. As shipped: `(account_id, watch_id, feed_id)` on WatchFeed; `(account_id, path_id, rank)` on WatchAction; `(account_id, watch_id, action_id, feed_item_id)` on WatchActionRun; `(account_id, action_id)` on WatchActionDigestWindow. The `(state, scheduled_at)` drain index on WatchActionRun is deliberately account-agnostic (the drain is a global scan).
 
 ## Types
 
 - All service functions, manager methods, helpers: fully type-annotated.
 - `django-stubs` is installed so ty resolves `.objects`, manager generics, and field descriptors. When something still trips ty, fix it properly: explicit `ClassVar[Manager[Self]]` annotation, `cast()` at the field boundary, or a small helper in `common/`. `# type: ignore` is a last resort with the specific rule name, used only when no principled fix exists.
+- Generic helpers use PEP 695 type parameters (`def load_typed[T: WatchActionConfigBase](...)`), not `TypeVar`.
 - Run `make dev-types` before declaring done. Don't reach for `# type: ignore`, `# noqa`, or workarounds to make checks pass; find the root cause.
 
-## Typed-blob pattern (Feed, Listener & Event)
+## Typed-blob pattern (Feed, WatchAction, WatchActionRun)
 
-Each model carries queryable common fields top-level + a `data: JSONField` whose schema is owned by a Pydantic class (registered per `kind`).
+Each model carries queryable common fields top-level + a `data`/`config`/`result` `JSONField` whose schema is owned by a Pydantic class (registered per `kind`). The shared classes live in `packages/openmagpie-schema` so the server and CLI validate against one definition.
 
-- **`Feed.data`** is validated by a Pydantic config keyed off `Feed.kind` (see `feeds.registry`). v1 kind is `"curated"` → `CuratedFeedConfig` (retention + default_field_map). The actual source set lives on `feeds.Source` rows; each row owns its own watermark. The Feed owns the poll loop.
-- **`Listener.data`** is validated by a Pydantic config keyed off `Listener.kind` (see `listeners.registry`). v1 kind is `"semantic"` → `SemanticListenerConfig` (feed_id + filter + engine + notifiers). A listener is an *attention over a Feed*; it does not own sources.
-- **`Event.data`** is the FeedItem snapshot the hit was judged from (a full `Observation.model_dump()`). `events.registry.hydrate(event)` returns the typed Observation. `Event.kind` is the event-type discriminator (`"hit"` today); a hit is one kind of event.
-- **`FeedItem.data`** is the full `Observation.model_dump()` of a polled item (the browsable log; all items, not hit-only). `FeedItem.source_kind` / `source_label` / `source_meta` denormalize the producing Source row for cheap read paths.
-- **Queryable fields stay top-level**: scoping, dedup keys, delivery state (`delivered_at`), the judgment cursor (`Listener.last_judged_item_id`).
-- **Within-kind source identifiers** (subreddit, repo) live inside `Observation.data`, accessed via `Observation.source_slug()`; notifier batching groups hits by `(source_kind, source_slug)`.
+- **`Feed.data`** is validated by a Pydantic config keyed off `Feed.kind` (see `feeds.registry`). v1 kind is `"curated"` -> `CuratedFeedConfig` (retention + default_field_map). The actual source set lives on `feeds.Source` rows; each row owns its own watermark. The Feed owns the poll loop.
+- **`WatchAction.config`** is the PURE kind-specific blob; the discriminator `kind` is a sibling column, NOT nested in the blob (k8s-style adjacent tag). Validated by `watches.registry` (kind -> config class): `semantic_filter` -> `SemanticFilterConfig`, `webhook` -> `WebhookConfig`, `log` -> `LogConfig`. Per-kind classes carry a `CONFIG_KIND` ClassVar and no `kind` field. Validation is a registry dict, NOT a Pydantic discriminated union.
+- **`WatchActionRun.result`** is the kind-specific result blob (validated per kind), stored for the run audit: `SemanticFilterResult {passed, score, reason}`, `WebhookResult {http_status}`, `LogResult {rendered}`.
+- **`FeedItem.data`** is the full `SourcePayload.model_dump()` of a polled item (the browsable log; all items). `FeedItem.source_kind` / `source_label` / `source_meta` denormalize the producing Source row for cheap read paths. Actions read live `FeedItem.data` at run time (the run row stores no item snapshot).
+- **Secret-bearing configs** (webhook url + header values) implement `redacted_dump()` (mask on read) and `merge_preserving()` (restore an unchanged masked secret from the prior row on edit). The server never returns a real secret; an edit that submits a still-masked secret with no same-kind prior to restore from is rejected.
 
-## Pipeline: the Feed polls, the Listener judges
+## Watch execution model: trigger -> drain -> flush
 
-Two stages, two cadences. The **Feed** polls its sources and persists **every** item as a `FeedItem` (the browsable log, retention-windowed). The **Listener** judges new items; an `Event` (kind=`"hit"`) exists **only** when the engine judged an item relevant. Misses produce no Event and aren't re-judged (the listener's cursor advances past them).
+A `WatchActionRun` is ONE action against ONE FeedItem. Three cron stages, each a `SingleFlightCommand` (a pass that outruns its interval self-skips instead of stacking), each backed by `common.locks.job_lock`:
 
 ```
-# stage 1 — the Feed polls (poll_due_feeds; per-feed lock)
-for feed in FeedService.Global.list_due_for_poll(now):
-    config = feeds.registry.load_config(feed)            # CuratedFeedConfig
-    for source in SourceService(account_id=...).list(feed):
-        connector = sources.registry.get(source.kind)
-        spec = SourceSpec.model_validate(source.spec)
-        obs = list(connector.poll(spec, since=source.last_event_at))
-        SourceService(account_id=...).advance_watermark(source, newest)   # per-row
-        feeds.services.record_items(feed, source_label=..., source_meta=..., observations=obs)
-    update_poll_state(feed) + prune_items(retention_days)
+# stage 1 — TRIGGER (process_due_watches): enqueue rank-0 runs for new items
+for watch in WatchService.Global.iter_active():
+    for feed in subscribed feeds:
+        scan FeedItem.id > WatchFeed.last_item_id
+        enqueue a PENDING run for the path's rank-0 action per item   # idempotent on (account, watch, action, feed_item)
+        advance WatchFeed.last_item_id
 
-# stage 2 — Listeners judge (judge_listeners; all active, per-listener lock)
-for listener in ListenerService.Global.list_active():
-    config = listeners.registry.load_config(listener)     # SemanticListenerConfig
-    feed   = FeedService(...).get(config.feed_id)
-    for item in FeedItems(feed) with id > listener.last_judged_item_id matching config.filter:
-        if engine.judge(hydrate_data(item.data), listener).score >= config.hit_threshold:
-            event = events.services.persist_hit(item, listener, score)   # Event(kind="hit")
-            if listener.delivery_mode == INSTANT:
-                notifications.deliver_instant(event, obs, listener, config)
-    advance listener.last_judged_item_id                  # so misses aren't re-judged
+# stage 2 — DRAIN (process_due_runs): execute due per-item runs
+reap_stale()                                   # RUNNING past WATCH_RUN_STALE_SECONDS -> FAILED (crashed worker)
+for run in claim_due():                         # CAS PENDING/FAILED -> RUNNING, attempts += 1; excludes digest actions
+    outcome = registry.get(action.kind).run(action, item_data=item.data)
+    complete(run, outcome)                      # guarded CAS write
+    if outcome.state == SUCCEEDED: enqueue_next(run, action)   # advance to next rank (instant: now; digest: window close)
+
+# stage 3 — FLUSH (process_due_digests): emit accumulated digest windows
+for window in WatchDigestWindowService.Global.iter_due():
+    WatchDigestFlushOperation(window).run()     # gather the action's pending runs (capped), run_batch, complete, advance, close-if-drained
 ```
 
-Forward-looking by default. A `Source` row with `last_event_at=None` is rejected by policy at save time; the create / set path defaults it to wall-clock now, so the first poll records zero items and the next cadence catches whatever's accumulated since.
+- **"Due" = `state == PENDING AND scheduled_at <= now`** (the `(state, scheduled_at)` index). Instant delivery stamps `scheduled_at = now`; a digest successor is stamped the window close. Flushing is clock-driven, never an item arrival.
+- **The row IS the lock at both ends.** `claim_due` and `complete` are compare-and-swap UPDATEs keyed on `(state, attempts)`: overlapping drains can't double-execute, and a drain whose claim was reaped + re-taken mid-run can't double-complete (its stale write matches no row, returns None, never advances the chain). `attempts < WATCH_RUN_MAX_ATTEMPTS` bounds retries; the reaper recovers crashed RUNNING rows.
+- **Failure taxonomy.** `SUCCEEDED` -> advance the chain. `GATED` -> ran cleanly but halts the chain (a semantic filter scoring below threshold; not a failure). `ERRORED` -> permanent defect the impl detected (deleted action / pruned item / unknown kind / blocked webhook / 3xx-4xx) -> no retry. `FAILED` -> transient (5xx / timeout); retried while under the attempts cap, then terminal. `SKIPPED` -> deliberate non-run. Impls return SUCCEEDED / GATED / ERRORED; they raise only on UNEXPECTED failure, which the drain maps to retryable FAILED. `run.error` is a sanitized `run_messages` string; the raw cause goes to the logs keyed by run id.
+- **The expensive leg runs OUTSIDE any transaction** (the LLM judge, the webhook POST). Only the terminal write + the next-action enqueue share one short atomic block, so a SUCCEEDED run and its successor commit together without holding a lock across the network call.
 
-Operators who want backfill pass an explicit past `last_event_at` on the source row at create time. There is no implicit "scan all history" mode; if you want history, you ask for it by date.
+## Action chain rules
 
-**No surprise multi-hour cold-starts.** Creating a feed never enqueues an hours-long fetch on day one; deep history would be a separate feature with its own state model, not smuggled into the watermark.
+- **Actions belong to a `WatchPath`, ordered by a dense integer `rank`** (0..N-1, unique `(account_id, path_id, rank)`). Chain entry is `rank == 0`; "next" is the smallest rank strictly greater (gap-safe, not `rank + 1`). v1 creates exactly one path per watch; `Watch.initial_path_id` points at it. A watch subscribes to a SET of feeds (`WatchFeed` rows, each with its own `last_item_id` watermark).
+- **All three chain mutators take `path_chain_lock(path_id)`**: `add`, `set_config` (only for a digest edit; see below), `remove`, and `replace_chain`. HARD RULE: acquire the lock OUTSIDE the transaction (`with lock: with atomic:`); a lock released before commit corrupts. So `WatchService.create`/`update` run `replace_chain` OUTSIDE their scalar+feed transaction (an edit is two scopes). Loser of the lock -> `ConcurrentChainError` -> 409.
+- **`replace_chain` is an upsert by action id** (Terraform `for_each`, not `count`): a spec with a known `id` updates that row in place (id + run history + secret survive), no id mints a new action, an absent row is deleted, ranks renumber densely. This is what makes a reorder safe and keeps the secret with its own endpoint.
+- **A digest delivery can't be the chain head (rank 0)** in v1 (the trigger bulk-enqueues rank-0 runs with no window). The guard (`_enforce_head_not_digest`) is re-checked from the freshly-listed chain inside every mutator's transaction, including `remove` (which can promote the next action) and `set_config` (which re-reads the row's rank under the chain lock so a concurrent renumber can't slip a digest to the head).
+- **Moving an action off digest (or removing it) drops its `WatchActionDigestWindow` row.** `claim_due` excludes a run while its action has a window row, so a lingering window strands the now-instant runs PENDING forever.
 
-## Notifications & delivery state
+## Delivery: instant vs digest
 
-- **Notifier specs embedded in `Listener.data.notifiers`** (Pydantic discriminated union over `kind`). Promote to a shared `SideEffect` model only when real cross-listener URL duplication shows up.
-- **`Event.delivered_at`** = pending if null, set on success. Failures leave it null; the next pass retries.
-- **`Listener.delivery_mode`** is `Listener.DeliveryMode.INSTANT` or `.DIGEST` (queryable, indexed alongside `next_digest_at`):
-  - **Instant**: notifier fires inline after `persist_hit`; `delivered_at` set on full success.
-  - **Digest**: hits accumulate. `deliver_due_digests` scheduler batches pending Events for each listener into one payload per notifier, bulk-marks delivered on success. Implicit retry via `next_digest_at`, failure leaves the high-water mark untouched, so the next cycle re-batches.
-- **Webhook payload groups hits by `{source}:{slug}`** (slug from `Observation.source_slug()`). One payload per batch.
-- **`NotifierSpec.include_fields`**: empty list = include full Observation dump (minus scoping); explicit list = whitelist.
+- **`delivery` is a config field on the delivery kinds** (webhook, log), shared via `DeliveryConfigBase` (`delivery: instant|digest` + `digest_interval_seconds`). `semantic_filter` is a filter, not a delivery, so it doesn't carry these. The presence rule (DIGEST requires a positive interval) is a pure invariant in the shared schema; the magnitude bound (min/max seconds) is settings-coupled and lives in `policy`.
+- **A digest is the ACTION's property, not the run's** — there is no per-run digest flag. A run is "digest" iff its action has a `WatchActionDigestWindow` row. The window is a FIXED window anchored at first arrival (`close_at = now + interval`; later arrivals join without extending it). Window open/close is coordinated by `select_for_update` on the window row INSIDE the caller's transaction (a cache lock can't live in the drain's completion txn).
+- **The flush gathers the action's pending runs as the batch** (capped at `DIGEST_MAX_BATCH_ITEMS`; a larger window drains over successive flushes), emits once via the impl's `run_batch` (webhook: one POST with per-item `key`s for receiver dedup; log: one entry), marks them succeeded + advances each, then closes the window iff drained (re-checked under the row lock so a straggler during emit isn't orphaned). A transient batch failure burns one attempt per run (the digest analog of the claim-time cap) so a down destination drains to terminal instead of re-emitting forever.
+- **Digest delivery is at-least-once by design**: the emit is OUTSIDE the terminal transaction, so a crash after a successful emit but before the commit re-emits next flush. Webhook carries a per-item idempotency `key`; a duplicate log line is harmless. Receivers MUST dedup on the key.
 
-## Plugins (connectors, engines, notifiers)
+## Plugins (connectors, engines, actions)
 
 Same shape inside each owning app:
 ```
 app/
   <thing>s/
-    base.py        # Protocol + shared DTOs
-    <impl>.py      # concrete plugins
-  registry.py      # name → instance
+    protocol.py / base.py   # Protocol + shared DTOs
+    <impl>.py               # concrete plugins
+  registry.py               # name -> instance
 ```
 
 - Adding a new plugin = one file + one registry entry.
-- Connector classes declare both `kind: str` and `payloads: list[type[SourcePayload]]`. The `register(...)` call at the bottom of the connector module references the class attrs; no string duplication.
+- Connector classes declare both `kind: str` and `payloads: list[type[SourcePayload]]`; the `register(...)` call references the class attrs (no string duplication).
 - App `ready()` hooks import the registry so plugins self-register at Django startup, not lazily.
+- **Action kinds have TWO registries, kept separate**: the CONFIG registry (`watches.registry`, kind -> Pydantic config class, validation) and the EXECUTION registry (`watches.actions.registry`, kind -> runnable `Action` impl). An action impl declares `kind` and implements `run(action, *, item_data)`; delivery kinds also implement `BatchAction.run_batch(action, *, items)` for digests.
 
 ## HTTP API
 
-- `djangorestframework` is in. All endpoints are DRF `APIView` CBVs.
-- New API surfaces use the same pattern (CBV + serializer for input + serializer for output).
+- `djangorestframework` is in. All endpoints are DRF `APIView` CBVs (CBV + serializer for input + serializer for output).
 - Keep `API_VERSION_PREFIX` in `core/conf/settings/base.py` in lockstep with `NEXT_PUBLIC_API_VERSION` in the web app.
-- **Every `/v1/` route is trailing-slash-optional.** Two helpers in `common/urls.py` make this work at every level of nesting:
-  - **`api_include(prefix, module)`** for every mount of an app's urlconf into a parent (root-level and nested). Makes the trailing slash on the prefix optional.
-  - **`api_path(route, view, name=...)`** for every leaf route inside a urlconf. Makes the trailing slash on the leaf optional.
-  Use these instead of `path(..., include(...))` / `path(..., view)`. Django's `APPEND_SLASH` only fixes GETs (POST/PUT/etc. don't follow the 301), so matching both forms in URL resolution is the proper fix.
+- **Every `/v1/` route is trailing-slash-optional.** Use the two helpers in `common/urls.py` instead of `path(..., include(...))` / `path(..., view)`:
+  - **`api_include(prefix, module)`** for every mount of an app's urlconf into a parent.
+  - **`api_path(route, view, name=...)`** for every leaf route inside a urlconf.
+  Django's `APPEND_SLASH` only fixes GETs (POST/PUT don't follow the 301), so matching both forms in URL resolution is the proper fix.
 
 ### Discriminated-config endpoints
 
-For resources whose schema varies by `kind` (e.g. `Listener` with `kind=semantic`, future `kind=keyword`), the endpoint accepts an envelope containing a kind-specific `data` blob. Validate `data` via the Pydantic registry that already owns the typed-blob schema (`listeners.registry.get_config_class(kind).model_validate(...)`); don't duplicate the schema in a DRF serializer. Translate Pydantic `ValidationError` into DRF's nested 400 shape so a `data.streams[0].spec.kind` failure surfaces at the right path. Example: `listeners/serializers.py:ListenerCreateSerializer`.
+For resources whose schema varies by `kind` (a `WatchAction` with `kind=semantic_filter|webhook|log`), the write accepts an envelope `{kind, config}` with `kind` a sibling of the config blob. Validate `config` via the Pydantic registry that owns the typed-blob schema (`watches.registry.validate_config(kind, data)`); don't duplicate the schema in a DRF serializer. Translate Pydantic `ValidationError` into DRF's nested 400 shape so a deep failure surfaces at the right path; a bad kind keys at `actions.N.kind`. Example: `watches/serializers.py`.
+
+### URL surface
+
+```
+/v1/auth/...                                       (see Auth section)
+
+/v1/feeds                                          GET/POST   feeds in account
+/v1/feeds/<id>                                     GET/PUT/DELETE
+/v1/feeds/<id>/sources ...                         curated source set
+
+/v1/watches                                        GET/POST   watches in account
+/v1/watches/<id>                                   GET/PUT/DELETE
+/v1/watches/<id>/actions                           POST       add an action (rank insert or append)
+/v1/watches/<id>/actions/<action_id>               PUT/DELETE set-config-in-place / remove
+/v1/watches/<id>/actions/<action_id>/runs          GET        run audit log (cursor, ?state=)
+
+/v1/engines                                        GET        registered engines + reachability
+/healthz                                           GET        DB + cache pings (public)
+```
 
 ## Cache-backed state pattern
 
@@ -176,6 +214,13 @@ When persisting structured state in `django.core.cache`:
 - **Views own the HTTP surface and auth checks. Store owns shape + I/O.** Views never reach into `cache` directly.
 - Lifecycle transitions return a new state via a method on the model (e.g. `state.complete_with(...)`), preserving carried-over fields. The view writes the result back via `Store.put`.
 - Example pairing: `core/auth_api/device_session_store.py` (state + Store) plus `core/auth_api/device_sessions.py` (views).
+
+## Locks & scheduling
+
+- **`common.locks.job_lock`** (cache-backed, app-qualified key `<app>.<command>`, day-long TTL as a crash failsafe) backs `common.commands.SingleFlightCommand`. A scheduled command wrapped in it self-skips (logs) when a prior pass is still running, so plain cron is penalty-free, no flock/singleton infra.
+- **`common.locks.path_chain_lock` / `feed_set_lock`** serialize chain / source-set mutations on one entity. Acquire OUTSIDE the transaction.
+- **`select_for_update`** (not a cache lock) is used where the lock must compose with the caller's transaction (the digest window row).
+- `make up-jobs` / `down-jobs` run the background tickers (poll, trigger, drain, flush) with pid+log under `.jobs/` (gitignored). `make dev-tick` runs one pass of each stage now.
 
 ## Auth + identity
 
@@ -190,7 +235,7 @@ When persisting structured state in `django.core.cache`:
 - **CLI** holds the same kind of value in `~/.magpie/config.json` and sends it as `Authorization: Bearer <token>`.
 - **Lookup** is unified: `auth_api.authentication.BearerOrCookieAuthentication` checks the Bearer header first, then the `auth_token` cookie. Registered globally via `REST_FRAMEWORK.DEFAULT_AUTHENTICATION_CLASSES`.
 
-### URL surface
+### Auth URL surface
 
 ```
 /v1/auth/signup                          POST   browser  signup + cookie
@@ -206,12 +251,6 @@ When persisting structured state in `django.core.cache`:
 /v1/auth/device-sessions/{id}/info       GET    browser  audit metadata (IsAuthenticated)
 /v1/auth/device-sessions/{id}/deny       POST   browser  decline (IsAuthenticated)
 /v1/auth/device-sessions/{id}/complete   POST   browser  authorize (IsAuthenticated)
-
-/v1/feeds                                POST   either   create feed (IsAuthenticated)
-/v1/feeds                                GET    either   list feeds in account (IsAuthenticated)
-/v1/engines                              GET    either   registered engines + reachability
-
-/healthz                                 GET    public   DB + cache pings
 ```
 
 ### Permission gating principle
@@ -226,20 +265,12 @@ When persisting structured state in `django.core.cache`:
 
 ### Device-flow handshake
 
-`auth_api/device_sessions.py` is cache-backed via the cache-state pattern above. Pending TTL is 15 min (user has time to switch tabs); completed TTL is 5 min so leftover tokens don't linger after the CLI picks them up.
+`auth_api/device_sessions.py` is cache-backed via the cache-state pattern above. Pending TTL is 15 min; completed TTL is 5 min so leftover tokens don't linger after the CLI picks them up. Three secrets with deliberately separate roles (RFC 8628):
 
-Three secrets with deliberately separate roles (RFC 8628):
-
-- **`session_id`**, public, in URL. Identifies the session. Leaking it alone gives an attacker nothing.
-- **`device_secret`**, CLI-only bearer for polling. Returned ONCE at create time, stored as SHA-256 on the server side. Required header on every `GET /device-sessions/{id}` poll.
-- **`user_code`**, short human-typed verification code. Gates `POST /complete` so a phished browser session can't authorize an attacker's CLI without seeing the code the attacker's terminal shows.
+- **`session_id`**, public, in URL. Identifies the session; leaking it alone gives nothing.
+- **`device_secret`**, CLI-only bearer for polling. Returned ONCE at create, stored as SHA-256 server-side. Required header on every poll.
+- **`user_code`**, short human-typed code. Gates `POST /complete` so a phished browser can't authorize an attacker's CLI without seeing the code the attacker's terminal shows.
 
 ### Cross-app access
 
-`auth_api` consumes accounts data through services only:
-
-- `accounts.services.UserService.Global.{create, email_exists, get}`
-- `accounts.services.AccountService.Global.{create, get, primary_account_id_for}`
-- `accounts.services.UserProfileService.Global.{bind_owner, primary_for_user, any_active_for_user}`
-
-The signup multi-step (create User + Account + UserProfile inside one transaction) lives in `auth_api/operations/signup.py` as `SignupOperation` per the one-shot orchestrator pattern.
+`auth_api` consumes accounts data through services only (`accounts.services.{UserService,AccountService,UserProfileService}.Global.*`). The signup multi-step (User + Account + UserProfile in one transaction) lives in `auth_api/operations/signup.py` as `SignupOperation`.

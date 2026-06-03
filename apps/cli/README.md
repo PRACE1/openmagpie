@@ -19,20 +19,22 @@ uv tool install --editable .
 
 ```bash
 magpie auth login            # browser device flow
-magpie quickstart            # two questions, one working listener
+magpie feed create           # opens $EDITOR on a feed template (sources + retention)
+magpie watch create          # opens $EDITOR on a watch template (feeds + action chain)
 ```
 
-`magpie quickstart` walks you from "signed in" to "watching real posts and getting them scored" in two prompts: which subreddits to watch and what to be notified about. Pick a backfill window at the prompt (default 24h) and the first `make dev-tick` will score real posts against your criteria immediately, no waiting for the scheduler.
+Create a feed of sources to watch, then a watch that subscribes to it and runs an action chain over each new item, typically a `semantic_filter` (your plain-English criteria) followed by a `webhook` or `log` delivery. Pick a backfill window when you create the feed and the first `make dev-tick` scores real posts against your criteria immediately.
 
 ## Commands
 
 | Command | What it does |
 |---|---|
 | `magpie auth login` / `logout` / `status` | Device-flow sign-in; identity check |
-| `magpie quickstart` | Interactive setup (see above) |
-| `magpie feed create` / `list` / `get` / `edit` / `delete` | Curated source streams (the set a listener subscribes to) |
-| `magpie listener create` / `list` / `get` / `edit` / `delete` | Listeners over feeds |
-| `magpie listener rewind <id>` | Reset the judge cursor; re-judge items in the retention window (useful after refining instructions or lowering the threshold) |
-| `magpie listener payload-sample <id>` | Preview what every configured notifier would emit for the next batch. Same code path delivery takes, just without the ship step |
+| `magpie feed create` / `list` / `get` / `view` / `edit` / `delete` | Curated source streams (the set a watch subscribes to) |
+| `magpie feed list-sources` / `set-sources` / `remove-source` / `template-sources` / `export-sources` | Manage a feed's source set |
+| `magpie watch create` / `list` / `get` / `edit` / `delete` | Watches over feeds (subscriptions + action chain) |
+| `magpie watch action add` / `list` / `set` / `remove` | Edit a watch's action chain |
+| `magpie watch action activity <watch_id> <action_id>` | Run audit log for one action (newest-first, `--state` filter) |
+| `magpie feed template` / `watch template` | Emit a config skeleton to stdout |
 
 Config lives at `~/.magpie/config.json`.
