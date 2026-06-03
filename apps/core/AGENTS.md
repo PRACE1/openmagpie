@@ -219,7 +219,9 @@ When persisting structured state in `django.core.cache`:
 
 ## Locks & scheduling
 
-- **`common.locks.job_lock`** (cache-backed, app-qualified key `<app>.<command>`, day-long TTL as a crash failsafe) backs `common.commands.SingleFlightCommand`. A scheduled command wrapped in it self-skips (logs) when a prior pass is still running, so plain cron is penalty-free, no flock/singleton infra.
+- **`common.locks.named_lock`** is the cache-backed try-lock primitive; it yields a `LockLease` (truthy iff acquired). A lock's `timeout` is a LIVENESS lease, not a total-work budget: a holder expecting to run long calls `lease.renew()` as it makes progress to re-stamp the TTL, so the lock survives a long-but-live run while a crashed holder frees after one window (etcd/k8s-Lease pattern). No fencing tokens — on these paths a brief overlap only costs redundant idempotent work, never corruption.
+- **`common.locks.poll_lock`** uses that: `poll_feed` renews per source, so a feed of ANY size polls under one held lock (`POLL_LOCK_TIMEOUT_SECONDS` is the per-source liveness window). The poll loop stops early if a renew reports the lease was lost (another worker took over); per-source watermarks make that non-destructive.
+- **`common.locks.job_lock`** (app-qualified key `<app>.<command>`, day-long TTL as a crash failsafe) backs `common.commands.SingleFlightCommand`: a scheduled command self-skips (logs) when a prior pass is still running, so plain cron is penalty-free.
 - **`common.locks.path_chain_lock` / `feed_set_lock`** serialize chain / source-set mutations on one entity. Acquire OUTSIDE the transaction.
 - **`select_for_update`** (not a cache lock) is used where the lock must compose with the caller's transaction (the digest window row).
 - `make up-jobs` / `down-jobs` run the background tickers (poll, trigger, drain, flush) with pid+log under `.jobs/` (gitignored). `make dev-tick` runs one pass of each stage now.

@@ -141,7 +141,13 @@ class _PolledSource:
 class FeedPollOperation:
     """One-shot: poll a single Feed's streams, persist + prune its items."""
 
-    def __init__(self, feed: Feed, *, on_progress: FeedPollProgressCallback | None = None) -> None:
+    def __init__(
+        self,
+        feed: Feed,
+        *,
+        on_progress: FeedPollProgressCallback | None = None,
+        heartbeat: Callable[[], bool] | None = None,
+    ) -> None:
         config = load_config(feed)
         if not isinstance(config, CuratedFeedConfig):
             raise NotImplementedError(f"Unsupported feed kind: {feed.kind}")
@@ -149,6 +155,10 @@ class FeedPollOperation:
         self.config = config
         self.account_id = str(feed.account_id)
         self.on_progress: FeedPollProgressCallback = on_progress or (lambda _: None)
+        # Called once per source to renew the poll lease (see poll_feed) ;
+        # returns False if the lease was lost (another worker took over), in
+        # which case we stop early. None = no lease to renew (direct call/test).
+        self.heartbeat: Callable[[], bool] = heartbeat or (lambda: True)
 
     @cached_property
     def feed_svc(self) -> FeedService:
@@ -174,6 +184,21 @@ class FeedPollOperation:
 
         sources = self.source_svc.list(self.feed)
         for source in sources:
+            # Renew the poll lease BEFORE the (potentially slow) fetch, so the
+            # lock spans this source's full duration. Renewing per source is
+            # what lets a feed of any size poll under one held lock instead of
+            # racing the fixed TTL. If the lease was lost (another worker took
+            # over after an over-long stall), stop: continuing is the redundant
+            # double-poll the lock exists to prevent. Per-source watermarks are
+            # already persisted, so stopping early loses no progress.
+            if not self.heartbeat():
+                logger.warning(
+                    "feed=%s: poll lease lost mid-cycle after %d/%d sources; yielding to the new holder",
+                    self.feed.id,
+                    sources_succeeded,
+                    len(sources),
+                )
+                break
             # Spec parse guarded so a malformed `source.spec` JSON
             # (shouldn't happen ; writes validate ; but the polling
             # contract is "one bad row never aborts the cycle") logs
@@ -266,7 +291,10 @@ class FeedPollOperation:
 def poll_feed(feed: Feed, *, on_progress: FeedPollProgressCallback | None = None) -> FeedPollResult | None:
     """Locked entry point for a single Feed's poll cycle. Returns None if
     another process holds `poll_lock(feed.id)` (caller records a skip)."""
-    with poll_lock(str(feed.id)) as acquired:
-        if not acquired:
+    with poll_lock(str(feed.id)) as lease:
+        if not lease:
             return None
-        return FeedPollOperation(feed, on_progress=on_progress).run()
+        # Renew the lease as each source completes so the lock outlives a
+        # large feed's full cycle (POLL_LOCK_TIMEOUT_SECONDS is the per-source
+        # liveness window, not a total-time cap).
+        return FeedPollOperation(feed, on_progress=on_progress, heartbeat=lease.renew).run()

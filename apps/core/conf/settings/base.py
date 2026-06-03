@@ -162,11 +162,12 @@ CACHE_BACKEND = os.environ.get("CACHE_BACKEND", "django.core.cache.backends.db.D
 CACHE_LOCATION = os.environ.get("CACHE_LOCATION", "openmagpie_cache")
 CACHES = {"default": {"BACKEND": CACHE_BACKEND, "LOCATION": CACHE_LOCATION}}
 
-# Scheduler-lock failsafe TTL, only kicks in if a process holds the lock
-# longer than the cache key's expiry, in which case it auto-releases. The
-# feed poll cycle is dominated by per-item LLM calls downstream, so the
-# ceiling is set well above the longest healthy cycle but tight enough
-# that a stuck process unblocks soonish.
+# Poll-lock LIVENESS window, NOT a cap on total poll time. The poll renews
+# the lease after each source (common.locks.LockLease.renew), so a feed of
+# any size polls under one continuously-held lock. This value only bounds how
+# long a single source may take before a stalled/crashed worker is presumed
+# dead and another may take over, so set it comfortably above the slowest
+# single-source fetch (not above the whole cycle).
 POLL_LOCK_TIMEOUT_SECONDS = int(os.environ.get("POLL_LOCK_TIMEOUT_SECONDS", "600"))
 
 # Feed set-sources serialization lock. The critical section is the
