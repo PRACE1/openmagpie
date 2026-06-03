@@ -22,7 +22,7 @@ class FeedGlobal:
         return Feed.objects.get(id=id)
 
     @staticmethod
-    def list_due_for_poll(*, now: datetime, chunk_size: int = 100) -> Iterator[Feed]:
+    def iter_due_for_poll(*, now: datetime, chunk_size: int = 100) -> Iterator[Feed]:
         """Active Feeds whose next_poll_at has elapsed (or is unset).
         Spans all accounts, scheduler entry point."""
         return (

@@ -34,7 +34,7 @@ class Command(SingleFlightCommand):
             self.stdout.write(f"  {ev.source_display}: {ev.observed} observed, {ev.recorded} new")
 
         total_failed = 0
-        for feed in FeedService.Global.list_due_for_poll(now=now):
+        for feed in FeedService.Global.iter_due_for_poll(now=now):
             if not quiet:
                 self.stdout.write(f"\n{feed.name} | {feed.id}")
             # Per-feed try/except: a single feed raising a non-recoverable
