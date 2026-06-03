@@ -13,8 +13,10 @@ import sys
 import typer
 import yaml
 
+from openmagpie_schema.feed import FeedItemWire
+
 from ... import console
-from ...api.feed import FeedEnvelope, FeedMutationResponse, FeedView
+from ...api.feed import FeedEnvelope, FeedMutationResponse, FeedView, FeedWire
 from ...context import AppContext, app_ctx
 from .._shared import (
     _abort_unexpected,
@@ -97,9 +99,12 @@ def view(
         console.log("No items yet.")
         return
     console.header(f"{detail.name} ; {len(detail.recent_items)} recent item(s)")
-    for item in detail.recent_items:
-        title = str((item.data or {}).get("title") or item.external_id)
-        console.log(f"  {item.source_label} | {title[:80]} | {item.external_id}")
+    columns: list[console.Column[FeedItemWire]] = [
+        console.Column("SOURCE", lambda i: i.source_label),
+        console.Column("TITLE", lambda i: str((i.data or {}).get("title") or i.external_id)[:80]),
+        console.Column("EXTERNAL ID", lambda i: i.external_id),
+    ]
+    console.table(detail.recent_items, columns)
 
 
 @feed_app.command("edit")
@@ -174,22 +179,26 @@ def list_(
     `--all` to follow the cursor across pages automatically.
     """
     api = app_ctx().api.feed
-    seen_any = False
+    rows: list[FeedWire] = []
+    next_cursor: str | None = None
     while True:
         page = api.list(after=after, limit=limit)
-        for it in page.items:
-            console.log(
-                f"  {it.name} | {it.kind} | poll {it.poll_interval_seconds}s "
-                f"| {console.active_or_paused(it.is_active)} | {it.id}"
-            )
-        seen_any = seen_any or bool(page.items)
+        rows.extend(page.items)
+        next_cursor = page.next_cursor
         if not all_ or not page.next_cursor:
-            if page.next_cursor:
-                console.log(f"  (more available; rerun with --after {page.next_cursor}, or --all)")
             break
         after = page.next_cursor
-    if not seen_any:
+    columns: list[console.Column[FeedWire]] = [
+        console.Column("ID", lambda f: f.id),
+        console.Column("NAME", lambda f: f.name),
+        console.Column("KIND", lambda f: f.kind),
+        console.Column("POLL", lambda f: f"{f.poll_interval_seconds}s"),
+        console.Column("STATUS", lambda f: console.active_or_paused(f.is_active)),
+    ]
+    if not console.table(rows, columns):
         console.log("No feeds yet. Try `magpie feed template`.")
+    elif next_cursor:
+        console.log(f"  (more available; rerun with --after {next_cursor}, or --all)")
 
 
 # ── Helpers ────────────────────────────────────────────────────────────

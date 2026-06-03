@@ -23,6 +23,9 @@ Plus one row-renderer for detail views:
   a block of rows.
 """
 
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass
+
 import typer
 
 
@@ -50,6 +53,54 @@ def kv(label: str, value: str, *, width: int = 16) -> None:
     """One '  label  | value' row, label left-padded to `width` so the
     ` | ` separator lines up across a block of rows in a detail view."""
     typer.echo(f"  {label:<{width}} | {value}")
+
+
+# Default per-column ceiling so one wide cell (e.g. a long meta dict) can't
+# blow out the line. Overridable per column via `Column.width`.
+_DEFAULT_COL_WIDTH = 48
+
+
+@dataclass(frozen=True)
+class Column[T]:
+    """One list-view column: a header label + how to render its cell from a
+    typed row object. `width` caps the cell width (longer values are
+    truncated with an ellipsis) ; None uses `_DEFAULT_COL_WIDTH`."""
+
+    label: str
+    render: Callable[[T], str]
+    width: int | None = None
+
+
+def _truncate(value: str, cap: int) -> str:
+    return value if len(value) <= cap else value[: cap - 1] + "…"
+
+
+def table[T](rows: Iterable[T], columns: list[Column[T]]) -> bool:
+    """The shared list-view renderer: a labeled header + divider, then one
+    aligned row per item rendered from the typed object via each column's
+    `render`. Each cell is truncated to the column's width cap (per-column
+    `width`, else `_DEFAULT_COL_WIDTH`) so one long value can't blow out the
+    line, then columns are padded to the widest remaining cell so headers
+    line up over their values. Returns whether any rows were printed, so
+    callers can fall back to an empty-state message (nothing is printed for
+    an empty set). The default styling for every `list`-style CLI view."""
+    materialized = list(rows)
+    if not materialized:
+        return False
+    caps = [c.width or _DEFAULT_COL_WIDTH for c in columns]
+    cells = [[_truncate(c.render(row), caps[i]) for i, c in enumerate(columns)] for row in materialized]
+    widths = [max(len(columns[i].label), *(len(r[i]) for r in cells)) for i in range(len(columns))]
+
+    def line(values: list[str]) -> str:
+        # rstrip so the trailing column carries no padding whitespace.
+        return ("  " + " | ".join(v.ljust(widths[i]) for i, v in enumerate(values))).rstrip()
+
+    typer.secho(line([c.label for c in columns]), fg=typer.colors.CYAN, bold=True)
+    # Divider aligns its `-+-` joints under the header's ` | ` separators.
+    typer.secho("  " + "-+-".join("-" * w for w in widths), fg=typer.colors.CYAN)
+    for row in cells:
+        typer.echo(line(row))
+    return True
 
 
 def active_or_paused(is_active: bool) -> str:

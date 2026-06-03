@@ -16,7 +16,7 @@ import yaml
 from openmagpie_schema.watch import WatchActionInput
 
 from ... import console
-from ...api.watch import WatchInput, WatchMutationResponse, WatchView
+from ...api.watch import WatchActionWire, WatchInput, WatchMutationResponse, WatchView, WatchWire
 from ...context import AppContext, app_ctx
 from .._shared import (
     _abort_unexpected,
@@ -150,20 +150,25 @@ def list_(
     `--all` to follow the cursor across pages automatically.
     """
     api = app_ctx().api.watch
-    seen_any = False
+    rows: list[WatchWire] = []
+    next_cursor: str | None = None
     while True:
         page = api.list(after=after, limit=limit)
-        for it in page.items:
-            feeds = ", ".join(it.feed_ids) or "(no feeds)"
-            console.log(f"  {it.name} | {console.active_or_paused(it.is_active)} | feeds: {feeds} | {it.id}")
-        seen_any = seen_any or bool(page.items)
+        rows.extend(page.items)
+        next_cursor = page.next_cursor
         if not all_ or not page.next_cursor:
-            if page.next_cursor:
-                console.log(f"  (more available; rerun with --after {page.next_cursor}, or --all)")
             break
         after = page.next_cursor
-    if not seen_any:
+    columns: list[console.Column[WatchWire]] = [
+        console.Column("ID", lambda w: w.id),
+        console.Column("NAME", lambda w: w.name),
+        console.Column("STATUS", lambda w: console.active_or_paused(w.is_active)),
+        console.Column("FEEDS", lambda w: ", ".join(w.feed_ids) or "(no feeds)"),
+    ]
+    if not console.table(rows, columns):
         console.log("No watches yet. Try `magpie watch template`.")
+    elif next_cursor:
+        console.log(f"  (more available; rerun with --after {next_cursor}, or --all)")
 
 
 # ── Helpers ────────────────────────────────────────────────────────────
@@ -249,5 +254,9 @@ def _print_watch(obj: WatchMutationResponse | WatchView, title: str) -> None:
         console.kv("chain", "(no actions)")
         return
     console.kv("chain", f"{len(obj.actions)} action(s)")
-    for a in obj.actions:
-        console.log(f"  {a.rank}. {a.kind} | {a.summary.detail or '(no summary)'}")
+    chain_columns: list[console.Column[WatchActionWire]] = [
+        console.Column("RANK", lambda a: str(a.rank)),
+        console.Column("KIND", lambda a: a.kind),
+        console.Column("SUMMARY", lambda a: a.summary.detail or "(no summary)"),
+    ]
+    console.table(obj.actions, chain_columns)

@@ -13,6 +13,7 @@ from typing import Any
 import typer
 import yaml
 
+from openmagpie_schema.watch import WatchActionRunWire, WatchActionWire
 from openmagpie_schema.watch_enums import WatchActionRunState, choices
 
 from ... import console
@@ -26,11 +27,14 @@ from ._apps import action_app
 def action_list(watch_id: str = typer.Argument(..., help="Watch id.")) -> None:
     """List a watch's action chain, in rank order."""
     actions = app_ctx().api.watch.list_actions(watch_id)
-    if not actions:
+    columns: list[console.Column[WatchActionWire]] = [
+        console.Column("ID", lambda a: a.id),
+        console.Column("RANK", lambda a: str(a.rank)),
+        console.Column("KIND", lambda a: a.kind),
+        console.Column("SUMMARY", lambda a: a.summary.detail or "(no summary)"),
+    ]
+    if not console.table(actions, columns):
         console.log("No actions yet. Add one with `magpie watch action add`.")
-        return
-    for a in actions:
-        console.log(f"  {a.rank}. {a.kind} | {a.summary.detail or '(no summary)'} | {a.id}")
 
 
 @action_app.command("add")
@@ -108,13 +112,14 @@ def action_activity(
         else:
             console.log("No runs yet.")
         return
-    for r in resp.items:
-        when = r.completed_at or r.started_at or r.scheduled_at
-        parts = [str(r.state), f"item {r.feed_item_id}", str(when)]
-        if r.error:
-            parts.append(r.error)
-        parts.append(r.id)
-        console.log("  " + " | ".join(parts))
+    columns: list[console.Column[WatchActionRunWire]] = [
+        console.Column("RUN ID", lambda r: r.id),
+        console.Column("STATE", lambda r: str(r.state)),
+        console.Column("ITEM", lambda r: r.feed_item_id),
+        console.Column("WHEN", lambda r: str(r.completed_at or r.started_at or r.scheduled_at)),
+        console.Column("ERROR", lambda r: r.error or "-"),
+    ]
+    console.table(resp.items, columns)
     if resp.next_cursor:
         console.log(f"\nNext page: --after {resp.next_cursor}")
 
