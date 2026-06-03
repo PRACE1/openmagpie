@@ -57,6 +57,11 @@ class FeedListCreateView(FeedSvcMixin, AccountScopedAPIView):
             )
             preview_data = feed_mutation(preview, dry_run=True).model_dump(mode="json")
             preview_data.pop("id", None)  # empty placeholder pre-save
+            # The preview feed is built WITHOUT persisting Source rows, so it
+            # reports zero sources. Surface the count that WOULD be created
+            # from the (already-validated) request so the preview isn't a
+            # misleading "(0)".
+            preview_data["source_count"] = len(d.get("sources") or [])
             return Response(preview_data, status=status.HTTP_200_OK)
 
         feed = self.feed_svc.create(

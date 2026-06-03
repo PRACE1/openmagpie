@@ -278,4 +278,11 @@ def _print_feed(obj: FeedMutationResponse | FeedView, title: str) -> None:
     # SourceWire.spec is the typed SourceSpec union; use `.display()`
     # (every variant implements it) ; `.get(...)` would AttributeError.
     display = ", ".join(s.spec.display() for s in obj.sources)
-    console.kv("sources", f"({obj.source_count}) {display or '(none)'}")
+    if obj.source_count == 0:
+        console.kv("sources", "(0) (none)")
+    elif display:
+        console.kv("sources", f"({obj.source_count}) {display}")
+    else:
+        # Count known but rows not echoed (e.g. the create dry-run, which
+        # reports the would-be count without materializing Source rows).
+        console.kv("sources", f"({obj.source_count})")
