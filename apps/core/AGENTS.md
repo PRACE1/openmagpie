@@ -85,7 +85,7 @@ for run in WatchActionRunService.Global.claim_due(now=now):
     ...
 
 # One-shot Operations (the crons)
-WatchTriggerOperation(watch, now=now).run()       # enqueue runs for new items
+WatchTriggerOperation(watch).run()                # enqueue runs for new items (computes now internally)
 WatchDrainOperation(run, now=now).run()           # execute one claimed run
 WatchDigestFlushOperation(window, now=now).run()  # emit one digest batch
 ```
@@ -122,6 +122,7 @@ A `WatchActionRun` is ONE action against ONE FeedItem. Three cron stages, each a
 for watch in WatchService.Global.iter_active():
     for feed in subscribed feeds:
         scan FeedItem.id > WatchFeed.last_item_id
+        if rank-0 action is a digest: open its window first, stamp scheduled_at = window close
         enqueue a PENDING run for the path's rank-0 action per item   # idempotent on (account, watch, action, feed_item)
         advance WatchFeed.last_item_id
 
@@ -145,10 +146,10 @@ for window in WatchDigestWindowService.Global.iter_due():
 ## Action chain rules
 
 - **Actions belong to a `WatchPath`, ordered by a dense integer `rank`** (0..N-1, unique `(account_id, path_id, rank)`). Chain entry is `rank == 0`; "next" is the smallest rank strictly greater (gap-safe, not `rank + 1`). v1 creates exactly one path per watch; `Watch.initial_path_id` points at it. A watch subscribes to a SET of feeds (`WatchFeed` rows, each with its own `last_item_id` watermark).
-- **All three chain mutators take `path_chain_lock(path_id)`**: `add`, `set_config` (only for a digest edit; see below), `remove`, and `replace_chain`. HARD RULE: acquire the lock OUTSIDE the transaction (`with lock: with atomic:`); a lock released before commit corrupts. So `WatchService.create`/`update` run `replace_chain` OUTSIDE their scalar+feed transaction (an edit is two scopes). Loser of the lock -> `ConcurrentChainError` -> 409.
+- **The chain-shape mutators take `path_chain_lock(path_id)`**: `add`, `remove`, and `replace_chain` (they renumber ranks). `set_config` does NOT lock — it edits one row in place without touching ranks, so there is no chain-shape race to guard. HARD RULE: acquire the lock OUTSIDE the transaction (`with lock: with atomic:`); a lock released before commit corrupts. So `WatchService.create`/`update` run `replace_chain` OUTSIDE their scalar+feed transaction (an edit is two scopes). Loser of the lock -> `ConcurrentChainError` -> 409.
 - **`replace_chain` is an upsert by action id** (Terraform `for_each`, not `count`): a spec with a known `id` updates that row in place (id + run history + secret survive), no id mints a new action, an absent row is deleted, ranks renumber densely. This is what makes a reorder safe and keeps the secret with its own endpoint.
-- **A digest delivery can't be the chain head (rank 0)** in v1 (the trigger bulk-enqueues rank-0 runs with no window). The guard (`_enforce_head_not_digest`) is re-checked from the freshly-listed chain inside every mutator's transaction, including `remove` (which can promote the next action) and `set_config` (which re-reads the row's rank under the chain lock so a concurrent renumber can't slip a digest to the head).
-- **Moving an action off digest (or removing it) drops its `WatchActionDigestWindow` row.** `claim_due` excludes a run while its action has a window row, so a lingering window strands the now-instant runs PENDING forever.
+- **A digest delivery is allowed at ANY position, including the chain head.** Whoever enqueues the digest action's runs opens its window first (so `claim_due` excludes them and they batch instead of delivering instant): for a head digest that's the **trigger** (it has no preceding action to open the window on advance, so it opens it once per cycle before the rank-0 runs land); for a non-head digest that's the **advance** (`enqueue_next` opens the window when the preceding action succeeds). There is no positional guard.
+- **Moving an action off digest (or removing it) drops its `WatchActionDigestWindow` row.** `claim_due` excludes a run while its action has a window row, so a lingering window strands the now-instant runs PENDING forever. An edit INTO digest leaves window opening to the trigger/advance on the next item; `set_config` only deletes a window (on a digest->instant edit), never creates one.
 
 ## Delivery: instant vs digest
 
