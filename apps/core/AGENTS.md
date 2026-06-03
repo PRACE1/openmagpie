@@ -118,12 +118,13 @@ Each model carries queryable common fields top-level + a `data`/`config`/`result
 A `WatchActionRun` is ONE action against ONE FeedItem. Three cron stages, each a `SingleFlightCommand` (a pass that outruns its interval self-skips instead of stacking), each backed by `common.locks.job_lock`:
 
 ```
-# stage 1 — TRIGGER (process_due_watches): enqueue rank-0 runs for new items
+# stage 1 — TRIGGER (process_due_watches): enqueue head-action runs for new items
 for watch in WatchService.Global.iter_active():
+    head = initial_actions(watch)[0]            # first action by rank order, NOT a rank==0 lookup
     for feed in subscribed feeds:
         scan FeedItem.id > WatchFeed.last_item_id
-        if rank-0 action is a digest: open its window first, stamp scheduled_at = window close
-        enqueue a PENDING run for the path's rank-0 action per item   # idempotent on (account, watch, action, feed_item)
+        if head is a digest: open its window first, stamp scheduled_at = window close
+        enqueue a PENDING run for `head` per item   # idempotent on (account, watch, action, feed_item)
         advance WatchFeed.last_item_id
 
 # stage 2 — DRAIN (process_due_runs): execute due per-item runs
@@ -145,10 +146,10 @@ for window in WatchDigestWindowService.Global.iter_due():
 
 ## Action chain rules
 
-- **Actions belong to a `WatchPath`, ordered by a dense integer `rank`** (0..N-1, unique `(account_id, path_id, rank)`). Chain entry is `rank == 0`; "next" is the smallest rank strictly greater (gap-safe, not `rank + 1`). v1 creates exactly one path per watch; `Watch.initial_path_id` points at it. A watch subscribes to a SET of feeds (`WatchFeed` rows, each with its own `last_item_id` watermark).
+- **Actions belong to a `WatchPath`, ordered by a dense integer `rank`** (0..N-1 today, unique `(account_id, path_id, rank)`). Resolve chain position by ORDER, never by a literal rank value: the chain entry is the lowest-rank action (`list_for_path(...)[0]`, rank-ordered), and "next" is the smallest rank strictly greater (`next_in_chain`) — both gap-safe so a future sparse-rank optimization can't break them. Don't write `WHERE rank == 0` / `rank + 1`. v1 creates exactly one path per watch; `Watch.initial_path_id` points at it. A watch subscribes to a SET of feeds (`WatchFeed` rows, each with its own `last_item_id` watermark).
 - **The chain-shape mutators take `path_chain_lock(path_id)`**: `add`, `remove`, and `replace_chain` (they renumber ranks). `set_config` does NOT lock — it edits one row in place without touching ranks, so there is no chain-shape race to guard. HARD RULE: acquire the lock OUTSIDE the transaction (`with lock: with atomic:`); a lock released before commit corrupts. So `WatchService.create`/`update` run `replace_chain` OUTSIDE their scalar+feed transaction (an edit is two scopes). Loser of the lock -> `ConcurrentChainError` -> 409.
 - **`replace_chain` is an upsert by action id** (Terraform `for_each`, not `count`): a spec with a known `id` updates that row in place (id + run history + secret survive), no id mints a new action, an absent row is deleted, ranks renumber densely. This is what makes a reorder safe and keeps the secret with its own endpoint.
-- **A digest delivery is allowed at ANY position, including the chain head.** Whoever enqueues the digest action's runs opens its window first (so `claim_due` excludes them and they batch instead of delivering instant): for a head digest that's the **trigger** (it has no preceding action to open the window on advance, so it opens it once per cycle before the rank-0 runs land); for a non-head digest that's the **advance** (`enqueue_next` opens the window when the preceding action succeeds). There is no positional guard.
+- **A digest delivery is allowed at ANY position, including the chain head.** Whoever enqueues the digest action's runs opens its window first (so `claim_due` excludes them and they batch instead of delivering instant): for a head digest that's the **trigger** (it has no preceding action to open the window on advance, so it opens it once per cycle before the head runs land); for a non-head digest that's the **advance** (`enqueue_next` opens the window when the preceding action succeeds). There is no positional guard.
 - **Moving an action off digest (or removing it) drops its `WatchActionDigestWindow` row.** `claim_due` excludes a run while its action has a window row, so a lingering window strands the now-instant runs PENDING forever. An edit INTO digest leaves window opening to the trigger/advance on the next item; `set_config` only deletes a window (on a digest->instant edit), never creates one.
 
 ## Delivery: instant vs digest
