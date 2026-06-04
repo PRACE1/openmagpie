@@ -224,6 +224,12 @@ class WatchActionRunService(DigestBatchMixin):
         the current (un-windowed) backlog. `since` required (no all-time
         scan). GROUP BY + two counts, no blobs read."""
         base = WatchActionRun.objects.filter(account_id=self.account_id, action_id=action_id)
+        # Index coverage: the evaluated GROUP BY rides `watchrun_activity_idx`
+        # (account, action, completed_at); the backlog counts filter on state
+        # and ride `watchrun_digest_gather_idx`'s (account, action, state)
+        # prefix. If that digest index is ever reshuffled, give the backlog
+        # counts their own (account, action, state) cover so they don't
+        # silently become account-scans.
         evaluated_qs = base.filter(completed_at__gte=since)
         if until is not None:
             evaluated_qs = evaluated_qs.filter(completed_at__lt=until)

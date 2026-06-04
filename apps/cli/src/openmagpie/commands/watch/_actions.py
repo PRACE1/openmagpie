@@ -13,7 +13,7 @@ from typing import Any
 import typer
 import yaml
 
-from openmagpie_schema.watch import WatchActionRunWire, WatchActionWire
+from openmagpie_schema.watch import WatchActionRunListResponse, WatchActionRunWire, WatchActionWire
 from openmagpie_schema.watch_enums import WatchActionRunState, WatchActivityWindow, choices
 
 from ... import console
@@ -156,7 +156,7 @@ def action_activity(
     _print_summary(action_id, api.action_runs(action_id, window=win, limit=1))
 
 
-def _print_summary(action_id: str, resp) -> None:
+def _print_summary(action_id: str, resp: WatchActionRunListResponse) -> None:
     s = resp.summary
     if s is None:  # defensive ; the first-page call always carries one
         console.log("No summary available.")
@@ -183,7 +183,7 @@ def _print_summary(action_id: str, resp) -> None:
     console.log("\nDrill in: --list (runs) | -s <state> (filter) | -w <window>")
 
 
-def _print_runs(resp) -> None:
+def _print_runs(resp: WatchActionRunListResponse) -> None:
     if not resp.items:
         console.log("No runs match.")
         return

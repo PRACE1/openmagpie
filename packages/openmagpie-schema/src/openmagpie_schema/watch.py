@@ -142,7 +142,7 @@ class WatchInput(BaseModel):
 
 
 class WatchActionRunWire(BaseModel):
-    """One WatchActionRun on the wire (`GET /v1/watches/<id>/actions/<id>/runs`).
+    """One WatchActionRun on the wire (`GET /v1/actions/<action_id>/runs`).
 
     The stateful audit row of one action executing against one item.
     `result` is the kind-specific output blob (opaque; render common keys
@@ -193,4 +193,6 @@ class WatchActionRunListResponse(BaseModel):
 
     items: list[WatchActionRunWire] = Field(default_factory=list)
     next_cursor: str | None = None
+    # None means "this is a paged response" (no summary computed) — NOT "no
+    # activity". The first page always carries a summary, all-zero if idle.
     summary: WatchActionRunSummary | None = None
