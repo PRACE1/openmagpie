@@ -92,7 +92,14 @@ class Command(SingleFlightCommand):
                     detail = outcome.state.value
                     by_state[detail] = by_state.get(detail, 0) + 1
             if not quiet:
-                self.stdout.write(f"  run {run.id}: {detail} {_progress(processed, total_due, t_start)}")
+                # Progress LEADS the line so it sits in a stable column ; the
+                # variable-length `detail` (state / "claim lost" / "failed: ...")
+                # trails, where its changing width can't make the counter jump.
+                # `action=` is included so an operator can pivot straight to
+                # `magpie watch action runs <action_id>` for that action's log.
+                self.stdout.write(
+                    f"  {_progress(processed, total_due, t_start)} run={run.id} action={run.action_id}: {detail}"
+                )
 
         breakdown = ", ".join(f"{n} {s}" for s, n in sorted(by_state.items())) or "none"
         self.stdout.write(
