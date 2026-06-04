@@ -245,15 +245,23 @@ def _edit_seed(detail: WatchView) -> WatchInput:
 
 
 def _print_watch(obj: WatchMutationResponse | WatchView, title: str) -> None:
-    """Render a watch's config + action chain for the operator."""
+    """Render a watch's config as a pivoted FIELD | VALUE table (the shared
+    list renderer, matching feed get), then the action chain as its own
+    table. is_active rides in the title, so it's not repeated as a row."""
     console.header(title)
-    console.kv("name", obj.name)
-    console.kv("active", "yes" if obj.is_active else "no")
-    console.kv("feeds", ", ".join(obj.feed_ids) or "(none)")
+    config_rows: list[tuple[str, str]] = [
+        ("name", obj.name),
+        ("feeds", ", ".join(obj.feed_ids) or "(none)"),
+        ("chain", f"{len(obj.actions)} action(s)" if obj.actions else "(no actions)"),
+    ]
+    config_columns: list[console.Column[tuple[str, str]]] = [
+        console.Column("FIELD", lambda kv: kv[0], width=16),
+        console.Column("VALUE", lambda kv: kv[1], width=64),
+    ]
+    console.table(config_rows, config_columns)
     if not obj.actions:
-        console.kv("chain", "(no actions)")
         return
-    console.kv("chain", f"{len(obj.actions)} action(s)")
+    console.log("")  # blank line between the config + chain tables
     chain_columns: list[console.Column[WatchActionWire]] = [
         console.Column("RANK", lambda a: str(a.rank)),
         console.Column("KIND", lambda a: a.kind),
