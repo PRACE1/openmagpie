@@ -18,7 +18,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from .watch_actions import WatchActionConfigSummary
-from .watch_enums import WatchActionRunState
+from .watch_enums import WatchActionRunState, WatchActivityWindow
 from .wire import ConfigBlob
 
 ResultBlob = dict[str, Any]
@@ -142,7 +142,7 @@ class WatchInput(BaseModel):
 
 
 class WatchActionRunWire(BaseModel):
-    """One WatchActionRun on the wire (`GET /v1/watches/<id>/actions/<id>/runs`).
+    """One WatchActionRun on the wire (`GET /v1/actions/<action_id>/runs`).
 
     The stateful audit row of one action executing against one item.
     `result` is the kind-specific output blob (opaque; render common keys
@@ -162,11 +162,37 @@ class WatchActionRunWire(BaseModel):
     created_at: datetime | None = None
 
 
+class WatchActionRunSummary(BaseModel):
+    """Activity over an action's runs, so an operator sees "what is this
+    action doing?" without scrolling the log.
+
+    `evaluated` is the per-terminal-state breakdown of runs JUDGED within
+    [since, until) — windowed on completion (evaluation) time, not enqueue
+    time. `pending` / `running` are the CURRENT queue depth, NOT time-bound
+    (those runs have no completion time yet), surfaced so the backlog stays
+    visible. `window` is the requested preset ; `since` / `until` are the
+    concrete bounds the server resolved it to."""
+
+    window: WatchActivityWindow
+    since: datetime
+    until: datetime | None = None
+    # Keyed by the run-state enum (identical on the wire — StrEnum serializes
+    # to its value — but typed for the CLI, closing the "state magic strings"
+    # door). pending/running never appear here (they have no completion time).
+    evaluated: dict[WatchActionRunState, int] = Field(default_factory=dict)
+    pending: int = 0
+    running: int = 0
+
+
 class WatchActionRunListResponse(BaseModel):
-    """`GET /v1/watches/<id>/actions/<action_id>/runs` envelope.
-    Cursor-paginated by ULID pk, newest-first. `?after=<id>` for the next
-    page; `next_cursor` null when the page wasn't full. Filter by
-    `?state=` (a WatchActionRunState value)."""
+    """`GET /v1/actions/<action_id>/runs` envelope. Cursor-paginated by ULID
+    pk, newest-first. `?after=<id>` for the next page; `next_cursor` null
+    when the page wasn't full. Filter by `?state=` (a WatchActionRunState
+    value). `summary` (the full per-state breakdown) is present on the
+    first page only (omitted when paging with `?after=`)."""
 
     items: list[WatchActionRunWire] = Field(default_factory=list)
     next_cursor: str | None = None
+    # None means "this is a paged response" (no summary computed) — NOT "no
+    # activity". The first page always carries a summary, all-zero if idle.
+    summary: WatchActionRunSummary | None = None

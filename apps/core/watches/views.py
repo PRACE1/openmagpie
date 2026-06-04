@@ -1,18 +1,22 @@
 """HTTP entry points for /v1/watches.
 
 `WatchListCreateView` handles POST (create) + GET (list). `WatchDetailView`
-handles GET / PUT / DELETE on `/v1/watches/<id>`. `WatchActionsView` +
-`WatchActionDetailView` cover the `/actions` sub-router (the chain).
+handles GET / PUT / DELETE on `/v1/watches/<id>`. `WatchActionsView` covers
+the chain-level `/v1/watches/<id>/actions` (list + add). Per-action ops
+(`ActionDetailView` edit/remove, `ActionRunsView` runs) live at
+`/v1/actions/<action_id>` — addressed by the action's own id, account-scoped.
 
 The `/v1/watches/<id>/...` views inherit `WatchScopedAPIView` and read
 `self.watch` directly ; a missing watch raises `WatchNotFound`, DRF
-converts to 404.
+converts to 404. The `/v1/actions/...` views inherit `ActionScopedAPIView`.
 """
 
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timedelta
 
+from django.utils import timezone
 from pydantic import ValidationError as PydanticValidationError
 from rest_framework import status
 from rest_framework.response import Response
@@ -20,11 +24,16 @@ from rest_framework.response import Response
 from accounts.api import AccountScopedAPIView
 from common.api_params import is_truthy, parse_limit
 from common.pydantic_errors import pydantic_errors_to_drf
-from openmagpie_schema.watch import WatchActionInput, WatchActionRunListResponse, WatchListResponse
-from openmagpie_schema.watch_enums import WatchActionRunState, choices
+from openmagpie_schema.watch import (
+    WatchActionInput,
+    WatchActionRunListResponse,
+    WatchActionRunSummary,
+    WatchListResponse,
+)
+from openmagpie_schema.watch_enums import WatchActionRunState, WatchActivityWindow, choices
 
 from .api import (
-    WatchActionScopedAPIView,
+    ActionScopedAPIView,
     WatchScopedAPIView,
     WatchSvcMixin,
 )
@@ -42,7 +51,24 @@ from .services.watches._actions import ConcurrentChainError
 
 logger = logging.getLogger("watches")
 
-_RUN_STATES = frozenset(s.value for s in WatchActionRunState)
+
+def _window_bounds(window: WatchActivityWindow, now: datetime) -> tuple[datetime, datetime | None]:
+    """Resolve an activity-window preset to concrete `(since, until)` at
+    `now` (server clock — one source of truth). `until` is None for rolling
+    windows (open-ended to now) ; set only for the calendar 'yesterday'.
+    YESTERDAY is a UTC-calendar day (the app runs TIME_ZONE='UTC', `now` is
+    UTC), not operator-local. Every enum member is handled explicitly so a
+    new one raises here instead of silently falling through to yesterday."""
+    if window is WatchActivityWindow.DAY:
+        return now - timedelta(hours=24), None
+    if window is WatchActivityWindow.WEEK:
+        return now - timedelta(days=7), None
+    if window is WatchActivityWindow.MONTH:
+        return now - timedelta(days=30), None
+    if window is WatchActivityWindow.YESTERDAY:
+        midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        return midnight - timedelta(days=1), midnight
+    raise ValueError(f"unhandled window {window!r}")
 
 
 def _validate_kind(kind: object) -> Response | None:
@@ -202,14 +228,16 @@ class WatchActionsView(WatchScopedAPIView):
         return Response(watch_action_wire(created).model_dump(mode="json"), status=status.HTTP_201_CREATED)
 
 
-class WatchActionDetailView(WatchActionScopedAPIView):
-    """Per-action ops on `/v1/watches/<id>/actions/<action_id>`.
+class ActionDetailView(ActionScopedAPIView):
+    """Per-action ops on `/v1/actions/<action_id>`, addressed by the action's
+    own (globally unique) id — account-scoped, the watch/chain derived from
+    the action rather than passed in the URL.
 
     PUT    replace this action's config in place (same rank)
     DELETE remove the action and close the rank gap
     """
 
-    def put(self, request, watch_id: str, action_id: str):
+    def put(self, request, action_id: str):
         body = request.data
         if not isinstance(body, dict):
             return Response(
@@ -234,7 +262,7 @@ class WatchActionDetailView(WatchActionScopedAPIView):
             return Response({"config": [str(exc)]}, status=status.HTTP_400_BAD_REQUEST)
         return Response(watch_action_wire(updated).model_dump(mode="json"), status=status.HTTP_200_OK)
 
-    def delete(self, request, watch_id: str, action_id: str):
+    def delete(self, request, action_id: str):
         try:
             self.action_svc.remove(self.action)
         except ConcurrentChainError as exc:
@@ -242,26 +270,51 @@ class WatchActionDetailView(WatchActionScopedAPIView):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
-class WatchActionRunsView(WatchActionScopedAPIView):
-    """GET /v1/watches/<id>/actions/<action_id>/runs: the action's run log,
-    newest-first, cursor-paginated. `?state=` filters by run state."""
+class ActionRunsView(ActionScopedAPIView):
+    """GET /v1/actions/<action_id>/runs: the action's run log, newest-first,
+    cursor-paginated. `?state=` filters by run state. Account scoping is the
+    isolation (the action, and its runs, belong to the caller's account), so
+    no watch id is needed in the query."""
 
-    def get(self, request, watch_id: str, action_id: str):
-        action = self.action  # 404 if the action isn't on this watch
+    def get(self, request, action_id: str):
+        action = self.action  # 404 if absent from this account
         state = request.query_params.get("state") or None
-        if state is not None and state not in _RUN_STATES:
+        if state is not None:
+            try:
+                WatchActionRunState(state)  # validate against the enum (one source of truth)
+            except ValueError:
+                return Response(
+                    {"state": [f"unknown state {state!r}; known: {choices(WatchActionRunState)}"]},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+        # Activity-summary window: a bounded preset, resolved to concrete
+        # bounds on the server clock. Defaults to WEEK ; scopes only the
+        # summary (by evaluation time), never the raw row list.
+        window_raw = request.query_params.get("window") or WatchActivityWindow.WEEK.value
+        try:
+            window = WatchActivityWindow(window_raw)
+        except ValueError:
             return Response(
-                {"state": [f"unknown state {state!r}; known: {choices(WatchActionRunState)}"]},
+                {"window": [f"unknown window {window_raw!r}; known: {choices(WatchActivityWindow)}"]},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         limit = parse_limit(request)
         after = request.query_params.get("after") or None
-        runs = self.run_svc.list_for_action(
-            str(action.id), watch_id=str(self.watch.id), after=after, limit=limit, state=state
-        )
+        runs = self.run_svc.list_for_action(str(action.id), after=after, limit=limit, state=state)
         next_cursor = str(runs[-1].id) if len(runs) == limit else None
         items = [watch_action_run_wire(r) for r in runs]
-        return Response(WatchActionRunListResponse(items=items, next_cursor=next_cursor).model_dump(mode="json"))
+        # Summary on the first page only (skipped while paging) — keeps a
+        # deep-paging call a pure row fetch.
+        summary = None
+        if after is None:
+            since, until = _window_bounds(window, timezone.now())
+            evaluated, pending, running = self.run_svc.summary_for_action(str(action.id), since=since, until=until)
+            summary = WatchActionRunSummary(
+                window=window, since=since, until=until, evaluated=evaluated, pending=pending, running=running
+            )
+        return Response(
+            WatchActionRunListResponse(items=items, next_cursor=next_cursor, summary=summary).model_dump(mode="json")
+        )
 
 
 def _preview_action_wire(action: WatchActionInput, rank: int) -> dict:

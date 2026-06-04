@@ -43,6 +43,20 @@ class WatchActionDelivery(StrEnum):
     DIGEST = "digest"
 
 
+class WatchActivityWindow(StrEnum):
+    """Bounded time windows for the action-activity summary, selected by a
+    client and resolved to concrete `(since, until)` bounds SERVER-side (one
+    source of truth, server clock). Applied by run EVALUATION time
+    (`completed_at`). No unbounded 'all' value: a count is always over a
+    finite range. Default is `WEEK`.
+    """
+
+    DAY = "24h"
+    YESTERDAY = "yesterday"
+    WEEK = "7d"
+    MONTH = "30d"
+
+
 class WatchActionRunState(StrEnum):
     """Lifecycle of one WatchActionRun (one action executing one item).
 

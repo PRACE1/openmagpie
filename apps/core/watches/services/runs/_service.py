@@ -1,147 +1,23 @@
-"""WatchActionRunService: enqueue + claim + complete watch-action runs.
-
-The stateful queue under the trigger/drain crons:
-  - the TRIGGER (`process_due_watches`) calls `enqueue` to create the
-    first PENDING run for a new feed item.
-  - the DRAIN (`process_due_runs`) calls `Global.reap_stale`, then
-    `Global.claim_due` (a CAS that flips PENDING/FAILED -> RUNNING and
-    burns an attempt), runs the action, and calls `complete` (terminal
-    state + result) ; on SUCCEEDED it `enqueue`s the next chain action.
-
-Both `claim_due` and `complete` are compare-and-swap UPDATEs keyed on
-(state, attempts), so the row IS the lock at BOTH ends: overlapping drains
-can't double-claim, and a drain whose claim was reaped + re-taken mid-judge
-can't double-complete (its stale `complete` matches no row and returns
-None, so it never advances the chain). A run that crashes mid-flight is
-left RUNNING and recovered by `reap_stale`. Retries are bounded by
-`attempts < WATCH_RUN_MAX_ATTEMPTS`.
-"""
+"""WatchActionRunService: account-scoped run reads + writes (enqueue,
+complete, list, summary). The digest-batch surface (digest_batch /
+complete_batch / fail_batch) is the DigestBatchMixin."""
 
 from __future__ import annotations
 
 import builtins
 import itertools
-from collections.abc import Iterable, Iterator
-from datetime import datetime, timedelta
+from collections.abc import Iterable
+from datetime import datetime
 
-from django.conf import settings
-from django.db.models import Exists, F, OuterRef
+from django.db.models import Count
 from django.utils import timezone
 
 from openmagpie_schema.watch_enums import WatchActionRunState
-from watches import run_messages
-from watches.models import WatchActionDigestWindow, WatchActionRun
+from watches.models import WatchActionRun
 
-from ._run_batches import DigestBatchMixin
-
-_PENDING = WatchActionRunState.PENDING.value
-_RUNNING = WatchActionRunState.RUNNING.value
-_FAILED = WatchActionRunState.FAILED.value
-
-# The states a stalled/failed run can be re-claimed from. ERRORED and
-# SKIPPED are terminal (permanent defect / deliberate) ; GATED + SUCCEEDED
-# are clean terminals. Only PENDING (never run) and FAILED (transient,
-# retryable) are claimable.
-_CLAIMABLE = (_PENDING, _FAILED)
-
-# Trigger-enqueue chunk: how many feed-item ids flow through one
-# SELECT-have + bulk_create round. This bounds BOTH the in-memory
-# footprint (the `have` set + the row list) AND the INSERT size ; they're
-# the same unit of work, so they share ONE constant; splitting them into
-# separate knobs invites drift (e.g. a bigger chunk that still inserts in
-# small batches would hold more in memory for no gain). Because the chunk
-# is already <= this, bulk_create needs no its own `batch_size`: one chunk
-# is one INSERT. A module constant, not a setting ; it's an internal
-# memory/perf knob with no per-deployment meaning (mirrors feeds'
-# `record_items` chunk default).
-_ENQUEUE_CHUNK = 500
-
-
-def _due_runs(ts: datetime):
-    """Runs eligible to drain at `ts`: a claimable state, under the attempts
-    cap, scheduled time elapsed, and NOT a digest action's (those belong to
-    the flush, not the per-item drain — derived from the action's window row,
-    not stored per run). The SINGLE source of truth for "due" so `count_due`
-    (sizes the progress/ETA display) can't drift from what `claim_due`
-    actually yields. Unordered ; callers add `order_by` / `count` / iterate."""
-    has_window = Exists(
-        WatchActionDigestWindow.objects.filter(account_id=OuterRef("account_id"), action_id=OuterRef("action_id"))
-    )
-    return WatchActionRun.objects.filter(
-        state__in=_CLAIMABLE,
-        attempts__lt=settings.WATCH_RUN_MAX_ATTEMPTS,
-        scheduled_at__lte=ts,
-    ).filter(~has_window)
-
-
-class WatchActionRunGlobal:
-    """Cross-tenant run operations for the drain cron. Static methods."""
-
-    @staticmethod
-    def reap_stale(*, now: datetime | None = None) -> int:
-        """Reset runs stuck in RUNNING past WATCH_RUN_STALE_SECONDS to
-        FAILED (presumed crashed worker). Their attempt was already burned
-        at claim, so this can't loop forever. Returns the count reaped.
-        Runs first in each drain pass so a crashed run rejoins the retry
-        pool (or hits the attempts cap and stays FAILED terminally).
-
-        Branches on the attempts cap so the message tells the truth: a run
-        crashed on its FINAL attempt won't be re-claimed (claim_due needs
-        attempts < MAX), so it gets a terminal message, not 'will retry'."""
-        ts = now or timezone.now()
-        cutoff = ts - timedelta(seconds=settings.WATCH_RUN_STALE_SECONDS)
-        max_attempts = settings.WATCH_RUN_MAX_ATTEMPTS
-        stale = WatchActionRun.objects.filter(state=_RUNNING, started_at__lt=cutoff)
-        # Exhausted: timed out with no retries left -> terminal. completed_at
-        # set (it's truly done), honest message (claim_due skips it).
-        exhausted = stale.filter(attempts__gte=max_attempts).update(
-            state=_FAILED,
-            error=run_messages.TIMED_OUT_EXHAUSTED,
-            completed_at=ts,
-        )
-        # Retryable: attempts left -> rejoins the pool. completed_at cleared
-        # (not done yet), 'will retry' message. Disjoint from `exhausted` on
-        # attempts, so order is irrelevant.
-        retryable = stale.filter(attempts__lt=max_attempts).update(
-            state=_FAILED,
-            error=run_messages.TIMED_OUT,
-            completed_at=None,
-        )
-        return exhausted + retryable
-
-    @staticmethod
-    def claim_due(*, now: datetime | None = None) -> Iterator[WatchActionRun]:
-        """Yield runs due now, each already CLAIMED (CAS to RUNNING).
-
-        "Due" = claimable state (pending / retryable-failed), under the
-        attempts cap, with scheduled_at elapsed. Each candidate is claimed
-        by a conditional UPDATE keyed on its still-claimable state ; only
-        a row we actually flipped (updated == 1) is yielded, so two
-        concurrent drains never both execute the same run. The candidate
-        snapshot is read up front but the CAS re-checks state at flip time,
-        so a row another drain grabbed in between is simply skipped."""
-        ts = now or timezone.now()
-        max_attempts = settings.WATCH_RUN_MAX_ATTEMPTS
-        # `_due_runs` carries the "due" filter (incl. the digest-action
-        # anti-join: a correlated ~Exists on the window table — one SQL
-        # statement, no ids pulled into Python). Ordered oldest-first and
-        # streamed (chunk_size) so a big backlog never materializes.
-        candidates = _due_runs(ts).order_by("scheduled_at").iterator(chunk_size=100)
-        for run in candidates:
-            claimed = WatchActionRun.objects.filter(id=run.id, state=run.state, attempts__lt=max_attempts).update(
-                state=_RUNNING, started_at=ts, attempts=F("attempts") + 1
-            )
-            if claimed:
-                run.refresh_from_db()
-                yield run
-
-    @staticmethod
-    def count_due(*, now: datetime | None = None) -> int:
-        """How many runs `claim_due` would yield at `now` (same filter, no
-        claim). Used only to size the drain's progress/ETA line ; it's a
-        pre-pass snapshot, so the live count can drift slightly (concurrent
-        drains claiming rows, or rows falling due mid-pass)."""
-        return _due_runs(now or timezone.now()).count()
+from .._run_batches import DigestBatchMixin
+from ._common import _ENQUEUE_CHUNK, _PENDING, _RUNNING
+from ._drain import WatchActionRunGlobal
 
 
 class WatchActionRunService(DigestBatchMixin):
@@ -332,3 +208,33 @@ class WatchActionRunService(DigestBatchMixin):
         if after:
             qs = qs.filter(id__lt=after)
         return builtins.list(qs.order_by("-id")[:limit])
+
+    def summary_for_action(
+        self,
+        action_id: str,
+        /,
+        *,
+        since: datetime,
+        until: datetime | None = None,
+    ) -> tuple[dict[WatchActionRunState, int], int, int]:
+        """Activity for one action: `(evaluated, pending, running)`.
+        `evaluated` is a per-terminal-state `{state: count}` (enum-keyed) of
+        runs JUDGED in [since, until) — windowed on `completed_at` (evaluation
+        time, NOT enqueue). pending/running have no `completed_at`, so they're
+        the current (un-windowed) backlog. `since` required (no all-time
+        scan). GROUP BY + two counts, no blobs read."""
+        base = WatchActionRun.objects.filter(account_id=self.account_id, action_id=action_id)
+        # Index coverage: the evaluated GROUP BY rides `watchrun_activity_idx`
+        # (account, action, completed_at); the backlog counts filter on state
+        # and ride `watchrun_digest_gather_idx`'s (account, action, state)
+        # prefix. If that digest index is ever reshuffled, give the backlog
+        # counts their own (account, action, state) cover so they don't
+        # silently become account-scans.
+        evaluated_qs = base.filter(completed_at__gte=since)
+        if until is not None:
+            evaluated_qs = evaluated_qs.filter(completed_at__lt=until)
+        counts = evaluated_qs.values("state").annotate(n=Count("id"))
+        evaluated = {WatchActionRunState(r["state"]): r["n"] for r in counts}
+        pending = base.filter(state=_PENDING).count()
+        running = base.filter(state=_RUNNING).count()
+        return evaluated, pending, running

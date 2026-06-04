@@ -18,14 +18,7 @@ urlpatterns = [
         views.WatchActionsView.as_view(),
         name="watch_actions",
     ),
-    api_path(
-        "<str:watch_id>/actions/<str:action_id>",
-        views.WatchActionDetailView.as_view(),
-        name="watch_action_detail",
-    ),
-    api_path(
-        "<str:watch_id>/actions/<str:action_id>/runs",
-        views.WatchActionRunsView.as_view(),
-        name="watch_action_runs",
-    ),
+    # Per-action ops (edit / remove / runs) are NOT nested here ; an action
+    # ULID is globally unique, so it's addressed directly at /v1/actions/<id>
+    # (see watches.action_urls). The chain-level list/add stay watch-scoped.
 ]

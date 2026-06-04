@@ -22,5 +22,8 @@ urlpatterns = [
     api_include(f"{_V1}/auth", "auth_api.urls"),
     api_include(f"{_V1}/feeds", "feeds.urls"),
     api_include(f"{_V1}/watches", "watches.urls"),
+    # Per-action ops live at the top level (addressed by the action's own
+    # ULID), not under /watches/<id>/actions ; see watches.action_urls.
+    api_include(f"{_V1}/actions", "watches.action_urls"),
     api_include(f"{_V1}/engines", "engine.urls"),
 ]
