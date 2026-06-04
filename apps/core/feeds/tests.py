@@ -37,7 +37,12 @@ class PollHeartbeatTests(TestCase):
             for i in range(n)
         ]
         # Inject fake sources before the cached_property fires (no DB rows).
-        op.__dict__["source_svc"] = SimpleNamespace(list=lambda _feed: sources)
+        # The poll streams via `iter_for_poll` (random order in prod) and reads
+        # the total via `count`; here order is irrelevant, so iterate as-is.
+        op.__dict__["source_svc"] = SimpleNamespace(
+            iter_for_poll=lambda _feed: iter(sources),
+            count=lambda _feed: len(sources),
+        )
         return op
 
     def test_heartbeat_called_once_per_source(self) -> None:

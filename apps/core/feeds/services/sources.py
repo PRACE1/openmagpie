@@ -24,6 +24,7 @@ import builtins
 import hashlib
 import json
 import logging
+from collections.abc import Iterator
 from datetime import datetime
 
 import ulid
@@ -107,6 +108,25 @@ class SourceService:
     def list(self, feed: Feed) -> list[Source]:
         self._assert_scope(str(feed.account_id), "feed")
         return list(self._scoped(feed).order_by("id"))
+
+    def count(self, feed: Feed) -> int:
+        self._assert_scope(str(feed.account_id), "feed")
+        return self._scoped(feed).count()
+
+    def iter_for_poll(self, feed: Feed) -> Iterator[Source]:
+        """Stream this feed's sources in RANDOM order for one poll cycle.
+
+        Random (`ORDER BY RANDOM()`), not for aesthetics: it
+        decorrelates which sources fail from their POSITION in the
+        cycle. Many sources sit behind shared infra (one CMS / CDN)
+        that rate-limits our egress IP under a burst ; with a FIXED
+        order the same unlucky sources past that threshold fail every
+        poll and never record. Reshuffling per cycle moves the danger
+        zone each time, so over a few polls every source gets a clean
+        run. `.iterator()` streams instead of materializing the full
+        row set (a feed can carry 1000+ sources)."""
+        self._assert_scope(str(feed.account_id), "feed")
+        return self._scoped(feed).order_by("?").iterator()
 
     def advance_watermark(self, source: Source, value: datetime) -> int:
         """Move `last_event_at` strictly forward on one Source row.
