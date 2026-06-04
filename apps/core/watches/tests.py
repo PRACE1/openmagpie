@@ -294,3 +294,55 @@ class LeafActionRouteTests(TestCase):
         self.assertEqual(other.delete(f"/v1/actions/{action_id}").status_code, 404)
         # ... and the owner's action is untouched.
         self.assertTrue(WatchAction.objects.filter(id=action_id).exists())
+
+
+class ActionActivitySummaryTests(TestCase):
+    """The activity summary windows the evaluated breakdown by COMPLETION
+    (evaluation) time and reports the live pending/running backlog."""
+
+    def setUp(self) -> None:
+        self.user = SignupOperation(email="summary@example.com", password="Str0ng-Passw0rd!").run()
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+        resp = self.client.post(
+            "/v1/watches",
+            {"name": "w", "feed_ids": [], "actions": [{"kind": "log", "config": {"prefix": "[A]"}}]},
+            format="json",
+        )
+        self.action_id = resp.json()["actions"][0]["id"]
+        self.account_id = WatchAction.objects.get(id=self.action_id).account_id
+
+    def _run(self, state: str, *, completed_at=None) -> WatchActionRun:
+        return WatchActionRun.objects.create(
+            account_id=self.account_id,
+            watch_id=ulid.ulid(),
+            action_id=self.action_id,
+            feed_item_id=ulid.ulid(),
+            state=state,
+            scheduled_at=timezone.now(),
+            completed_at=completed_at,
+        )
+
+    def test_evaluated_is_windowed_by_completion_backlog_is_live(self) -> None:
+        now = timezone.now()
+        self._run("succeeded", completed_at=now - timedelta(hours=1))  # in the 7d window
+        self._run("gated", completed_at=now - timedelta(hours=2))  # in window
+        self._run("succeeded", completed_at=now - timedelta(days=10))  # outside the window
+        self._run("pending")  # backlog (no completion time)
+        self._run("pending")
+        self._run("running")
+        resp = self.client.get(f"/v1/actions/{self.action_id}/runs", {"window": "7d"})
+        self.assertEqual(resp.status_code, 200, resp.content)
+        s = resp.json()["summary"]
+        self.assertEqual(s["window"], "7d")  # echoes the requested preset
+        # The 10-day-old succeeded run is excluded by the window.
+        self.assertEqual(s["evaluated"], {"succeeded": 1, "gated": 1})
+        self.assertEqual(s["pending"], 2)
+        self.assertEqual(s["running"], 1)
+
+    def test_summary_omitted_while_paging(self) -> None:
+        resp = self.client.get(f"/v1/actions/{self.action_id}/runs", {"after": ulid.ulid()})
+        self.assertIsNone(resp.json()["summary"])
+
+    def test_bad_window_is_400(self) -> None:
+        self.assertEqual(self.client.get(f"/v1/actions/{self.action_id}/runs", {"window": "bogus"}).status_code, 400)

@@ -1,18 +1,22 @@
 """HTTP entry points for /v1/watches.
 
 `WatchListCreateView` handles POST (create) + GET (list). `WatchDetailView`
-handles GET / PUT / DELETE on `/v1/watches/<id>`. `WatchActionsView` +
-`WatchActionDetailView` cover the `/actions` sub-router (the chain).
+handles GET / PUT / DELETE on `/v1/watches/<id>`. `WatchActionsView` covers
+the chain-level `/v1/watches/<id>/actions` (list + add). Per-action ops
+(`ActionDetailView` edit/remove, `ActionRunsView` runs) live at
+`/v1/actions/<action_id>` — addressed by the action's own id, account-scoped.
 
 The `/v1/watches/<id>/...` views inherit `WatchScopedAPIView` and read
 `self.watch` directly ; a missing watch raises `WatchNotFound`, DRF
-converts to 404.
+converts to 404. The `/v1/actions/...` views inherit `ActionScopedAPIView`.
 """
 
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timedelta
 
+from django.utils import timezone
 from pydantic import ValidationError as PydanticValidationError
 from rest_framework import status
 from rest_framework.response import Response
@@ -20,8 +24,13 @@ from rest_framework.response import Response
 from accounts.api import AccountScopedAPIView
 from common.api_params import is_truthy, parse_limit
 from common.pydantic_errors import pydantic_errors_to_drf
-from openmagpie_schema.watch import WatchActionInput, WatchActionRunListResponse, WatchListResponse
-from openmagpie_schema.watch_enums import WatchActionRunState, choices
+from openmagpie_schema.watch import (
+    WatchActionInput,
+    WatchActionRunListResponse,
+    WatchActionRunSummary,
+    WatchListResponse,
+)
+from openmagpie_schema.watch_enums import WatchActionRunState, WatchActivityWindow, choices
 
 from .api import (
     ActionScopedAPIView,
@@ -43,6 +52,20 @@ from .services.watches._actions import ConcurrentChainError
 logger = logging.getLogger("watches")
 
 _RUN_STATES = frozenset(s.value for s in WatchActionRunState)
+
+
+def _window_bounds(window: WatchActivityWindow, now: datetime) -> tuple[datetime, datetime | None]:
+    """Resolve an activity-window preset to concrete `(since, until)` at
+    `now` (server clock — one source of truth). `until` is None for rolling
+    windows (open-ended to now) ; set only for the calendar 'yesterday'."""
+    if window is WatchActivityWindow.DAY:
+        return now - timedelta(hours=24), None
+    if window is WatchActivityWindow.WEEK:
+        return now - timedelta(days=7), None
+    if window is WatchActivityWindow.MONTH:
+        return now - timedelta(days=30), None
+    midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    return midnight - timedelta(days=1), midnight
 
 
 def _validate_kind(kind: object) -> Response | None:
@@ -258,12 +281,34 @@ class ActionRunsView(ActionScopedAPIView):
                 {"state": [f"unknown state {state!r}; known: {choices(WatchActionRunState)}"]},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        # Activity-summary window: a bounded preset, resolved to concrete
+        # bounds on the server clock. Defaults to WEEK ; scopes only the
+        # summary (by evaluation time), never the raw row list.
+        window_raw = request.query_params.get("window") or WatchActivityWindow.WEEK.value
+        try:
+            window = WatchActivityWindow(window_raw)
+        except ValueError:
+            return Response(
+                {"window": [f"unknown window {window_raw!r}; known: {choices(WatchActivityWindow)}"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         limit = parse_limit(request)
         after = request.query_params.get("after") or None
         runs = self.run_svc.list_for_action(str(action.id), after=after, limit=limit, state=state)
         next_cursor = str(runs[-1].id) if len(runs) == limit else None
         items = [watch_action_run_wire(r) for r in runs]
-        return Response(WatchActionRunListResponse(items=items, next_cursor=next_cursor).model_dump(mode="json"))
+        # Summary on the first page only (skipped while paging) — keeps a
+        # deep-paging call a pure row fetch.
+        summary = None
+        if after is None:
+            since, until = _window_bounds(window, timezone.now())
+            evaluated, pending, running = self.run_svc.summary_for_action(str(action.id), since=since, until=until)
+            summary = WatchActionRunSummary(
+                window=window, since=since, until=until, evaluated=evaluated, pending=pending, running=running
+            )
+        return Response(
+            WatchActionRunListResponse(items=items, next_cursor=next_cursor, summary=summary).model_dump(mode="json")
+        )
 
 
 def _preview_action_wire(action: WatchActionInput, rank: int) -> dict:

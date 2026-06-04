@@ -25,7 +25,7 @@ from collections.abc import Iterable, Iterator
 from datetime import datetime, timedelta
 
 from django.conf import settings
-from django.db.models import Exists, F, OuterRef
+from django.db.models import Count, Exists, F, OuterRef
 from django.utils import timezone
 
 from openmagpie_schema.watch_enums import WatchActionRunState
@@ -44,26 +44,19 @@ _FAILED = WatchActionRunState.FAILED.value
 # retryable) are claimable.
 _CLAIMABLE = (_PENDING, _FAILED)
 
-# Trigger-enqueue chunk: how many feed-item ids flow through one
-# SELECT-have + bulk_create round. This bounds BOTH the in-memory
-# footprint (the `have` set + the row list) AND the INSERT size ; they're
-# the same unit of work, so they share ONE constant; splitting them into
-# separate knobs invites drift (e.g. a bigger chunk that still inserts in
-# small batches would hold more in memory for no gain). Because the chunk
-# is already <= this, bulk_create needs no its own `batch_size`: one chunk
-# is one INSERT. A module constant, not a setting ; it's an internal
-# memory/perf knob with no per-deployment meaning (mirrors feeds'
-# `record_items` chunk default).
+# Trigger-enqueue chunk: feed-item ids per SELECT-have + bulk_create round.
+# Bounds BOTH the in-memory footprint (the `have` set + row list) AND the
+# INSERT size — same unit of work, so ONE constant (splitting invites drift).
+# Chunk <= this, so bulk_create needs no own `batch_size`: one chunk = one
+# INSERT. A module constant (internal perf knob, no per-deployment meaning).
 _ENQUEUE_CHUNK = 500
 
 
 def _due_runs(ts: datetime):
-    """Runs eligible to drain at `ts`: a claimable state, under the attempts
-    cap, scheduled time elapsed, and NOT a digest action's (those belong to
-    the flush, not the per-item drain — derived from the action's window row,
-    not stored per run). The SINGLE source of truth for "due" so `count_due`
-    (sizes the progress/ETA display) can't drift from what `claim_due`
-    actually yields. Unordered ; callers add `order_by` / `count` / iterate."""
+    """Runs eligible to drain at `ts`: claimable state, under the attempts
+    cap, scheduled time elapsed, NOT a digest action's (those are the flush's,
+    derived from the action's window row). SINGLE source of truth for "due"
+    so `count_due` can't drift from what `claim_due` yields. Unordered."""
     has_window = Exists(
         WatchActionDigestWindow.objects.filter(account_id=OuterRef("account_id"), action_id=OuterRef("action_id"))
     )
@@ -332,3 +325,26 @@ class WatchActionRunService(DigestBatchMixin):
         if after:
             qs = qs.filter(id__lt=after)
         return builtins.list(qs.order_by("-id")[:limit])
+
+    def summary_for_action(
+        self,
+        action_id: str,
+        /,
+        *,
+        since: datetime,
+        until: datetime | None = None,
+    ) -> tuple[dict[str, int], int, int]:
+        """Activity for one action: `(evaluated, pending, running)`.
+        `evaluated` is a per-terminal-state `{state: count}` of runs JUDGED in
+        [since, until) — windowed on `completed_at` (evaluation time, NOT
+        enqueue). pending/running have no `completed_at`, so they're returned
+        as the current (un-windowed) backlog. `since` required (no all-time
+        scan). GROUP BY + two counts, no blobs read."""
+        base = WatchActionRun.objects.filter(account_id=self.account_id, action_id=action_id)
+        evaluated_qs = base.filter(completed_at__gte=since)
+        if until is not None:
+            evaluated_qs = evaluated_qs.filter(completed_at__lt=until)
+        evaluated = {r["state"]: r["n"] for r in evaluated_qs.values("state").annotate(n=Count("id"))}
+        pending = base.filter(state=_PENDING).count()
+        running = base.filter(state=_RUNNING).count()
+        return evaluated, pending, running

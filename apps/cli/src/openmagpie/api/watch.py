@@ -101,6 +101,7 @@ class WatchApi:
         state: str | None = None,
         after: str | None = None,
         limit: int | None = None,
+        window: str | None = None,
     ) -> WatchActionRunListResponse:
         params: dict[str, str] = {}
         if state:
@@ -109,5 +110,8 @@ class WatchApi:
             params["after"] = after
         if limit is not None:
             params["limit"] = str(limit)
+        # Activity-summary window preset (server resolves it to bounds).
+        if window:
+            params["window"] = window
         raw = self._http.get(routes.actions.runs(action_id), params=params or None)
         return WatchActionRunListResponse.model_validate(raw)

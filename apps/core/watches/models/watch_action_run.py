@@ -77,6 +77,17 @@ class WatchActionRun(BaseModel):
                 fields=["account_id", "action_id", "state", "attempts", "id"],
                 name="watchrun_digest_gather_idx",
             ),
+            # Activity-summary bucketing (`watch action activity`): per-(account,
+            # action) GROUP BY state over a completed_at window. account+action
+            # equality then a completed_at range = an index range scan instead
+            # of scanning the action's whole run history as it grows. Plain
+            # composite (standard SQL, any RDBMS) — no Postgres-only covering
+            # payload ; reading state is a heap fetch and this is an interactive
+            # query, not a drain-path one.
+            models.Index(
+                fields=["account_id", "action_id", "completed_at"],
+                name="watchrun_activity_idx",
+            ),
         ]
 
     def __str__(self) -> str:
