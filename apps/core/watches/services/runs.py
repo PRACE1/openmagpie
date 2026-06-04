@@ -57,6 +57,23 @@ _CLAIMABLE = (_PENDING, _FAILED)
 _ENQUEUE_CHUNK = 500
 
 
+def _due_runs(ts: datetime):
+    """Runs eligible to drain at `ts`: a claimable state, under the attempts
+    cap, scheduled time elapsed, and NOT a digest action's (those belong to
+    the flush, not the per-item drain — derived from the action's window row,
+    not stored per run). The SINGLE source of truth for "due" so `count_due`
+    (sizes the progress/ETA display) can't drift from what `claim_due`
+    actually yields. Unordered ; callers add `order_by` / `count` / iterate."""
+    has_window = Exists(
+        WatchActionDigestWindow.objects.filter(account_id=OuterRef("account_id"), action_id=OuterRef("action_id"))
+    )
+    return WatchActionRun.objects.filter(
+        state__in=_CLAIMABLE,
+        attempts__lt=settings.WATCH_RUN_MAX_ATTEMPTS,
+        scheduled_at__lte=ts,
+    ).filter(~has_window)
+
+
 class WatchActionRunGlobal:
     """Cross-tenant run operations for the drain cron. Static methods."""
 
@@ -105,27 +122,11 @@ class WatchActionRunGlobal:
         so a row another drain grabbed in between is simply skipped."""
         ts = now or timezone.now()
         max_attempts = settings.WATCH_RUN_MAX_ATTEMPTS
-        # Exclude runs of DIGEST actions (those with a window row): they're
-        # the flush's, not the per-item drain's. Digest-ness is the action's
-        # property (its window), so it's derived here, not stored per run.
-        # Correlated anti-join (~Exists): one SQL statement, no ids pulled into
-        # Python, short-circuits on first match, no NOT-IN NULL semantics.
-        # Correlated on BOTH account_id and action_id so the subquery rides the
-        # window table's (account_id, action_id) unique index as a full-key
-        # point lookup (action_id alone wouldn't left-prefix-cover it).
-        has_window = Exists(
-            WatchActionDigestWindow.objects.filter(account_id=OuterRef("account_id"), action_id=OuterRef("action_id"))
-        )
-        candidates = (
-            WatchActionRun.objects.filter(
-                state__in=_CLAIMABLE,
-                attempts__lt=max_attempts,
-                scheduled_at__lte=ts,
-            )
-            .filter(~has_window)
-            .order_by("scheduled_at")
-            .iterator(chunk_size=100)
-        )
+        # `_due_runs` carries the "due" filter (incl. the digest-action
+        # anti-join: a correlated ~Exists on the window table — one SQL
+        # statement, no ids pulled into Python). Ordered oldest-first and
+        # streamed (chunk_size) so a big backlog never materializes.
+        candidates = _due_runs(ts).order_by("scheduled_at").iterator(chunk_size=100)
         for run in candidates:
             claimed = WatchActionRun.objects.filter(id=run.id, state=run.state, attempts__lt=max_attempts).update(
                 state=_RUNNING, started_at=ts, attempts=F("attempts") + 1
@@ -133,6 +134,14 @@ class WatchActionRunGlobal:
             if claimed:
                 run.refresh_from_db()
                 yield run
+
+    @staticmethod
+    def count_due(*, now: datetime | None = None) -> int:
+        """How many runs `claim_due` would yield at `now` (same filter, no
+        claim). Used only to size the drain's progress/ETA line ; it's a
+        pre-pass snapshot, so the live count can drift slightly (concurrent
+        drains claiming rows, or rows falling due mid-pass)."""
+        return _due_runs(now or timezone.now()).count()
 
 
 class WatchActionRunService(DigestBatchMixin):

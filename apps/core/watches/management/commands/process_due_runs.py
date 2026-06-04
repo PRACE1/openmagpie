@@ -1,4 +1,5 @@
 import logging
+import time
 from typing import Any
 
 from django.utils import timezone
@@ -8,6 +9,27 @@ from watches.operations.drain import WatchDrainOperation
 from watches.services import WatchActionRunService
 
 logger = logging.getLogger("watches")
+
+
+def _fmt_duration(seconds: float) -> str:
+    """Coarse h/m/s for the progress line ; sub-minute keeps seconds."""
+    s = int(seconds)
+    if s >= 3600:
+        return f"{s // 3600}h{(s % 3600) // 60:02d}m"
+    if s >= 60:
+        return f"{s // 60}m{s % 60:02d}s"
+    return f"{s}s"
+
+
+def _progress(processed: int, total: int, t_start: float) -> str:
+    """`[12/345, ~10m04s left]` — ETA = running average wall-time per run
+    times the runs still queued. `total` is the due count snapshotted at
+    pass start ; if more fell due mid-pass the remaining floors at 0 (ETA
+    just reads ~0s near the end) rather than going negative."""
+    elapsed = time.monotonic() - t_start
+    avg = elapsed / processed if processed else 0.0
+    remaining = max(total - processed, 0)
+    return f"[{processed}/{total}, ~{_fmt_duration(avg * remaining)} left]"
 
 
 # Single-flight here is a convenience (don't stack passes on one box), NOT
@@ -41,7 +63,14 @@ class Command(SingleFlightCommand):
         lost_claims = 0
         by_state: dict[str, int] = {}
 
-        for run in WatchActionRunService.Global.claim_due(now=now):
+        # Snapshot the due count up front so the per-run line can show
+        # position + ETA. A semantic_filter run is a slow (~120s) LLM call,
+        # so a backlog can take many minutes ; the ETA tells the operator
+        # whether to wait. Cheap COUNT, no rows materialized.
+        total_due = WatchActionRunService.Global.count_due(now=now)
+        t_start = time.monotonic()
+
+        for processed, run in enumerate(WatchActionRunService.Global.claim_due(now=now), start=1):
             # Per-run try/except: an UNEXPECTED error (e.g. the commit
             # itself) must not abort the pass. The run stays RUNNING and the
             # next reap retries it; one bad run never starves the queue.
@@ -50,25 +79,31 @@ class Command(SingleFlightCommand):
             except Exception as exc:
                 infra_failed += 1
                 logger.exception("drain failed run=%s: %s", run.id, exc)
-                if not quiet:
-                    self.stdout.write(f"  run {run.id}: failed: {type(exc).__name__}: {exc}")
-                continue
-            if outcome is None:
-                # Claim lost: this run was reaped + re-claimed by another
-                # drain mid-judge ; the fresh winner owns the result + the
-                # chain advance, so we drop ours (don't count, don't advance).
-                lost_claims += 1
-                if not quiet:
-                    self.stdout.write(f"  run {run.id}: claim lost (handled by another worker)")
-                continue
-            executed += 1
-            state = outcome.state.value
-            by_state[state] = by_state.get(state, 0) + 1
+                detail = f"failed: {type(exc).__name__}: {exc}"
+            else:
+                if outcome is None:
+                    # Claim lost: this run was reaped + re-claimed by another
+                    # drain mid-judge ; the fresh winner owns the result + the
+                    # chain advance, so we drop ours (don't count, don't advance).
+                    lost_claims += 1
+                    detail = "claim lost (handled by another worker)"
+                else:
+                    executed += 1
+                    detail = outcome.state.value
+                    by_state[detail] = by_state.get(detail, 0) + 1
             if not quiet:
-                self.stdout.write(f"  run {run.id}: {state}")
+                # Progress LEADS the line so it sits in a stable column ; the
+                # variable-length `detail` (state / "claim lost" / "failed: ...")
+                # trails, where its changing width can't make the counter jump.
+                # `action=` is included so an operator can pivot straight to
+                # `magpie watch action runs <action_id>` for that action's log.
+                self.stdout.write(
+                    f"  {_progress(processed, total_due, t_start)} run={run.id} action={run.action_id}: {detail}"
+                )
 
         breakdown = ", ".join(f"{n} {s}" for s, n in sorted(by_state.items())) or "none"
         self.stdout.write(
             f"\nReaped {reaped}, executed {executed} run(s) ({breakdown}), "
-            f"{lost_claims} claim(s) lost, {infra_failed} infra-failed"
+            f"{lost_claims} claim(s) lost, {infra_failed} infra-failed "
+            f"in {_fmt_duration(time.monotonic() - t_start)}"
         )

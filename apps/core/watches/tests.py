@@ -1,7 +1,10 @@
+import time
+from datetime import timedelta
 from unittest import mock
 
 import httpx
 import ulid
+from django.conf import settings
 from django.test import TestCase
 from django.utils import timezone
 
@@ -11,6 +14,7 @@ from openmagpie_schema.watch_enums import WatchActionRunState
 from watches import run_messages
 from watches.actions.protocol import ActionOutcome
 from watches.actions.webhook import WebhookAction
+from watches.management.commands.process_due_runs import _fmt_duration, _progress
 from watches.models import WatchAction, WatchActionRun
 from watches.policy import PolicyError
 from watches.registry import load_config
@@ -181,3 +185,53 @@ class WebhookDeliveryTests(TestCase):
         self.assertEqual(outcome.state, WatchActionRunState.ERRORED)
         self.assertEqual(outcome.error, run_messages.WEBHOOK_REDIRECT)
         self.assertEqual(outcome.result["http_status"], 302)
+
+
+class CountDueTests(TestCase):
+    """count_due (sizes the drain's progress/ETA line) must report exactly
+    what claim_due would yield — same `_due_runs` filter, no claim."""
+
+    def setUp(self) -> None:
+        self.now = timezone.now()
+
+    def _run(self, *, state: str, scheduled_at, attempts: int = 0) -> WatchActionRun:
+        return WatchActionRun.objects.create(
+            account_id=ulid.ulid(),
+            watch_id=ulid.ulid(),
+            action_id=ulid.ulid(),
+            feed_item_id=ulid.ulid(),
+            state=state,
+            attempts=attempts,
+            scheduled_at=scheduled_at,
+        )
+
+    def test_count_matches_claim_due_and_honors_the_due_filter(self) -> None:
+        past, future = self.now - timedelta(minutes=1), self.now + timedelta(minutes=1)
+        # Due: pending + retryable-failed, scheduled in the past, under the cap.
+        self._run(state="pending", scheduled_at=past)
+        self._run(state="failed", scheduled_at=past)
+        # Not due: future schedule, terminal states, attempts at the cap.
+        self._run(state="pending", scheduled_at=future)
+        self._run(state="succeeded", scheduled_at=past)
+        self._run(state="gated", scheduled_at=past)
+        self._run(state="pending", scheduled_at=past, attempts=settings.WATCH_RUN_MAX_ATTEMPTS)
+
+        self.assertEqual(WatchActionRunService.Global.count_due(now=self.now), 2)
+        # claim_due drains (mutates) the same set, so count it last.
+        claimed = list(WatchActionRunService.Global.claim_due(now=self.now))
+        self.assertEqual(len(claimed), 2)
+
+
+class ProgressFormatTests(TestCase):
+    """The drain's ETA string: coarse h/m/s, remaining floored at 0."""
+
+    def test_fmt_duration_buckets(self) -> None:
+        self.assertEqual(_fmt_duration(9), "9s")
+        self.assertEqual(_fmt_duration(184), "3m04s")
+        self.assertEqual(_fmt_duration(3700), "1h01m")
+
+    def test_progress_eta_and_floor(self) -> None:
+        # 2 of 10 done in 20s -> 10s/run avg, 8 left -> ~80s = 1m20s.
+        self.assertEqual(_progress(2, 10, time.monotonic() - 20), "[2/10, ~1m20s left]")
+        # More fell due than the snapshot: remaining floors at 0, never negative.
+        self.assertEqual(_progress(12, 10, time.monotonic() - 20), "[12/10, ~0s left]")
