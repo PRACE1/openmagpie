@@ -15,12 +15,6 @@ Plus small value formatters:
   the `is_active` flag carried on feeds + watches.
   rate(numerator, denominator) -> "X%" or "—"   — percentage label,
   rendered "—" when the denominator is zero.
-
-Plus one row-renderer for detail views:
-
-  kv(label, value, *, width=16)   — one "  label  | value" row, with
-  `label` left-padded to `width` so the ` | ` separator lines up across
-  a block of rows.
 """
 
 from collections.abc import Callable, Iterable
@@ -47,12 +41,6 @@ def header(msg: str) -> None:
 
 def log(msg: str) -> None:
     typer.echo(msg)
-
-
-def kv(label: str, value: str, *, width: int = 16) -> None:
-    """One '  label  | value' row, label left-padded to `width` so the
-    ` | ` separator lines up across a block of rows in a detail view."""
-    typer.echo(f"  {label:<{width}} | {value}")
 
 
 # Default per-column ceiling so one wide cell (e.g. a long meta dict) can't

@@ -278,20 +278,33 @@ def _edit_seed(detail: FeedView) -> FeedEnvelope:
     return FeedEnvelope.model_validate(body)
 
 
-def _print_feed(obj: FeedMutationResponse | FeedView, title: str) -> None:
-    """Render a feed's config + source list for the operator."""
-    console.header(title)
-    console.kv("name", obj.name)
-    console.kv("kind", obj.kind)
-    console.kv("poll interval", f"{obj.poll_interval_seconds}s")
+def _sources_value(obj: FeedMutationResponse | FeedView) -> str:
+    """The `sources` cell: `(count) name, name, ...`. The table renderer
+    truncates the long list to the column cap (a 1093-source feed shows the
+    count + a peek, not the whole roster) ; the full list is `feed sources`.
+    `(count)` alone when rows aren't echoed (e.g. the create dry-run, which
+    reports the would-be count without materializing Source rows)."""
+    if obj.source_count == 0:
+        return "(0) (none)"
     # SourceWire.spec is the typed SourceSpec union; use `.display()`
     # (every variant implements it) ; `.get(...)` would AttributeError.
     display = ", ".join(s.spec.display() for s in obj.sources)
-    if obj.source_count == 0:
-        console.kv("sources", "(0) (none)")
-    elif display:
-        console.kv("sources", f"({obj.source_count}) {display}")
-    else:
-        # Count known but rows not echoed (e.g. the create dry-run, which
-        # reports the would-be count without materializing Source rows).
-        console.kv("sources", f"({obj.source_count})")
+    return f"({obj.source_count}) {display}" if display else f"({obj.source_count})"
+
+
+def _print_feed(obj: FeedMutationResponse | FeedView, title: str) -> None:
+    """Render a feed's config as a pivoted FIELD | VALUE table (the shared
+    list renderer), so it reads like every other view and one long cell
+    (sources) truncates instead of blowing out the line."""
+    console.header(title)
+    rows: list[tuple[str, str]] = [
+        ("name", obj.name),
+        ("kind", obj.kind),
+        ("poll interval", f"{obj.poll_interval_seconds}s"),
+        ("sources", _sources_value(obj)),
+    ]
+    columns: list[console.Column[tuple[str, str]]] = [
+        console.Column("FIELD", lambda kv: kv[0], width=16),
+        console.Column("VALUE", lambda kv: kv[1], width=64),
+    ]
+    console.table(rows, columns)
