@@ -57,7 +57,6 @@ def action_add(
 @action_app.command("set")
 @_handle_api_errors
 def action_set(
-    watch_id: str = typer.Argument(..., help="Watch id."),
     action_id: str = typer.Argument(..., help="Action id (from `watch action list`)."),
     file: str = typer.Option(..., "--file", "-f", help="YAML/JSON action config ('-' for stdin)."),
 ) -> None:
@@ -67,14 +66,13 @@ def action_set(
     differ from the current one to swap the node's kind."""
     text = sys.stdin.read() if file == "-" else _read_file_or_abort(file)
     kind, config = _parse_action_or_abort(text)
-    updated = app_ctx().api.watch.set_action(watch_id, action_id, kind, config)
+    updated = app_ctx().api.watch.set_action(action_id, kind, config)
     console.success(f"Updated action {updated.id} ({updated.kind}, rank {updated.rank})")
 
 
 @action_app.command("remove")
 @_handle_api_errors
 def action_remove(
-    watch_id: str = typer.Argument(..., help="Watch id."),
     action_id: str = typer.Argument(..., help="Action id (from `watch action list`)."),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation prompt. Required for piped input."),
 ) -> None:
@@ -84,18 +82,17 @@ def action_remove(
         if not sys.stdin.isatty():
             console.warn(f"Piped input: can't prompt. Re-run with --yes to remove action {action_id}.")
             raise typer.Exit(code=1)
-        if not typer.confirm(f"Remove action {action_id} from watch {watch_id}?"):
+        if not typer.confirm(f"Remove action {action_id}?"):
             console.warn("Aborted.")
             raise typer.Exit(code=1)
-    ac.api.watch.remove_action(watch_id, action_id)
+    ac.api.watch.remove_action(action_id)
     console.success(f"Removed action {action_id}")
 
 
 @action_app.command("activity")
 @_handle_api_errors
 def action_activity(
-    watch_id: str = typer.Argument(..., help="Watch id."),
-    action_id: str = typer.Argument(..., help="Action id."),
+    action_id: str = typer.Argument(..., help="Action id (from `watch action list`)."),
     state: str | None = typer.Option(
         None, "--state", "-s", help=f"Filter by run state ({choices(WatchActionRunState)})."
     ),
@@ -103,7 +100,7 @@ def action_activity(
     limit: int | None = typer.Option(None, "--limit", "-n", help="Max rows to show."),
 ) -> None:
     """Show an action's recent runs (newest first): what it did to each item."""
-    resp = app_ctx().api.watch.action_runs(watch_id, action_id, state=state, after=after, limit=limit)
+    resp = app_ctx().api.watch.action_runs(action_id, state=state, after=after, limit=limit)
     if not resp.items:
         if after:
             console.log("No more runs.")

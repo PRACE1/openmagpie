@@ -87,18 +87,15 @@ class WatchApi:
         raw = self._http.post(routes.watches.actions(watch_id), json_body=body)
         return WatchActionWire.model_validate(raw)
 
-    def set_action(self, watch_id: str, action_id: str, kind: str, config: dict[str, Any]) -> WatchActionWire:
-        raw = self._http.put(
-            routes.watches.action_detail(watch_id, action_id), json_body={"kind": kind, "config": config}
-        )
+    def set_action(self, action_id: str, kind: str, config: dict[str, Any]) -> WatchActionWire:
+        raw = self._http.put(routes.actions.detail(action_id), json_body={"kind": kind, "config": config})
         return WatchActionWire.model_validate(raw)
 
-    def remove_action(self, watch_id: str, action_id: str) -> None:
-        self._http.delete(routes.watches.action_detail(watch_id, action_id))
+    def remove_action(self, action_id: str) -> None:
+        self._http.delete(routes.actions.detail(action_id))
 
     def action_runs(
         self,
-        watch_id: str,
         action_id: str,
         *,
         state: str | None = None,
@@ -112,5 +109,5 @@ class WatchApi:
             params["after"] = after
         if limit is not None:
             params["limit"] = str(limit)
-        raw = self._http.get(routes.watches.action_runs(watch_id, action_id), params=params or None)
+        raw = self._http.get(routes.actions.runs(action_id), params=params or None)
         return WatchActionRunListResponse.model_validate(raw)

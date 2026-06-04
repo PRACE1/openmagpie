@@ -7,7 +7,9 @@ import ulid
 from django.conf import settings
 from django.test import TestCase
 from django.utils import timezone
+from rest_framework.test import APIClient
 
+from auth_api.operations.signup import SignupOperation
 from openmagpie_schema.watch import WatchActionInput
 from openmagpie_schema.watch_actions import WebhookConfig
 from openmagpie_schema.watch_enums import WatchActionRunState
@@ -235,3 +237,60 @@ class ProgressFormatTests(TestCase):
         self.assertEqual(_progress(2, 10, time.monotonic() - 20), "[2/10, ~1m20s left]")
         # More fell due than the snapshot: remaining floors at 0, never negative.
         self.assertEqual(_progress(12, 10, time.monotonic() - 20), "[12/10, ~0s left]")
+
+
+class LeafActionRouteTests(TestCase):
+    """Per-action endpoints addressed by the action's own id at
+    `/v1/actions/<action_id>` (no watch id): set / remove / runs, plus
+    account isolation."""
+
+    def setUp(self) -> None:
+        self.user = SignupOperation(email="leaf@example.com", password="Str0ng-Passw0rd!").run()
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    def _make_watch_with_action(self) -> tuple[str, str]:
+        resp = self.client.post(
+            "/v1/watches",
+            {"name": "w", "feed_ids": [], "actions": [{"kind": "log", "config": {"prefix": "[A]"}}]},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 201, resp.content)
+        body = resp.json()
+        return body["id"], body["actions"][0]["id"]
+
+    def test_runs_set_remove_by_action_id_only(self) -> None:
+        _watch_id, action_id = self._make_watch_with_action()
+
+        # runs: 200 with an empty log (no runs yet), no watch id in the path.
+        runs = self.client.get(f"/v1/actions/{action_id}/runs")
+        self.assertEqual(runs.status_code, 200, runs.content)
+        self.assertEqual(runs.json()["items"], [])
+
+        # set: replace the config in place.
+        put = self.client.put(f"/v1/actions/{action_id}", {"kind": "log", "config": {"prefix": "[B]"}}, format="json")
+        self.assertEqual(put.status_code, 200, put.content)
+        self.assertEqual(put.json()["id"], action_id)
+
+        # remove: 204, and it's gone.
+        self.assertEqual(self.client.delete(f"/v1/actions/{action_id}").status_code, 204)
+        self.assertFalse(WatchAction.objects.filter(id=action_id).exists())
+
+    def test_unknown_action_id_is_404(self) -> None:
+        self.assertEqual(self.client.get(f"/v1/actions/{ulid.ulid()}/runs").status_code, 404)
+
+    def test_another_account_cannot_reach_the_action(self) -> None:
+        _watch_id, action_id = self._make_watch_with_action()
+        other = APIClient()
+        other.force_authenticate(user=SignupOperation(email="other@example.com", password="Str0ng-Passw0rd!").run())
+        # Same opaque 404 whether the action is absent or owned by someone else.
+        self.assertEqual(other.get(f"/v1/actions/{action_id}/runs").status_code, 404)
+        self.assertEqual(
+            other.put(
+                f"/v1/actions/{action_id}", {"kind": "log", "config": {"prefix": "x"}}, format="json"
+            ).status_code,
+            404,
+        )
+        self.assertEqual(other.delete(f"/v1/actions/{action_id}").status_code, 404)
+        # ... and the owner's action is untouched.
+        self.assertTrue(WatchAction.objects.filter(id=action_id).exists())

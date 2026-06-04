@@ -16,6 +16,7 @@ API_VERSION = "v1"
 _AUTH = f"/{API_VERSION}/auth"
 _FEEDS = f"/{API_VERSION}/feeds"
 _WATCHES = f"/{API_VERSION}/watches"
+_ACTIONS = f"/{API_VERSION}/actions"
 _ENGINES = f"/{API_VERSION}/engines"
 
 
@@ -66,15 +67,22 @@ class watches:
 
     @staticmethod
     def actions(watch_id: str) -> str:
+        # Chain-level list/add stay watch-scoped (no action id yet). Per-action
+        # ops (edit/remove/runs) live under `routes.actions`, keyed on the
+        # action's own id.
         return f"{_WATCHES}/{watch_id}/actions"
 
-    @staticmethod
-    def action_detail(watch_id: str, action_id: str) -> str:
-        return f"{_WATCHES}/{watch_id}/actions/{action_id}"
+
+class actions:
+    """`/v1/actions/*` — per-action ops keyed on the action's own ULID."""
 
     @staticmethod
-    def action_runs(watch_id: str, action_id: str) -> str:
-        return f"{_WATCHES}/{watch_id}/actions/{action_id}/runs"
+    def detail(action_id: str) -> str:
+        return f"{_ACTIONS}/{action_id}"
+
+    @staticmethod
+    def runs(action_id: str) -> str:
+        return f"{_ACTIONS}/{action_id}/runs"
 
 
 class engines:

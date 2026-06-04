@@ -27,9 +27,11 @@ class WatchScopedRequest(AccountScopedRequest):
     watch_id: str
 
 
-class ActionScopedRequest(WatchScopedRequest):
+class ActionScopedRequest(AccountScopedRequest):
     """Typing view once `action_id` is stashed by
-    `WatchActionDetailView.initial()`."""
+    `ActionScopedAPIView.initial()`. Account-scoped, no watch in the URL:
+    the action ULID is the leaf id (globally unique), so the action is
+    addressed directly rather than nested under its watch."""
 
     action_id: str
 
@@ -101,11 +103,13 @@ class WatchScopedAPIView(WatchSvcMixin, AccountScopedAPIView):
             raise WatchNotFound(self.request.watch_id) from exc
 
 
-class WatchActionScopedAPIView(WatchScopedAPIView):
-    """Extends WatchScopedAPIView with a stashed `action_id` + a
-    `self.action` cached_property (raises WatchActionNotFound on miss).
-    Touch `self.watch` first to keep the watch-scoping guarantee explicit;
-    the action lookup is account-bounded inside the service."""
+class ActionScopedAPIView(WatchSvcMixin, AccountScopedAPIView):
+    """APIView for endpoints addressing one action by its globally-unique id:
+    `/v1/actions/<action_id>[/...]`. The action ULID is the leaf, so no watch
+    id in the route ; account scoping is the isolation guarantee (the action
+    belongs to a path -> watch in the caller's account, and `action_svc.get`
+    is account-bounded — another account's id 404s identically to a missing
+    one). `self.action` is the resolved row, cached for one DB hit."""
 
     request: ActionScopedRequest
 
@@ -116,11 +120,6 @@ class WatchActionScopedAPIView(WatchScopedAPIView):
     @cached_property
     def action(self) -> WatchAction:
         try:
-            action = self.action_svc.get(self.request.action_id)
+            return self.action_svc.get(self.request.action_id)
         except WatchAction.DoesNotExist as exc:
             raise WatchActionNotFound(self.request.action_id) from exc
-        # Account-scoped already; assert the action belongs to THIS watch's
-        # path so a cross-watch action id can't be mutated through this URL.
-        if str(action.path_id) != (self.watch.initial_path_id or ""):
-            raise WatchActionNotFound(self.request.action_id)
-        return action
