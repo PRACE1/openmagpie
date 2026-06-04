@@ -40,6 +40,36 @@ RSS_USER_AGENT = "openmagpie-rss/1.0 (+https://github.com/obris-dev/openmagpie)"
 # before deciding).
 MAX_BODY_BYTES = 5 * 1024 * 1024
 
+# FlareSolverr renders pages in headless Chromium. For an XML feed, Chromium
+# returns its built-in XML VIEWER -- an HTML page that pretty-prints the
+# document and stashes the ORIGINAL source in a
+# <div id="webkit-xml-viewer-source-xml">. So a challenge-bypass fetch of an
+# RSS/Atom URL comes back as that wrapper, not raw feed XML, and feedparser
+# sees HTML and bails. The marker is how we recognise the wrapper.
+_XML_VIEWER_MARKER = "webkit-xml-viewer-source-xml"
+
+
+def _unwrap_xml_viewer(body: bytes) -> bytes:
+    """Return the feed XML embedded in a Chromium XML-viewer wrapper, or
+    `body` unchanged when it isn't one (safe to call on any bypass body).
+
+    Slices from the feed root (`<?xml` / `<rss` / `<feed`) to the LAST
+    `</rss>` / `</feed>`, rather than matching the source div's `</div>`:
+    a feed whose CDATA description contains a literal `</div>` would
+    truncate a naive div match. The first root marker is the real root
+    (it precedes any item content); the last close is the real close."""
+    text = body.decode("utf-8", "replace")
+    if _XML_VIEWER_MARKER not in text:
+        return body
+    starts = [i for i in (text.find("<?xml"), text.find("<rss"), text.find("<feed")) if i != -1]
+    ends = [i + len(tag) for tag in ("</rss>", "</feed>") if (i := text.rfind(tag)) != -1]
+    if not starts or not ends:
+        return body
+    start, end = min(starts), max(ends)
+    if end <= start:
+        return body
+    return text[start:end].encode("utf-8")
+
 
 def _block_private_ip(host: str, *, url: httpx.URL) -> None:
     """Raise `ConnectorParseError` if `host` resolves to a private /
@@ -202,6 +232,10 @@ class RssConnector(ChallengeBypassMixin, BaseConnector[RssSourceSpec]):
             # the sidecar URL is empty or unreachable.
             bypass_body = self.challenge_bypass_fetch(spec.url, max_bytes=MAX_BODY_BYTES)
             if bypass_body:
+                # FlareSolverr's headless Chromium renders an XML feed as the
+                # browser's XML-viewer HTML wrapper ; recover the embedded
+                # source so feedparser sees real feed XML, not the viewer page.
+                bypass_body = _unwrap_xml_viewer(bypass_body)
                 bypass_parsed = feedparser.parse(bypass_body)
                 if bypass_parsed.entries or getattr(bypass_parsed, "version", ""):
                     logger.info("rss: challenge-bypass succeeded for %s", spec.url)
