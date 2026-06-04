@@ -1,4 +1,24 @@
 services:
+  # Primary datastore. The app is a multi-writer pipeline; Postgres (MVCC +
+  # row-level locking) is required, not SQLite. Dev creds only; prod overrides
+  # via env. Host port 5432 is exposed so host-run tests / psql can reach it.
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: openmagpie
+      POSTGRES_USER: openmagpie
+      POSTGRES_PASSWORD: openmagpie
+    ports:
+      - "5432:5432"
+    volumes:
+      - magpie_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U openmagpie -d openmagpie"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
   core:
     # Context = repo root: the uv workspace's single lock + every
     # member pyproject live there. Dockerfile is the core member's.
@@ -9,6 +29,11 @@ services:
     ports:
       - "8000:8000"
     env_file: ./apps/core/.env
+    depends_on:
+      # Only start once Postgres accepts connections, so the first migrate /
+      # boot doesn't race the db coming up.
+      db:
+        condition: service_healthy
     volumes:
       # Bind the whole workspace for hot-reload (canonical uv pattern);
       # anonymous volume keeps the root .venv the image built.
@@ -72,5 +97,6 @@ services:
         condition: service_healthy
 
 volumes:
+  magpie_pgdata:
   magpie_node_modules:
   magpie_app_node_modules:

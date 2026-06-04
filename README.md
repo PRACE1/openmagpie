@@ -73,7 +73,7 @@ graph TD
 - **Per-run audit log**: every action execution is a `WatchActionRun` row (pending → succeeded / gated / failed / errored), inspectable via `magpie watch action activity`. A filter that scores below threshold is `gated` and stops the chain.
 - **Instant or digest delivery**: delivery actions fire per item, or batch a rolling window into one emission on a cadence.
 - **Pluggable action kinds**: `semantic_filter`, `webhook`, `log` out of the box; one config class + one impl + two registry entries to add a kind.
-- **Self-hostable**: Django + SQLite; Docker Compose dev loop; your data and credentials stay yours.
+- **Self-hostable**: Django + Postgres; Docker Compose dev loop; your data and credentials stay yours.
 
 ### Planned (not yet shipped)
 
@@ -140,7 +140,7 @@ make up              # start the stack
 make down            # tear down
 make logs            # tail everything
 make dev-manage CMD=createsuperuser
-make dev-dbshell     # open SQLite shell
+make dev-dbshell     # open a psql shell on the Postgres db
 make dev-test        # run Django test suite
 make dev-lint        # ruff + whitespace / final-newline
 make dev-types       # ty static type check

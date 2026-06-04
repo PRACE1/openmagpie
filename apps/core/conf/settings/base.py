@@ -73,10 +73,25 @@ TEMPLATES = [
 
 WSGI_APPLICATION = "conf.wsgi.application"
 
+# Postgres, always. The app is a multi-writer pipeline (the long multi-source
+# poll runs alongside the trigger / drain / flush crons); SQLite's
+# single-writer whole-file lock serializes those into "database is locked"
+# under real volume, whereas Postgres' MVCC + row-level locking lets the CAS
+# `claim_due`, the `select_for_update` digest windows, and the poll lease work
+# as designed. Params are env-driven (the docker stack points HOST at `db`).
 DATABASES = {
     "default": {
-        "ENGINE": "django.db.backends.sqlite3",
-        "NAME": BASE_DIR / "db.sqlite3",
+        "ENGINE": "django.db.backends.postgresql",
+        "NAME": os.environ.get("POSTGRES_DB", "openmagpie"),
+        "USER": os.environ.get("POSTGRES_USER", "openmagpie"),
+        # Required, no default: a missing password must fail loudly, not
+        # silently fall back to a known credential (same rule as SECRET_KEY).
+        "PASSWORD": os.environ["POSTGRES_PASSWORD"],
+        "HOST": os.environ.get("POSTGRES_HOST", "localhost"),
+        "PORT": os.environ.get("POSTGRES_PORT", "5432"),
+        # Persistent connections for the web workers ; the short-lived cron
+        # commands reconnect each run anyway.
+        "CONN_MAX_AGE": int(os.environ.get("DB_CONN_MAX_AGE", "60")),
     }
 }
 

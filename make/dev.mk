@@ -30,8 +30,8 @@ dev-test: ## Run Django test suite
 dev-makemigrations: ## Generate Django migration files (e.g. make dev-makemigrations ARGS="myapp")
 	$(MAKE) dev-manage CMD="makemigrations $(ARGS)"
 
-dev-dbshell: ## Open Django's dbshell (SQLite)
-	$(MAKE) dev-manage CMD=dbshell
+dev-dbshell: ## Open a psql shell on the Postgres db service
+	docker compose exec db psql -U openmagpie -d openmagpie
 
 dev-migrate: ## Run Django database migrations + ensure cache table exists + bootstrap OAuth Application
 	$(MAKE) dev-manage CMD=migrate
