@@ -182,8 +182,12 @@ class FeedPollOperation:
         recorded = 0
         sources_succeeded = 0
 
-        sources = self.source_svc.list(self.feed)
-        for source in sources:
+        # Counted up front (cheap COUNT, no row materialization) so the
+        # early-break log + full-outage check have the total ; sources
+        # themselves stream in RANDOM order (see `iter_for_poll`) so a
+        # fixed position can't doom the same sources every cycle.
+        total_sources = self.source_svc.count(self.feed)
+        for source in self.source_svc.iter_for_poll(self.feed):
             # Renew the poll lease BEFORE the (potentially slow) fetch, so the
             # lock spans this source's full duration. Renewing per source is
             # what lets a feed of any size poll under one held lock instead of
@@ -196,7 +200,7 @@ class FeedPollOperation:
                     "feed=%s: poll lease lost mid-cycle after %d/%d sources; yielding to the new holder",
                     self.feed.id,
                     sources_succeeded,
-                    len(sources),
+                    total_sources,
                 )
                 break
             # Spec parse guarded so a malformed `source.spec` JSON
@@ -230,7 +234,6 @@ class FeedPollOperation:
 
         # Persist poll cadence only ; Source row watermarks are written
         # back per-row inside `_poll_source`; feed.data is not touched.
-        total_sources = len(sources)
         full_outage = total_sources > 0 and sources_succeeded == 0
         self.feed_svc.update_poll_state(self.feed, last_polled_at=started_at, data=None)
 
