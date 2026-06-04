@@ -22,9 +22,11 @@ cd "$(git rev-parse --show-toplevel)"
 LIMIT=350
 
 # Files we don't author / aren't worth re-shaping: Django auto-generated
-# migrations and anything under a `.venv` checkout that somehow got
-# tracked. Extend this if other generated trees show up.
-EXEMPT_PATTERN='(^|/)(migrations|\.venv)/'
+# migrations, the settings tree (declarative config, not logic — splitting
+# it for a line count helps nobody), and anything under a `.venv` checkout
+# that somehow got tracked. Extend this if other generated/config trees
+# show up.
+EXEMPT_PATTERN='(^|/)(migrations|\.venv|conf/settings)/'
 
 violations=()
 
