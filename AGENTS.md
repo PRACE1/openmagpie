@@ -50,7 +50,7 @@ pyproject.toml + uv.lock    uv workspace root (one lock for all members)
 
 ## Stack
 
-**Django + SQLite. That's it.** Postgres-swap is one settings change away if scale demands it.
+**Django + Postgres** (a `db` service in docker-compose). The app is a multi-writer pipeline (poll + trigger/drain/flush write concurrently), which SQLite's single-writer lock can't serve; Postgres' MVCC is required, not optional.
 
 - Web: pnpm + Next.js 16 + React 19 + Tailwind v4 + zod.
 - CLI: Typer + httpx + Pydantic.

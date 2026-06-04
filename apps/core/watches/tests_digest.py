@@ -192,26 +192,31 @@ class DigestDeliveryTests(TestCase):
         # -first, so the fresh run delivers this pass while the poison sinks.
         now = timezone.now()
         _, a1, window = self._digest_window_with_items(2, now=now)
-        # runs[0] is the OLDER row (smaller ULID, title t0); make it the poison
-        # that has already been retried, so by ULID alone it would gather first.
-        runs = list(WatchActionRun.objects.filter(action_id=str(a1.id)).order_by("id"))
-        WatchActionRun.objects.filter(id=runs[0].id).update(attempts=1)  # < cap, survives
+        # Pick either run as the already-retried "poison" — which feed item a
+        # digest run maps to isn't deterministic (the instant-drain ties on
+        # scheduled_at) and doesn't matter here. Mark it attempts=1 (< cap) and
+        # key the failing mock on THAT run's item, so what's under test is the
+        # gather's least-tried-first ordering, not the setup.
+        poison, fresh = WatchActionRun.objects.filter(action_id=str(a1.id)).order_by("id")
+        WatchActionRun.objects.filter(id=poison.id).update(attempts=1)
+        poison_title = FeedItem.objects.get(id=poison.feed_item_id).data["title"]
         later = window.close_at + timedelta(seconds=1)
 
-        def poison_t0(action, *, items):
-            if any(it.get("title") == "t0" for it in items):
+        def fail_poison(action, *, items):
+            if any(it.get("title") == poison_title for it in items):
                 raise RuntimeError("poison item")
             return ActionOutcome(state=WatchActionRunState.SUCCEEDED)
 
-        with mock.patch.object(LogAction, "run_batch", side_effect=poison_t0):
+        with mock.patch.object(LogAction, "run_batch", side_effect=fail_poison):
             self._flush_due(later)
 
-        # Fresh run (t1) delivered despite the older poison (t0) failing.
-        fresh = WatchActionRun.objects.get(id=runs[1].id)
-        poison = WatchActionRun.objects.get(id=runs[0].id)
+        # The fresh (never-tried) run delivered this pass; the poison sank
+        # behind it, burning one attempt, still pending for a later flush.
+        fresh.refresh_from_db()
+        poison.refresh_from_db()
         self.assertEqual(fresh.state, "succeeded")
         self.assertEqual(poison.state, "pending")
-        self.assertEqual(poison.attempts, 2)  # sank behind fresh, burned one attempt
+        self.assertEqual(poison.attempts, 2)
 
     def test_window_deleted_mid_emit_still_commits_batch(self) -> None:
         # Race: an operator mutates the action away from digest (removal /
