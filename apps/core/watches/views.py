@@ -51,21 +51,24 @@ from .services.watches._actions import ConcurrentChainError
 
 logger = logging.getLogger("watches")
 
-_RUN_STATES = frozenset(s.value for s in WatchActionRunState)
-
 
 def _window_bounds(window: WatchActivityWindow, now: datetime) -> tuple[datetime, datetime | None]:
     """Resolve an activity-window preset to concrete `(since, until)` at
     `now` (server clock — one source of truth). `until` is None for rolling
-    windows (open-ended to now) ; set only for the calendar 'yesterday'."""
+    windows (open-ended to now) ; set only for the calendar 'yesterday'.
+    YESTERDAY is a UTC-calendar day (the app runs TIME_ZONE='UTC', `now` is
+    UTC), not operator-local. Every enum member is handled explicitly so a
+    new one raises here instead of silently falling through to yesterday."""
     if window is WatchActivityWindow.DAY:
         return now - timedelta(hours=24), None
     if window is WatchActivityWindow.WEEK:
         return now - timedelta(days=7), None
     if window is WatchActivityWindow.MONTH:
         return now - timedelta(days=30), None
-    midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    return midnight - timedelta(days=1), midnight
+    if window is WatchActivityWindow.YESTERDAY:
+        midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        return midnight - timedelta(days=1), midnight
+    raise ValueError(f"unhandled window {window!r}")
 
 
 def _validate_kind(kind: object) -> Response | None:
@@ -276,11 +279,14 @@ class ActionRunsView(ActionScopedAPIView):
     def get(self, request, action_id: str):
         action = self.action  # 404 if absent from this account
         state = request.query_params.get("state") or None
-        if state is not None and state not in _RUN_STATES:
-            return Response(
-                {"state": [f"unknown state {state!r}; known: {choices(WatchActionRunState)}"]},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        if state is not None:
+            try:
+                WatchActionRunState(state)  # validate against the enum (one source of truth)
+            except ValueError:
+                return Response(
+                    {"state": [f"unknown state {state!r}; known: {choices(WatchActionRunState)}"]},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
         # Activity-summary window: a bounded preset, resolved to concrete
         # bounds on the server clock. Defaults to WEEK ; scopes only the
         # summary (by evaluation time), never the raw row list.

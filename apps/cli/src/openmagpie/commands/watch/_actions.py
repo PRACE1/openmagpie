@@ -31,9 +31,12 @@ _WINDOW_LABELS = {
     WatchActivityWindow.MONTH: "last 30 days",
 }
 
-# Terminal run states, in the order the summary prints them. pending /
-# running are the live backlog (no evaluation time), shown separately.
-_EVALUATED_ORDER = ["succeeded", "gated", "failed", "errored", "skipped"]
+# Terminal run states, in the order the summary prints them — DERIVED from
+# the shared enum (terminal = everything but the live backlog) so a new
+# WatchActionRunState shows up automatically instead of being silently
+# dropped (client consumes the enum, never re-encodes it).
+_BACKLOG_STATES = (WatchActionRunState.PENDING, WatchActionRunState.RUNNING)
+_EVALUATED_ORDER = [s for s in WatchActionRunState if s not in _BACKLOG_STATES]
 
 
 def _score(run: WatchActionRunWire) -> str:
@@ -158,7 +161,9 @@ def _print_summary(action_id: str, resp) -> None:
     if s is None:  # defensive ; the first-page call always carries one
         console.log("No summary available.")
         return
-    label = _WINDOW_LABELS[s.window]
+    # `.get` fallback: an unmapped (e.g. newly-added) window still renders
+    # its raw value rather than raising KeyError mid-output.
+    label = _WINDOW_LABELS.get(s.window, s.window.value)
     # Two pivoted 2-column tables (same renderer as every list view): what
     # the action EVALUATED in the window, then the live backlog. Kept apart
     # because the backlog isn't time-bound (pending/running have no
@@ -168,7 +173,7 @@ def _print_summary(action_id: str, resp) -> None:
         console.Column("RUNS", lambda kv: kv[1]),
     ]
     console.header(f"action {action_id}")
-    console.table([(st, str(s.evaluated.get(st, 0))) for st in _EVALUATED_ORDER], pair_cols)
+    console.table([(st.value, str(s.evaluated.get(st, 0))) for st in _EVALUATED_ORDER], pair_cols)
     console.log("")  # blank line between the two tables
     backlog_cols: list[console.Column[tuple[str, str]]] = [
         console.Column("BACKLOG (now)", lambda kv: kv[0], width=24),

@@ -176,7 +176,10 @@ class WatchActionRunSummary(BaseModel):
     window: WatchActivityWindow
     since: datetime
     until: datetime | None = None
-    evaluated: dict[str, int] = Field(default_factory=dict)
+    # Keyed by the run-state enum (identical on the wire — StrEnum serializes
+    # to its value — but typed for the CLI, closing the "state magic strings"
+    # door). pending/running never appear here (they have no completion time).
+    evaluated: dict[WatchActionRunState, int] = Field(default_factory=dict)
     pending: int = 0
     running: int = 0
 
