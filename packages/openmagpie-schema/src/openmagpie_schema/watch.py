@@ -18,7 +18,13 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from .watch_actions import WatchActionConfigSummary
-from .watch_enums import WatchActionRunState, WatchActivityWindow
+from .watch_enums import (
+    WatchActionDelivery,
+    WatchActionDeliveryState,
+    WatchActionRunState,
+    WatchActivityWindow,
+    WebhookMethod,
+)
 from .wire import ConfigBlob
 
 ResultBlob = dict[str, Any]
@@ -206,3 +212,42 @@ class WatchActionRunListResponse(BaseModel):
     # None means "this is a paged response" (no summary computed) — NOT "no
     # activity". The first page always carries a summary, all-zero if idle.
     summary: WatchActionRunSummary | None = None
+
+
+# ── Delivery (outbound HTTP call audit read path) ─────────────────────────
+
+
+class WatchActionDeliveryWire(BaseModel):
+    """One WatchActionDelivery on the wire
+    (`GET /v1/actions/<action_id>/deliveries`).
+
+    One outbound HTTP call ATTEMPT (a digest that retries makes several, one
+    row each). `target_host` is the redacted destination host (never the full
+    URL or any secret). `request_key` is the dedup identity. `http_status` is
+    null until the call returns. Datetimes real; renderer encodes."""
+
+    id: str
+    watch_id: str
+    action_id: str
+    delivery: WatchActionDelivery
+    method: WebhookMethod
+    state: WatchActionDeliveryState
+    http_status: int | None = None
+    request_key: str = ""
+    target_host: str = ""
+    item_count: int = 0
+    attempt: int = 0
+    error: str = ""
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    created_at: datetime | None = None
+
+
+class WatchActionDeliveryListResponse(BaseModel):
+    """`GET /v1/actions/<action_id>/deliveries` envelope. Cursor-paginated by
+    ULID pk, newest-first. `?after=<id>` for the next page; `next_cursor` null
+    when the page wasn't full. Filter by `?state=` (a WatchActionDeliveryState
+    value)."""
+
+    items: list[WatchActionDeliveryWire] = Field(default_factory=list)
+    next_cursor: str | None = None
