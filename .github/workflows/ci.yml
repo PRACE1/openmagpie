@@ -1,0 +1,84 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Shared by every job. POSTGRES_PASSWORD is required at settings import
+# (no default), so even the non-DB jobs need the block to load Django.
+env:
+  DJANGO_ENV: local
+  DJANGO_SECRET_KEY: ci-not-a-secret
+  BASE_URL: http://localhost:8000
+  WEB_BASE_URL: http://localhost:3001
+  # No LLM in CI ; the test suite mocks the engine, this just satisfies config.
+  OLLAMA_URL: http://localhost:11434
+  OLLAMA_DEFAULT_MODEL: qwen2.5:7b
+  POSTGRES_DB: openmagpie
+  POSTGRES_USER: openmagpie
+  POSTGRES_PASSWORD: openmagpie
+  POSTGRES_HOST: localhost  # the service is published on the runner's localhost
+  POSTGRES_PORT: "5432"
+
+jobs:
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      # --frozen: fail if uv.lock drifts. --all-packages: every workspace
+      # member (core + cli + schema) incl. dev tools (ruff, ty).
+      - name: Sync workspace
+        run: uv sync --all-packages --frozen
+      - name: ruff
+        run: |
+          uv run ruff check .
+          uv run ruff format --check .
+      - name: ty
+        run: uv run --package openmagpie-core ty check apps/core packages/openmagpie-schema
+      - name: whitespace + file length
+        run: |
+          ./scripts/check-whitespace.sh
+          ./scripts/check-file-length.sh
+      # Fail if a model change has no committed migration — compares models.py
+      # against the migration files (the autodetector), no DB involved.
+      # --check implies no-write on Django >=4.2, so no --dry-run needed.
+      - name: migrations match models
+        run: uv run --package openmagpie-core python apps/core/manage.py makemigrations --check
+
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    # The app is a multi-writer pipeline on Postgres (not SQLite), so the
+    # test DB needs a real Postgres ; mirror the compose dev creds.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: openmagpie
+          POSTGRES_USER: openmagpie
+          POSTGRES_PASSWORD: openmagpie
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U openmagpie -d openmagpie"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Sync workspace
+        run: uv sync --all-packages --frozen
+      # Bare `test` discovers nothing from the repo-root cwd ; pass the app
+      # labels explicitly (every LOCAL_APP, all of which carry tests).
+      - name: Tests
+        run: >-
+          uv run --package openmagpie-core python apps/core/manage.py test --noinput
+          common accounts auth_api sources feeds engine watches
