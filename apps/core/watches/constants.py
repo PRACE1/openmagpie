@@ -11,9 +11,17 @@ source of truth for validation + branching.
 """
 
 from openmagpie_schema.watch_enums import (
-    WatchActionDelivery,
+    DeliveryCadence,
+    WatchActionDeliveryState,
     WatchActionKind,
     WatchActionRunState,
+    WebhookMethod,
 )
 
-__all__ = ["WatchActionDelivery", "WatchActionKind", "WatchActionRunState"]
+__all__ = [
+    "DeliveryCadence",
+    "WatchActionDeliveryState",
+    "WatchActionKind",
+    "WatchActionRunState",
+    "WebhookMethod",
+]

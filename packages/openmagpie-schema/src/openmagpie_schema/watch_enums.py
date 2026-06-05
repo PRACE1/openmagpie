@@ -34,13 +34,44 @@ class WatchActionKind(StrEnum):
     LOG = "log"
 
 
-class WatchActionDelivery(StrEnum):
+class DeliveryCadence(StrEnum):
     """Cadence of a DELIVERY action (webhook / log): emit per item, or
     batch a window into one emission. A field in the action's config, not
     a separate kind."""
 
     INSTANT = "instant"
     DIGEST = "digest"
+
+
+class WebhookMethod(StrEnum):
+    """HTTP verb a webhook action delivers with. Body-bearing verbs only:
+    GET (no body) is deferred (it would map item fields to query params, a
+    separate shape). PUT / PATCH are idempotent, which pairs with the
+    delivery dedup."""
+
+    POST = "POST"
+    PUT = "PUT"
+    PATCH = "PATCH"
+
+
+class WatchActionDeliveryState(StrEnum):
+    """Lifecycle of one WatchActionDelivery (one outbound HTTP call attempt).
+
+    PENDING is set when the row is created, just before the call; the
+    response moves it terminal. Mirrors the delivery half of
+    `WatchActionRunState`:
+      - SUCCEEDED : a 2xx response.
+      - ERRORED   : a PERMANENT failure (blocked destination, redirect, a
+                    non-retryable 4xx) ; the call won't be retried.
+      - FAILED    : a TRANSIENT failure (5xx / 408 / 429 / connect / timeout).
+                    The owning run stays retryable, so a later attempt makes a
+                    NEW delivery row.
+    """
+
+    PENDING = "pending"
+    SUCCEEDED = "succeeded"
+    ERRORED = "errored"
+    FAILED = "failed"
 
 
 class WatchActivityWindow(StrEnum):

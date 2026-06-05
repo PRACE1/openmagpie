@@ -25,5 +25,7 @@ urlpatterns = [
     # Per-action ops live at the top level (addressed by the action's own
     # ULID), not under /watches/<id>/actions ; see watches.action_urls.
     api_include(f"{_V1}/actions", "watches.action_urls"),
+    # A single delivery's detail by its own ULID ; the list is under the action.
+    api_include(f"{_V1}/deliveries", "watches.delivery_urls"),
     api_include(f"{_V1}/engines", "engine.urls"),
 ]

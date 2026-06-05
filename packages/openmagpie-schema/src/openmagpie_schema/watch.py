@@ -18,7 +18,13 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from .watch_actions import WatchActionConfigSummary
-from .watch_enums import WatchActionRunState, WatchActivityWindow
+from .watch_enums import (
+    DeliveryCadence,
+    WatchActionDeliveryState,
+    WatchActionRunState,
+    WatchActivityWindow,
+    WebhookMethod,
+)
 from .wire import ConfigBlob
 
 ResultBlob = dict[str, Any]
@@ -206,3 +212,52 @@ class WatchActionRunListResponse(BaseModel):
     # None means "this is a paged response" (no summary computed) — NOT "no
     # activity". The first page always carries a summary, all-zero if idle.
     summary: WatchActionRunSummary | None = None
+
+
+# ── Delivery (outbound HTTP call audit read path) ─────────────────────────
+
+
+class WatchActionDeliveryWire(BaseModel):
+    """One WatchActionDelivery on the LIST wire
+    (`GET /v1/actions/<action_id>/deliveries`).
+
+    One outbound HTTP call ATTEMPT (a digest that retries makes several, one
+    row each). `target_host` is the redacted destination host (never the full
+    URL or any secret). `http_status` is null until the call returns. The full
+    `request_payload` is NOT here (it can be a large batch body) ; fetch one
+    delivery's detail (WatchActionDeliveryView) for it. Datetimes real; renderer
+    encodes."""
+
+    id: str
+    watch_id: str
+    action_id: str
+    delivery: DeliveryCadence
+    method: WebhookMethod
+    state: WatchActionDeliveryState
+    http_status: int | None = None
+    target_host: str = ""
+    item_count: int = 0
+    attempt: int = 0
+    error: str = ""
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    created_at: datetime | None = None
+
+
+class WatchActionDeliveryView(WatchActionDeliveryWire):
+    """`GET /v1/deliveries/<delivery_id>`, the detail: the list row plus the
+    exact `request_payload` we sent (a WebhookPayload dump), stored
+    point-in-time. Opaque here ; headers are NEVER included (auth tokens). Kept
+    off the list wire so a list call doesn't ship every batch body."""
+
+    request_payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class WatchActionDeliveryListResponse(BaseModel):
+    """`GET /v1/actions/<action_id>/deliveries` envelope. Cursor-paginated by
+    ULID pk, newest-first. `?after=<id>` for the next page; `next_cursor` null
+    when the page wasn't full. Filter by `?state=` (a WatchActionDeliveryState
+    value)."""
+
+    items: list[WatchActionDeliveryWire] = Field(default_factory=list)
+    next_cursor: str | None = None

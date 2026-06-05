@@ -1,4 +1,4 @@
-"""The webhook kind: HTTP POST delivery config + result.
+"""The webhook kind: HTTP delivery config + result (POST | PUT | PATCH).
 
 The first SECRET-BEARING kind: the URL path/query and header values can
 carry auth tokens, so this is the module that exercises the
@@ -7,10 +7,13 @@ carry auth tokens, so this is the module that exercises the
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, ClassVar
 from urllib.parse import urlsplit
 
 from pydantic import BaseModel, Field, field_validator
+
+from openmagpie_schema.watch_enums import DeliveryCadence, WebhookMethod
 
 from ._delivery import DeliveryConfigBase
 from ._secrets import REDACTED, looks_redacted_url, redact_url
@@ -20,10 +23,10 @@ from .base import WatchActionConfigBase, WatchActionConfigSummary
 class WebhookConfig(DeliveryConfigBase):
     """Config for a WatchAction with kind == 'webhook'.
 
-    POSTs the item to `url` with `headers` (sent verbatim, so they carry
-    any auth token). `include_fields` whitelists which item fields are sent
-    (empty = all). `delivery` / `digest_interval_seconds` (from the base)
-    pick instant vs batched delivery.
+    Sends the item to `url` via `method` (POST | PUT | PATCH) with `headers`
+    (sent verbatim, so they carry any auth token). `include_fields` whitelists
+    which item fields are sent (empty = all). `delivery` /
+    `digest_interval_seconds` (from the base) pick instant vs batched delivery.
 
     Secret-bearing: `url` path/query and every header VALUE are masked by
     `redacted_dump` and carried forward by `merge_preserving` when the
@@ -32,6 +35,7 @@ class WebhookConfig(DeliveryConfigBase):
     CONFIG_KIND: ClassVar[str] = "webhook"
 
     url: str
+    method: WebhookMethod = WebhookMethod.POST
     headers: dict[str, str] = Field(default_factory=dict)
     include_fields: list[str] = Field(default_factory=list)
 
@@ -70,7 +74,7 @@ class WebhookConfig(DeliveryConfigBase):
 
     def summary(self) -> WatchActionConfigSummary:
         host = urlsplit(self.url).hostname or "?"
-        return WatchActionConfigSummary(detail=f"POST {host} ({self.delivery_label()})")
+        return WatchActionConfigSummary(detail=f"{self.method.value} {host} ({self.delivery_label()})")
 
     def merge_preserving(self, prior: WatchActionConfigBase) -> WebhookConfig:
         """Restore secrets the operator left masked from `prior`.
@@ -105,7 +109,58 @@ class WebhookConfig(DeliveryConfigBase):
 
 class WebhookResult(BaseModel):
     """Result a webhook run writes to WatchActionRun.result: the HTTP status
-    of the POST that SUCCEEDED (a 2xx ; a non-2xx raises and the run is
+    of the call that SUCCEEDED (a 2xx ; a non-2xx raises and the run is
     FAILED instead)."""
 
     http_status: int
+
+
+# ── Outbound payload contract (the body sent to the receiver) ──────────────
+
+
+class WebhookWatchRef(BaseModel):
+    """Identifies the watch a delivery came from, so a receiver can label the
+    source listener (the fix for the "(unnamed listener)" digest)."""
+
+    id: str
+    name: str
+
+
+class WebhookWindow(BaseModel):
+    """The time window a digest batch covers. Null on instant delivery (a
+    single item, no window)."""
+
+    since: datetime
+    until: datetime
+
+
+class WebhookSource(BaseModel):
+    """Which feed source an item came from: the source's display `label` and
+    its connector `kind`."""
+
+    label: str
+    kind: str
+
+
+class WebhookItem(BaseModel):
+    """One delivered item: its stable `key` (source:external_id), the
+    originating `source`, and the field-filtered `item` body. (Upstream run
+    results, e.g. the filter score, are a separate opt-in run-history
+    enrichment ; not carried here yet.)"""
+
+    key: str
+    source: WebhookSource
+    item: dict[str, Any] = Field(default_factory=dict)
+
+
+class WebhookPayload(BaseModel):
+    """The HTTP body delivered for BOTH cadences. Instant is a one-item batch
+    with `window` null ; digest carries N items plus the window bounds. The
+    shape is self-describing: a receiver renders it (which watch, which window,
+    per-item source) without out-of-band knowledge."""
+
+    watch: WebhookWatchRef
+    action_id: str
+    delivery: DeliveryCadence
+    window: WebhookWindow | None = None
+    items: list[WebhookItem] = Field(default_factory=list)

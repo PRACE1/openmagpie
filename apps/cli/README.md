@@ -35,6 +35,7 @@ Create a feed of sources to watch, then a watch that subscribes to it and runs a
 | `magpie watch create` / `list` / `get` / `edit` / `delete` | Watches over feeds (subscriptions + action chain) |
 | `magpie watch action add` / `list` / `set` / `remove` | Edit a watch's action chain |
 | `magpie watch action activity <action_id>` | Per-state activity summary for one action (`--list` for the run log, `--state` / `-w <window>` filters) |
+| `magpie watch action deliveries <action_id>` / `delivery <id>` | Outbound delivery audit: the list of webhook attempts (state / HTTP / host / items / attempt), and one call in full incl. the exact body sent |
 | `magpie feed template` / `watch template` | Emit a config skeleton to stdout |
 
 Config lives at `~/.magpie/config.json`.

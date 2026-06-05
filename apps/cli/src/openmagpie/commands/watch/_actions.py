@@ -7,14 +7,27 @@ same server `/v1/watches/<id>/actions` endpoints.
 
 from __future__ import annotations
 
+import json
 import sys
 from typing import Any
 
 import typer
 import yaml
 
-from openmagpie_schema.watch import WatchActionRunListResponse, WatchActionRunWire, WatchActionWire
-from openmagpie_schema.watch_enums import BACKLOG_STATES, WatchActionRunState, WatchActivityWindow, choices
+from openmagpie_schema.watch import (
+    WatchActionDeliveryListResponse,
+    WatchActionDeliveryWire,
+    WatchActionRunListResponse,
+    WatchActionRunWire,
+    WatchActionWire,
+)
+from openmagpie_schema.watch_enums import (
+    BACKLOG_STATES,
+    WatchActionDeliveryState,
+    WatchActionRunState,
+    WatchActivityWindow,
+    choices,
+)
 
 from ... import console
 from ...context import app_ctx
@@ -51,12 +64,6 @@ def _score(run: WatchActionRunWire) -> str:
     that don't score (log / webhook) or runs that never produced one."""
     score = run.result.get("score")
     return f"{score:.2f}" if isinstance(score, (int, float)) else "-"
-
-
-def _when(run: WatchActionRunWire) -> str:
-    """Most-progressed timestamp, seconds precision (drop microseconds/tz)."""
-    dt = run.completed_at or run.started_at or run.scheduled_at
-    return dt.strftime("%Y-%m-%d %H:%M:%S") if dt else "-"
 
 
 @action_app.command("list")
@@ -201,12 +208,76 @@ def _print_runs(resp: WatchActionRunListResponse) -> None:
         console.Column("STATE", lambda r: str(r.state)),
         console.Column("SCORE", _score),
         console.Column("ITEM", lambda r: r.feed_item_id),
-        console.Column("WHEN", _when),
+        console.Column("COMPLETED", lambda r: console.timestamp(r.completed_at)),
         console.Column("ERROR", lambda r: r.error or "-"),
     ]
     console.table(resp.items, columns)
     if resp.next_cursor:
         console.log(f"\nNext page: --after {resp.next_cursor}")
+
+
+@action_app.command("deliveries")
+@_handle_api_errors
+def action_deliveries(
+    action_id: str = typer.Argument(..., help="Action id (from `watch action list`)."),
+    state: str | None = typer.Option(
+        None, "--state", "-s", help=f"Filter by delivery state ({choices(WatchActionDeliveryState)})."
+    ),
+    after: str | None = typer.Option(None, "--after", "-a", help="Cursor (delivery id) to page after."),
+    limit: int | None = typer.Option(None, "--limit", "-n", help="Max rows to show."),
+) -> None:
+    """A webhook action's outbound HTTP-call log: one row per attempt (a digest
+    that retries makes several), with the response status and item count. Other
+    action kinds make no HTTP call, so their list is empty."""
+    resp = app_ctx().api.watch.action_deliveries(action_id, state=state, after=after, limit=limit)
+    _print_deliveries(resp)
+
+
+def _print_deliveries(resp: WatchActionDeliveryListResponse) -> None:
+    if not resp.items:
+        console.log("No deliveries match.")
+        return
+    columns: list[console.Column[WatchActionDeliveryWire]] = [
+        console.Column("DELIVERY ID", lambda d: d.id),
+        console.Column("STATE", lambda d: str(d.state)),
+        console.Column("METHOD", lambda d: str(d.method)),
+        console.Column("HTTP", lambda d: str(d.http_status) if d.http_status is not None else "-"),
+        console.Column("HOST", lambda d: d.target_host or "-"),
+        console.Column("ITEMS", lambda d: str(d.item_count)),
+        console.Column("ATTEMPT", lambda d: str(d.attempt)),
+        console.Column("COMPLETED", lambda d: console.timestamp(d.completed_at)),
+        console.Column("ERROR", lambda d: d.error or "-"),
+    ]
+    console.table(resp.items, columns)
+    if resp.next_cursor:
+        console.log(f"\nNext page: --after {resp.next_cursor}")
+
+
+@action_app.command("delivery")
+@_handle_api_errors
+def action_delivery(
+    delivery_id: str = typer.Argument(..., help="Delivery id (from `watch action deliveries`)."),
+) -> None:
+    """Show one delivery in full, including the exact request body that was sent."""
+    d = app_ctx().api.watch.action_delivery(delivery_id)
+    fields: list[tuple[str, str]] = [
+        ("state", str(d.state)),
+        ("http", str(d.http_status) if d.http_status is not None else "-"),
+        ("method", str(d.method)),
+        ("host", d.target_host or "-"),
+        ("items", str(d.item_count)),
+        ("attempt", str(d.attempt)),
+        ("completed", console.timestamp(d.completed_at)),
+        ("error", d.error or "-"),
+    ]
+    cols: list[console.Column[tuple[str, str]]] = [
+        console.Column("FIELD", lambda kv: kv[0], width=12),
+        console.Column("VALUE", lambda kv: kv[1]),
+    ]
+    console.header(f"delivery {d.id}")
+    console.table(fields, cols)
+    console.log("\nrequest payload:")
+    console.log(json.dumps(d.request_payload, indent=2, sort_keys=True))
 
 
 def _parse_action_or_abort(text: str) -> tuple[str, dict[str, Any]]:

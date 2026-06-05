@@ -26,7 +26,15 @@ from ._delivery import DeliveryConfigBase
 from .base import WatchActionConfigBase, WatchActionConfigSummary
 from .log import LogConfig, LogResult
 from .semantic_filter import EngineSpec, SemanticFilterConfig, SemanticFilterResult
-from .webhook import WebhookConfig, WebhookResult
+from .webhook import (
+    WebhookConfig,
+    WebhookItem,
+    WebhookPayload,
+    WebhookResult,
+    WebhookSource,
+    WebhookWatchRef,
+    WebhookWindow,
+)
 
 __all__ = [
     "DeliveryConfigBase",
@@ -38,5 +46,10 @@ __all__ = [
     "WatchActionConfigBase",
     "WatchActionConfigSummary",
     "WebhookConfig",
+    "WebhookItem",
+    "WebhookPayload",
     "WebhookResult",
+    "WebhookSource",
+    "WebhookWatchRef",
+    "WebhookWindow",
 ]

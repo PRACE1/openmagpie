@@ -115,6 +115,7 @@ class DigestBatchMixin:
         state: WatchActionRunState,
         result: dict | None = None,
         error: str = "",
+        delivery_id: str = "",
         now: datetime | None = None,
     ) -> int:
         """Mark a digest batch terminal in one UPDATE. Guarded on state ==
@@ -124,14 +125,25 @@ class DigestBatchMixin:
         `result` (the rendered digest) is written onto EVERY run in the batch,
         so the runs audit shows the same batch render N times. Acceptable
         duplication for a v1 audit ; the batch is the unit of delivery, the
-        per-run row is just its membership. Chunked under the DB's per-statement
+        per-run row is just its membership. `delivery_id` links every run to the
+        WatchActionDelivery (HTTP call) that carried the batch (blank for the
+        local log, which makes no call). Chunked under the DB's per-statement
         parameter ceiling (common.db.ID_IN_CHUNK) so a large batch can't crash
         `id__in`."""
         ts = now or timezone.now()
+        fields: dict = {
+            "state": state.value,
+            "result": result or {},
+            "error": error,
+            "completed_at": ts,
+            "updated_at": ts,
+        }
+        if delivery_id:
+            fields["delivery_id"] = delivery_id
         written = 0
         for chunk in itertools.batched(run_ids, ID_IN_CHUNK, strict=False):
             written += WatchActionRun.objects.filter(id__in=chunk, account_id=self.account_id, state=_PENDING).update(
-                state=state.value, result=result or {}, error=error, completed_at=ts, updated_at=ts
+                **fields
             )
         return written
 

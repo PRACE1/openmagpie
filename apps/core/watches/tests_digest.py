@@ -10,9 +10,9 @@ from pydantic import ValidationError
 from feeds.models import FeedItem
 from openmagpie_schema.watch import WatchActionInput
 from openmagpie_schema.watch_actions import LogConfig
-from openmagpie_schema.watch_enums import WatchActionDelivery, WatchActionRunState
+from openmagpie_schema.watch_enums import DeliveryCadence, WatchActionRunState
 from watches.actions.log import LogAction
-from watches.actions.protocol import ActionOutcome
+from watches.actions.protocol import ActionResult
 from watches.models import WatchAction, WatchActionDigestWindow, WatchActionRun
 from watches.operations.digest_flush import WatchDigestFlushOperation
 from watches.operations.drain import WatchDrainOperation
@@ -109,7 +109,7 @@ class DigestDeliveryTests(TestCase):
         max_attempts = settings.WATCH_RUN_MAX_ATTEMPTS
         later = window.close_at + timedelta(seconds=1)
 
-        with mock.patch.object(LogAction, "run_batch", side_effect=RuntimeError("destination down")):
+        with mock.patch.object(LogAction, "run", side_effect=RuntimeError("destination down")):
             for _ in range(max_attempts):
                 # Window stays due (open + past close_at) until it goes terminal.
                 self.assertEqual(self._count(str(a1.id), "pending"), 2)
@@ -202,12 +202,12 @@ class DigestDeliveryTests(TestCase):
         poison_title = FeedItem.objects.get(id=poison.feed_item_id).data["title"]
         later = window.close_at + timedelta(seconds=1)
 
-        def fail_poison(action, *, items):
-            if any(it.get("title") == poison_title for it in items):
+        def fail_poison(action, *, items, context):
+            if any(it.data.get("title") == poison_title for it in items):
                 raise RuntimeError("poison item")
-            return ActionOutcome(state=WatchActionRunState.SUCCEEDED)
+            return ActionResult(state=WatchActionRunState.SUCCEEDED)
 
-        with mock.patch.object(LogAction, "run_batch", side_effect=fail_poison):
+        with mock.patch.object(LogAction, "run", side_effect=fail_poison):
             self._flush_due(later)
 
         # The fresh (never-tried) run delivered this pass; the poison sank
@@ -228,12 +228,12 @@ class DigestDeliveryTests(TestCase):
         _, a1, window = self._digest_window_with_items(2, now=now)
         later = window.close_at + timedelta(seconds=1)
 
-        def emit_then_delete(action, *, items):
+        def emit_then_delete(action, *, items, context):
             # Simulate the concurrent mutate-away committing during the POST.
             WatchActionDigestWindow.objects.filter(action_id=str(a1.id)).delete()
-            return ActionOutcome(state=WatchActionRunState.SUCCEEDED)
+            return ActionResult(state=WatchActionRunState.SUCCEEDED)
 
-        with mock.patch.object(LogAction, "run_batch", side_effect=emit_then_delete):
+        with mock.patch.object(LogAction, "run", side_effect=emit_then_delete):
             self._flush_due(later)
 
         # Batch committed SUCCEEDED (not rolled back to PENDING) and no crash.
@@ -247,9 +247,9 @@ class DigestDeliveryTests(TestCase):
         # locally without a server round-trip. (The magnitude bound lives in
         # server policy ; see test_digest_interval_must_be_in_bounds.)
         with self.assertRaises(ValidationError):
-            LogConfig(delivery=WatchActionDelivery.DIGEST, digest_interval_seconds=0)
+            LogConfig(delivery=DeliveryCadence.DIGEST, digest_interval_seconds=0)
         # Instant ignores the interval, so 0 is fine there.
-        self.assertFalse(LogConfig(delivery=WatchActionDelivery.INSTANT, digest_interval_seconds=0).is_digest())
+        self.assertFalse(LogConfig(delivery=DeliveryCadence.INSTANT, digest_interval_seconds=0).is_digest())
 
     def test_digest_interval_must_be_in_bounds(self) -> None:
         with self.assertRaises(PolicyError):

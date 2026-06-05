@@ -15,10 +15,13 @@ Plus small value formatters:
   the `is_active` flag carried on feeds + watches.
   rate(numerator, denominator) -> "X%" or "—"   — percentage label,
   rendered "—" when the denominator is zero.
+  timestamp(dt) -> "YYYY-MM-DD HH:MM:SS" or "-"   — one datetime to seconds
+  precision (or "-" when None), for a list view's time column.
 """
 
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from datetime import datetime
 
 import typer
 
@@ -99,3 +102,9 @@ def rate(numerator: int, denominator: int) -> str:
     if not denominator:
         return "—"
     return f"{100 * numerator / denominator:.0f}%"
+
+
+def timestamp(dt: datetime | None) -> str:
+    """One datetime to seconds precision (drops microseconds / tz) ; "-" when
+    None. For a list view's time column."""
+    return dt.strftime("%Y-%m-%d %H:%M:%S") if dt else "-"

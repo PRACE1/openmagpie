@@ -9,7 +9,7 @@ exists yet there). Mounted at `/v1/actions` in `conf.urls`.
 
 from common.urls import api_path
 
-from . import views
+from . import views, views_audit
 
 urlpatterns = [
     api_path(
@@ -19,7 +19,12 @@ urlpatterns = [
     ),
     api_path(
         "<str:action_id>/runs",
-        views.ActionRunsView.as_view(),
+        views_audit.ActionRunsView.as_view(),
         name="action_runs",
+    ),
+    api_path(
+        "<str:action_id>/deliveries",
+        views_audit.ActionDeliveriesView.as_view(),
+        name="action_deliveries",
     ),
 ]
