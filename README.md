@@ -82,7 +82,7 @@ graph TD
 
 | Layer | Shipped |
 |---|---|
-| Connectors | Reddit (`reddit_subreddit`) |
+| Connectors | Reddit (`reddit_subreddit`), RSS/Atom (`rss`) |
 | Engines | Ollama (`ollama`) |
 | Action kinds | `semantic_filter` (LLM-judged), `webhook`, `log` |
 | Delivery modes | instant, digest |
@@ -124,19 +124,33 @@ make dev-cli ARGS="feed create"         # opens $EDITOR on a feed template (sour
 make dev-cli ARGS="watch create"        # opens $EDITOR on a watch template (feeds + action chain)
 make dev-tick                           # poll + run the chain once now (vs waiting for the scheduler)
 
-make dev-cli ARGS="watch action activity <watch_id> <action_id>"   # inspect the run log
+make dev-cli ARGS="watch action activity <action_id>"   # per-state summary (+ --list for the run log)
 ```
 
 A watch's `actions:` chain typically starts with a `semantic_filter` (your plain-English criteria + threshold) followed by a `webhook` or `log` delivery. Pick a backfill window when you create the feed and the first `make dev-tick` scores real posts against your criteria immediately, no waiting for the scheduler.
 
 Or invoke directly: `cd apps/cli && uv run magpie auth login`. Run `uv tool install ./apps/cli` to put `magpie` on your `PATH` globally.
 
+### Running it continuously
+
+`make dev-tick` runs one pass by hand. For ongoing operation, start the background scheduler — the four pipeline stages each tick on their own cadence (poll feeds → trigger watches → drain runs → flush digests):
+
+```bash
+make up-jobs                  # start the tickers (a pid + log per stage under .jobs/)
+tail -f .jobs/drain.log       # watch a stage: poll / trigger / drain / digest
+make down-jobs                # stop them
+```
+
+Each stage is **single-flight**: a pass that outruns its interval self-skips the next tick, so loops never stack. That means production scheduling is just a plain cron entry per command on the same cadences — no flock or singleton infrastructure needed. Override any cadence inline, e.g. `make up-jobs DRAIN_INTERVAL=30`.
+
 Useful targets (run `make help` for the full list):
 
 ```
 make up              # start the stack
 make down            # tear down
-make logs            # tail everything
+make up-jobs         # run poll/trigger/drain/digest as background tickers (.jobs/*.log)
+make down-jobs       # stop the background tickers
+make logs            # tail everything (Docker containers)
 make dev-manage CMD=createsuperuser
 make dev-dbshell     # open a psql shell on the Postgres db
 make dev-test        # run Django test suite
@@ -155,7 +169,7 @@ apps/
     common/                   BaseModel (ULID PK + timestamps), ULIDField, locks, db ceilings, /healthz
     accounts/                 User / Account / UserProfile + services + AccountScopedAPIView mixin
     auth_api/                 signup / login / logout / me + tokens/* + device-flow handshake (DRF)
-    sources/                  Connectors (Reddit subreddit, ...) + SourcePayload classes + registry
+    sources/                  Connectors (Reddit subreddit, RSS/Atom, ...) + SourcePayload classes + registry
     feeds/                    Feed + Source + FeedItem models + poll orchestrator + item log
     engine/                   Engine Protocol + OllamaEngine package + registry
     watches/                  Watch + WatchFeed + WatchPath + WatchAction + WatchActionRun (chain + trigger/drain/flush crons)
@@ -169,6 +183,11 @@ scripts/                      Helper scripts (whitespace check, make-help)
 ```
 
 See [AGENTS.md](AGENTS.md) for design conventions (char pointers, typed-blob pattern, the watch trigger/drain/flush execution model, etc.).
+
+## Documentation
+
+- [magpie CLI reference](apps/cli/README.md) — install + the full command list.
+- [AGENTS.md](AGENTS.md) — cross-cutting design conventions, plus per-area notes: [apps/core](apps/core/AGENTS.md) · [apps/cli](apps/cli/AGENTS.md) · [web](web/AGENTS.md).
 
 ## License
 

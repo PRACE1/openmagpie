@@ -34,7 +34,7 @@ Create a feed of sources to watch, then a watch that subscribes to it and runs a
 | `magpie feed list-sources` / `set-sources` / `remove-source` / `template-sources` / `export-sources` | Manage a feed's source set |
 | `magpie watch create` / `list` / `get` / `edit` / `delete` | Watches over feeds (subscriptions + action chain) |
 | `magpie watch action add` / `list` / `set` / `remove` | Edit a watch's action chain |
-| `magpie watch action activity <watch_id> <action_id>` | Run audit log for one action (newest-first, `--state` filter) |
+| `magpie watch action activity <action_id>` | Per-state activity summary for one action (`--list` for the run log, `--state` / `-w <window>` filters) |
 | `magpie feed template` / `watch template` | Emit a config skeleton to stdout |
 
 Config lives at `~/.magpie/config.json`.
