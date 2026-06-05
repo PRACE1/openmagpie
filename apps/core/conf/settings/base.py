@@ -1,7 +1,15 @@
+import logging
 import os
+import time
 from pathlib import Path
 
 from common.env import env_bool
+
+# Log timestamps in UTC regardless of the host clock. Python's logging
+# `asctime` uses `time.localtime` by default ; the app is TIME_ZONE="UTC",
+# so force the formatter converter to match (and the datefmt carries a
+# trailing `Z` to say so explicitly).
+logging.Formatter.converter = time.gmtime
 
 BASE_DIR = Path(__file__).resolve().parents[2]  # core/
 
@@ -324,7 +332,7 @@ LOGGING = {
         "concise": {
             "format": "{asctime} {levelname:<7} {name}: {message}",
             "style": "{",
-            "datefmt": "%H:%M:%S",
+            "datefmt": "%Y-%m-%d %H:%M:%SZ",
         },
     },
     "handlers": {

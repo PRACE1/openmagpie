@@ -14,7 +14,7 @@ from openmagpie_schema.watch_enums import WatchActionRunState
 from watches import run_messages
 from watches.actions.protocol import ActionOutcome
 from watches.actions.webhook import WebhookAction
-from watches.management.commands.process_due_runs import _fmt_duration, _progress
+from watches.management.commands.process_due_runs import _breakdown, _fmt_duration, _progress
 from watches.models import WatchAction, WatchActionRun
 from watches.policy import PolicyError
 from watches.registry import load_config
@@ -235,3 +235,9 @@ class ProgressFormatTests(TestCase):
         self.assertEqual(_progress(2, 10, time.monotonic() - 20), "[2/10, ~1m20s left]")
         # More fell due than the snapshot: remaining floors at 0, never negative.
         self.assertEqual(_progress(12, 10, time.monotonic() - 20), "[12/10, ~0s left]")
+
+    def test_breakdown(self) -> None:
+        # Lifecycle order (succeeded before gated, per the enum), commas not
+        # dots, "none" if empty — regardless of insertion order.
+        self.assertEqual(_breakdown({"gated": 342, "succeeded": 3}), "3 succeeded, 342 gated")
+        self.assertEqual(_breakdown({}), "none")
