@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  An open-source semantic listener. Tell it what to listen for. It picks out what matters from any stream.
+  An open-source semantic listener. Tell it what to listen for. It pulls out what matters.
 </p>
 
 <p align="center">
@@ -14,9 +14,7 @@
 
 ## What is OpenMagpie?
 
-OpenMagpie is a self-hostable listening tool. Point it at any stream (Reddit, GitHub, Slack, Google Docs, anything that emits events) and describe in plain English what you care about, and it surfaces the matches that matter. It gets better at hearing you over time as you give feedback on its picks.
-
-It is **only** a listener: it watches, judges, learns, and notifies. It does not auto-reply, post back to sources, run workflows, or generate reports. Saying no to those keeps the product sharp.
+OpenMagpie is a self-hostable listening tool. Point it at any stream (Reddit, RSS Feeds, GitHub, Slack, Google Docs, anything that you find yourself checking repeatedly) and describe in plain English what you care about, and OpenMagpie surfaces the matches.
 
 ## Architecture
 
