@@ -19,6 +19,7 @@ from watches.models import WatchAction, WatchActionRun
 from watches.policy import PolicyError
 from watches.registry import load_config
 from watches.services import WatchActionRunService, WatchService
+from watches.services.runs._common import completion_ts
 
 
 class ReplaceChainUpsertTests(TestCase):
@@ -241,3 +242,61 @@ class ProgressFormatTests(TestCase):
         # dots, "none" if empty — regardless of insertion order.
         self.assertEqual(_breakdown({"gated": 342, "succeeded": 3}), "3 succeeded, 342 gated")
         self.assertEqual(_breakdown({}), "none")
+
+
+class CompletedAtRuleTests(TestCase):
+    """completion_ts is the one rule: completed_at is set iff the run is
+    TERMINAL — never on a retry-pending FAILED. Plus the live invariant that
+    complete() honors it."""
+
+    def test_terminal_states_complete(self) -> None:
+        now = timezone.now()
+        for state in ("succeeded", "gated", "errored", "skipped"):
+            self.assertEqual(completion_ts(state, 1, now), now)
+
+    def test_failed_is_terminal_only_when_exhausted(self) -> None:
+        now = timezone.now()
+        self.assertIsNone(completion_ts("failed", 1, now))  # under the cap -> retry
+        self.assertEqual(completion_ts("failed", settings.WATCH_RUN_MAX_ATTEMPTS, now), now)  # exhausted
+
+    def test_backlog_states_never_complete(self) -> None:
+        now = timezone.now()
+        self.assertIsNone(completion_ts("pending", 1, now))
+        self.assertIsNone(completion_ts("running", 99, now))
+
+    def test_complete_leaves_retryable_failed_uncompleted(self) -> None:
+        account_id = ulid.ulid()
+        svc = WatchActionRunService(account_id=account_id)
+        run = WatchActionRun.objects.create(
+            account_id=account_id,
+            watch_id=ulid.ulid(),
+            action_id=ulid.ulid(),
+            feed_item_id=ulid.ulid(),
+            state="running",
+            attempts=1,  # under WATCH_RUN_MAX_ATTEMPTS (3)
+            scheduled_at=timezone.now(),
+            started_at=timezone.now(),
+        )
+        done = svc.complete(run, state=WatchActionRunState.FAILED, error="boom")
+        assert done is not None
+        # Retry-pending: FAILED but NOT terminal, so no completed_at.
+        self.assertEqual(done.state, "failed")
+        self.assertIsNone(done.completed_at)
+        done.refresh_from_db()
+        self.assertIsNone(done.completed_at)
+
+    def test_complete_stamps_terminal_success(self) -> None:
+        account_id = ulid.ulid()
+        svc = WatchActionRunService(account_id=account_id)
+        run = WatchActionRun.objects.create(
+            account_id=account_id,
+            watch_id=ulid.ulid(),
+            action_id=ulid.ulid(),
+            feed_item_id=ulid.ulid(),
+            state="running",
+            attempts=1,
+            scheduled_at=timezone.now(),
+            started_at=timezone.now(),
+        )
+        done = svc.complete(run, state=WatchActionRunState.SUCCEEDED)
+        assert done is not None and done.completed_at is not None

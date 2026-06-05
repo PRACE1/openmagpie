@@ -88,3 +88,26 @@ class WatchActionRunState(StrEnum):
     FAILED = "failed"
     ERRORED = "errored"
     SKIPPED = "skipped"
+
+
+# State classification — the SINGLE source of truth, referenced instead of
+# re-listing states across the drain, the services, and the CLI summary.
+#
+#   BACKLOG    : not run to a resting state yet (the live queue).
+#   CLAIMABLE  : the drain may pick it up — PENDING (never run) or FAILED
+#                (transient, retryable while under the attempts cap).
+#   TERMINAL   : reached a final resting state ; never re-claimed. NOTE FAILED
+#                is NOT here: it's terminal ONLY once attempts are exhausted,
+#                which needs the attempts count, so terminality of a FAILED
+#                run is decided alongside the cap (see the server's
+#                `completion_ts`), not by membership in this set.
+BACKLOG_STATES = frozenset({WatchActionRunState.PENDING, WatchActionRunState.RUNNING})
+CLAIMABLE_STATES = frozenset({WatchActionRunState.PENDING, WatchActionRunState.FAILED})
+TERMINAL_STATES = frozenset(
+    {
+        WatchActionRunState.SUCCEEDED,
+        WatchActionRunState.GATED,
+        WatchActionRunState.ERRORED,
+        WatchActionRunState.SKIPPED,
+    }
+)

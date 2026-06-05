@@ -308,9 +308,17 @@ class ActionRunsView(ActionScopedAPIView):
         summary = None
         if after is None:
             since, until = _window_bounds(window, timezone.now())
-            evaluated, pending, running = self.run_svc.summary_for_action(str(action.id), since=since, until=until)
+            evaluated, pending, running, retrying = self.run_svc.summary_for_action(
+                str(action.id), since=since, until=until
+            )
             summary = WatchActionRunSummary(
-                window=window, since=since, until=until, evaluated=evaluated, pending=pending, running=running
+                window=window,
+                since=since,
+                until=until,
+                evaluated=evaluated,
+                pending=pending,
+                running=running,
+                retrying=retrying,
             )
         return Response(
             WatchActionRunListResponse(items=items, next_cursor=next_cursor, summary=summary).model_dump(mode="json")

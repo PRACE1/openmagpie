@@ -14,7 +14,7 @@ import typer
 import yaml
 
 from openmagpie_schema.watch import WatchActionRunListResponse, WatchActionRunWire, WatchActionWire
-from openmagpie_schema.watch_enums import WatchActionRunState, WatchActivityWindow, choices
+from openmagpie_schema.watch_enums import BACKLOG_STATES, WatchActionRunState, WatchActivityWindow, choices
 
 from ... import console
 from ...context import app_ctx
@@ -31,12 +31,11 @@ _WINDOW_LABELS = {
     WatchActivityWindow.MONTH: "last 30 days",
 }
 
-# Terminal run states, in the order the summary prints them — DERIVED from
-# the shared enum (terminal = everything but the live backlog) so a new
+# Evaluated states, in the order the summary prints them — DERIVED from the
+# shared enum (everything but the live BACKLOG_STATES) so a new
 # WatchActionRunState shows up automatically instead of being silently
 # dropped (client consumes the enum, never re-encodes it).
-_BACKLOG_STATES = (WatchActionRunState.PENDING, WatchActionRunState.RUNNING)
-_EVALUATED_ORDER = [s for s in WatchActionRunState if s not in _BACKLOG_STATES]
+_EVALUATED_ORDER = [s for s in WatchActionRunState if s not in BACKLOG_STATES]
 
 
 def _score(run: WatchActionRunWire) -> str:
@@ -179,7 +178,8 @@ def _print_summary(action_id: str, resp: WatchActionRunListResponse) -> None:
         console.Column("BACKLOG (now)", lambda kv: kv[0], width=24),
         console.Column("RUNS", lambda kv: kv[1]),
     ]
-    console.table([("pending", str(s.pending)), ("running", str(s.running))], backlog_cols)
+    backlog = [("pending", str(s.pending)), ("running", str(s.running)), ("retrying", str(s.retrying))]
+    console.table(backlog, backlog_cols)
     console.log("\nDrill in: --list (runs) | -s <state> (filter) | -w <window>")
 
 

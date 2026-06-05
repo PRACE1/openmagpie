@@ -178,10 +178,13 @@ class WatchActionRunSummary(BaseModel):
     until: datetime | None = None
     # Keyed by the run-state enum (identical on the wire — StrEnum serializes
     # to its value — but typed for the CLI, closing the "state magic strings"
-    # door). pending/running never appear here (they have no completion time).
+    # door). Backlog states never appear here (they have no completion time).
     evaluated: dict[WatchActionRunState, int] = Field(default_factory=dict)
+    # Live backlog (not time-bound): pending/running haven't reached a resting
+    # state ; retrying is a transient FAILED still under the attempts cap.
     pending: int = 0
     running: int = 0
+    retrying: int = 0
 
 
 class WatchActionRunListResponse(BaseModel):
