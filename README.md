@@ -186,8 +186,9 @@ See [AGENTS.md](AGENTS.md) for design conventions (char pointers, typed-blob pat
 
 ## Documentation
 
-- [magpie CLI reference](apps/cli/README.md) — install + the full command list.
-- [AGENTS.md](AGENTS.md) — cross-cutting design conventions, plus per-area notes: [apps/core](apps/core/AGENTS.md) · [apps/cli](apps/cli/AGENTS.md) · [web](web/AGENTS.md).
+- [CONTRIBUTING.md](CONTRIBUTING.md): contribution flow, branch naming, running the checks.
+- [magpie CLI reference](apps/cli/README.md): install + the full command list.
+- [AGENTS.md](AGENTS.md): cross-cutting design conventions, plus per-area notes: [apps/core](apps/core/AGENTS.md) · [apps/cli](apps/cli/AGENTS.md) · [web](web/AGENTS.md).
 
 ## License
 
