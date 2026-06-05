@@ -110,6 +110,19 @@ class ActionActivitySummaryTests(TestCase):
         self.assertEqual(s["pending"], 2)
         self.assertEqual(s["running"], 1)
 
+    def test_retrying_backlog_is_failed_without_completion(self) -> None:
+        # A transient FAILED still under the cap (no completed_at) is "retrying"
+        # backlog — not "evaluated", not lost from the summary.
+        now = timezone.now()
+        self._run("failed", completed_at=None)  # retry-pending
+        self._run("failed", completed_at=now)  # exhausted/terminal -> evaluated, not retrying
+        self._run("pending")
+        resp = self.client.get(f"/v1/actions/{self.action_id}/runs", {"window": "7d"})
+        s = resp.json()["summary"]
+        self.assertEqual(s["retrying"], 1)
+        self.assertEqual(s["pending"], 1)
+        self.assertEqual(s["evaluated"], {"failed": 1})  # only the completed one
+
     def test_summary_omitted_while_paging(self) -> None:
         resp = self.client.get(f"/v1/actions/{self.action_id}/runs", {"after": ulid.ulid()})
         self.assertIsNone(resp.json()["summary"])

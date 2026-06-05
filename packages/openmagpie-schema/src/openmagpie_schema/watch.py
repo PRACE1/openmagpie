@@ -168,20 +168,30 @@ class WatchActionRunSummary(BaseModel):
 
     `evaluated` is the per-terminal-state breakdown of runs JUDGED within
     [since, until) — windowed on completion (evaluation) time, not enqueue
-    time. `pending` / `running` are the CURRENT queue depth, NOT time-bound
-    (those runs have no completion time yet), surfaced so the backlog stays
-    visible. `window` is the requested preset ; `since` / `until` are the
-    concrete bounds the server resolved it to."""
+    time. `pending` / `running` / `retrying` are the CURRENT live backlog,
+    NOT time-bound (those runs have no completion time yet), surfaced so the
+    queue stays visible. `window` is the requested preset ; `since` / `until`
+    are the concrete bounds the server resolved it to.
+
+    DISJOINT by `completed_at`: a FAILED run is counted in `evaluated[failed]`
+    iff it's terminal (attempts exhausted -> has a completion time) and in
+    `retrying` iff it's not (still under the cap -> no completion time). So a
+    consumer can sum across buckets without double-counting."""
 
     window: WatchActivityWindow
     since: datetime
     until: datetime | None = None
     # Keyed by the run-state enum (identical on the wire — StrEnum serializes
     # to its value — but typed for the CLI, closing the "state magic strings"
-    # door). pending/running never appear here (they have no completion time).
+    # door). Backlog states never appear here (they have no completion time).
+    # An `evaluated[failed]` count is the EXHAUSTED (terminal) failures only.
     evaluated: dict[WatchActionRunState, int] = Field(default_factory=dict)
+    # Live backlog (not time-bound): pending/running haven't reached a resting
+    # state ; retrying is a transient FAILED still under the attempts cap (no
+    # completed_at), distinct from the exhausted failures in `evaluated`.
     pending: int = 0
     running: int = 0
+    retrying: int = 0
 
 
 class WatchActionRunListResponse(BaseModel):

@@ -14,7 +14,7 @@ import typer
 import yaml
 
 from openmagpie_schema.watch import WatchActionRunListResponse, WatchActionRunWire, WatchActionWire
-from openmagpie_schema.watch_enums import WatchActionRunState, WatchActivityWindow, choices
+from openmagpie_schema.watch_enums import BACKLOG_STATES, WatchActionRunState, WatchActivityWindow, choices
 
 from ... import console
 from ...context import app_ctx
@@ -31,12 +31,19 @@ _WINDOW_LABELS = {
     WatchActivityWindow.MONTH: "last 30 days",
 }
 
-# Terminal run states, in the order the summary prints them — DERIVED from
-# the shared enum (terminal = everything but the live backlog) so a new
+# Evaluated states, in the order the summary prints them — DERIVED from the
+# shared enum (everything but the live BACKLOG_STATES) so a new
 # WatchActionRunState shows up automatically instead of being silently
 # dropped (client consumes the enum, never re-encodes it).
-_BACKLOG_STATES = (WatchActionRunState.PENDING, WatchActionRunState.RUNNING)
-_EVALUATED_ORDER = [s for s in WatchActionRunState if s not in _BACKLOG_STATES]
+_EVALUATED_ORDER = [s for s in WatchActionRunState if s not in BACKLOG_STATES]
+
+
+def _evaluated_label(state: WatchActionRunState) -> str:
+    """Row label for the EVALUATED table. FAILED here is the EXHAUSTED kind
+    (terminal, completed) ; the transient/retry-pending FAILED is the
+    separate `retrying` backlog row. Spell it out so the two never read as
+    one count split across tables."""
+    return "failed (exhausted)" if state is WatchActionRunState.FAILED else state.value
 
 
 def _score(run: WatchActionRunWire) -> str:
@@ -137,8 +144,9 @@ def action_activity(
     the individual runs with --list.
 
     Default shows what the action EVALUATED in the window (succeeded / gated
-    / failed / ...) plus the live pending backlog. Any row-level filter
-    (--list / --state / --after) switches to the paginated run log."""
+    / failed (exhausted) / ...) plus the live backlog (pending / running /
+    retrying). Any row-level filter (--list / --state / --after) switches to
+    the paginated run log."""
     api = app_ctx().api.watch
     if list_ or state or after:
         _print_runs(api.action_runs(action_id, state=state, after=after, limit=limit))
@@ -173,13 +181,14 @@ def _print_summary(action_id: str, resp: WatchActionRunListResponse) -> None:
         console.Column("RUNS", lambda kv: kv[1]),
     ]
     console.header(f"action {action_id}")
-    console.table([(st.value, str(s.evaluated.get(st, 0))) for st in _EVALUATED_ORDER], pair_cols)
+    console.table([(_evaluated_label(st), str(s.evaluated.get(st, 0))) for st in _EVALUATED_ORDER], pair_cols)
     console.log("")  # blank line between the two tables
     backlog_cols: list[console.Column[tuple[str, str]]] = [
         console.Column("BACKLOG (now)", lambda kv: kv[0], width=24),
         console.Column("RUNS", lambda kv: kv[1]),
     ]
-    console.table([("pending", str(s.pending)), ("running", str(s.running))], backlog_cols)
+    backlog = [("pending", str(s.pending)), ("running", str(s.running)), ("retrying", str(s.retrying))]
+    console.table(backlog, backlog_cols)
     console.log("\nDrill in: --list (runs) | -s <state> (filter) | -w <window>")
 
 
