@@ -103,8 +103,13 @@ Pull whichever model you want to judge with; set `OLLAMA_DEFAULT_MODEL` to its n
 ```bash
 git clone git@github.com:obris-dev/openmagpie.git
 cd openmagpie
-cp apps/core/.env.example apps/core/.env
+make quickstart      # create .env, build + wait for health, migrate, print next steps
+```
 
+`make quickstart` is the one-shot path. The equivalent manual steps:
+
+```bash
+cp apps/core/.env.example apps/core/.env
 make build           # build and start Django + the web app
 make dev-migrate     # run migrations, create cache table, bootstrap the CLI OAuth app
 ```
@@ -129,7 +134,7 @@ make dev-cli ARGS="watch action activity <action_id>"   # per-state summary (+ -
 
 A watch's `actions:` chain typically starts with a `semantic_filter` (your plain-English criteria + threshold) followed by a `webhook` or `log` delivery. Pick a backfill window when you create the feed and the first `make dev-tick` scores real posts against your criteria immediately, no waiting for the scheduler.
 
-Or invoke directly: `cd apps/cli && uv run magpie auth login`. Run `uv tool install ./apps/cli` to put `magpie` on your `PATH` globally.
+Prefer a global `magpie`? `make install-cli` puts the **dev** CLI on your `PATH` (a snapshot built from this checkout; re-run after a `git pull` to update); then `magpie auth login`. (Or run it from the repo: `make dev-cli ARGS="auth login"`.)
 
 ### Running it continuously
 
@@ -146,6 +151,8 @@ Each stage is **single-flight**: a pass that outruns its interval self-skips the
 Useful targets (run `make help` for the full list):
 
 ```
+make quickstart      # fresh-clone setup: .env + build + migrate
+make install-cli     # put the dev magpie CLI on your PATH
 make up              # start the stack
 make down            # tear down
 make up-jobs         # run poll/trigger/drain/digest as background tickers (.jobs/*.log)
