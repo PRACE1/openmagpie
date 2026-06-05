@@ -1,4 +1,25 @@
-.PHONY: up build down logs logs-core logs-web dev-exec dev-manage dev-test dev-makemigrations dev-dbshell dev-migrate dev-bootstrap dev-tick up-jobs down-jobs _job-up dev-lint dev-lint-fix dev-types dev-check dev-web dev-web-shell dev-cli-sync dev-cli hooks
+.PHONY: quickstart install-cli up build down logs logs-core logs-web dev-exec dev-manage dev-test dev-makemigrations dev-dbshell dev-migrate dev-bootstrap dev-tick up-jobs down-jobs _job-up dev-lint dev-lint-fix dev-types dev-check dev-web dev-web-shell dev-cli-sync dev-cli hooks
+
+quickstart: ## One command from a fresh clone: env + build (wait healthy) + migrate
+	@test -f apps/core/.env || { cp apps/core/.env.example apps/core/.env; echo "Created apps/core/.env from .env.example"; }
+	docker compose up --build -d --wait
+	$(MAKE) dev-migrate
+	@echo ""
+	@echo "Ready. Next:"
+	@echo "  Web:  http://localhost:3001  (create an account; you're signed in)"
+	@echo "  CLI:  make install-cli   then   magpie auth login"
+	@echo ""
+	@echo "Heads up: OpenMagpie is BYO-LLM. Point OLLAMA_URL in apps/core/.env at"
+	@echo "an Ollama you control (default host.docker.internal:11434)."
+
+install-cli: ## Install the DEV magpie CLI on your PATH (snapshot of this checkout)
+	# NOT --editable: the cli depends on the openmagpie-schema workspace package,
+	# and an editable tool install lets a stale schema copy shadow the live one
+	# (ModuleNotFoundError on newer submodules). Non-editable builds a CURRENT
+	# schema wheel from the workspace. It's a SNAPSHOT, not live: re-run after a
+	# git pull to update. --reinstall makes re-running idempotent.
+	uv tool install --reinstall ./apps/cli
+	@echo "Installed the dev CLI (snapshot of this checkout; re-run after a pull). Try: magpie auth login"
 
 up: ## Start local Docker dev environment
 	docker compose up -d
