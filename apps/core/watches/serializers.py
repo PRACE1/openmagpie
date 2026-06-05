@@ -19,6 +19,7 @@ from rest_framework import serializers
 from common.pydantic_errors import pydantic_errors_to_drf
 from feeds.services import FeedService
 from openmagpie_schema.watch import (
+    WatchActionDeliveryWire,
     WatchActionInput,
     WatchActionRunWire,
     WatchActionWire,
@@ -28,7 +29,7 @@ from openmagpie_schema.watch import (
 )
 from openmagpie_schema.watch_actions import WatchActionConfigSummary
 from openmagpie_schema.watch_enums import WatchActionRunState
-from watches.models import Watch, WatchAction, WatchActionRun
+from watches.models import Watch, WatchAction, WatchActionDelivery, WatchActionRun
 from watches.policy import PolicyError
 from watches.registry import KNOWN_KINDS, load_config, validate_config
 
@@ -154,6 +155,29 @@ def watch_action_run_wire(run: WatchActionRun) -> WatchActionRunWire:
         started_at=run.started_at,
         completed_at=run.completed_at,
         created_at=run.created_at,
+    )
+
+
+def watch_action_delivery_wire(delivery: WatchActionDelivery) -> WatchActionDeliveryWire:
+    """One delivery's wire shape (the HTTP-call audit row). The string columns
+    (delivery / method / state) coerce to their enums on the wire model."""
+    return WatchActionDeliveryWire(
+        id=str(delivery.id),
+        watch_id=str(delivery.watch_id),
+        action_id=str(delivery.action_id),
+        delivery=delivery.delivery,
+        method=delivery.method,
+        state=delivery.state,
+        http_status=delivery.http_status,
+        request_key=delivery.request_key,
+        target_host=delivery.target_host,
+        item_count=delivery.item_count,
+        attempt=delivery.attempt,
+        error=delivery.error,
+        request_payload=delivery.request_payload or {},
+        started_at=delivery.started_at,
+        completed_at=delivery.completed_at,
+        created_at=delivery.created_at,
     )
 
 

@@ -13,8 +13,20 @@ from typing import Any
 import typer
 import yaml
 
-from openmagpie_schema.watch import WatchActionRunListResponse, WatchActionRunWire, WatchActionWire
-from openmagpie_schema.watch_enums import BACKLOG_STATES, WatchActionRunState, WatchActivityWindow, choices
+from openmagpie_schema.watch import (
+    WatchActionDeliveryListResponse,
+    WatchActionDeliveryWire,
+    WatchActionRunListResponse,
+    WatchActionRunWire,
+    WatchActionWire,
+)
+from openmagpie_schema.watch_enums import (
+    BACKLOG_STATES,
+    WatchActionDeliveryState,
+    WatchActionRunState,
+    WatchActivityWindow,
+    choices,
+)
 
 from ... import console
 from ...context import app_ctx
@@ -203,6 +215,46 @@ def _print_runs(resp: WatchActionRunListResponse) -> None:
         console.Column("ITEM", lambda r: r.feed_item_id),
         console.Column("WHEN", _when),
         console.Column("ERROR", lambda r: r.error or "-"),
+    ]
+    console.table(resp.items, columns)
+    if resp.next_cursor:
+        console.log(f"\nNext page: --after {resp.next_cursor}")
+
+
+@action_app.command("deliveries")
+@_handle_api_errors
+def action_deliveries(
+    action_id: str = typer.Argument(..., help="Action id (from `watch action list`)."),
+    state: str | None = typer.Option(
+        None, "--state", "-s", help=f"Filter by delivery state ({choices(WatchActionDeliveryState)})."
+    ),
+    after: str | None = typer.Option(None, "--after", "-a", help="Cursor (delivery id) to page after."),
+    limit: int | None = typer.Option(None, "--limit", "-n", help="Max rows to show."),
+) -> None:
+    """A delivery action's outbound HTTP-call log: one row per attempt (a digest
+    that retries makes several), with the response status and item count."""
+    resp = app_ctx().api.watch.action_deliveries(action_id, state=state, after=after, limit=limit)
+    _print_deliveries(resp)
+
+
+def _delivery_when(d: WatchActionDeliveryWire) -> str:
+    """Most-progressed timestamp, seconds precision."""
+    dt = d.completed_at or d.started_at or d.created_at
+    return dt.strftime("%Y-%m-%d %H:%M:%S") if dt else "-"
+
+
+def _print_deliveries(resp: WatchActionDeliveryListResponse) -> None:
+    if not resp.items:
+        console.log("No deliveries match.")
+        return
+    columns: list[console.Column[WatchActionDeliveryWire]] = [
+        console.Column("DELIVERY ID", lambda d: d.id),
+        console.Column("STATE", lambda d: str(d.state)),
+        console.Column("METHOD", lambda d: str(d.method)),
+        console.Column("HTTP", lambda d: str(d.http_status) if d.http_status is not None else "-"),
+        console.Column("ITEMS", lambda d: str(d.item_count)),
+        console.Column("WHEN", _delivery_when),
+        console.Column("ERROR", lambda d: d.error or "-"),
     ]
     console.table(resp.items, columns)
     if resp.next_cursor:

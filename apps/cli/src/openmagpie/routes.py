@@ -84,6 +84,10 @@ class actions:
     def runs(action_id: str) -> str:
         return f"{_ACTIONS}/{action_id}/runs"
 
+    @staticmethod
+    def deliveries(action_id: str) -> str:
+        return f"{_ACTIONS}/{action_id}/deliveries"
+
 
 class engines:
     """`/v1/engines/*` routes the CLI consumes."""

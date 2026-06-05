@@ -12,6 +12,7 @@ import builtins
 from typing import Any
 
 from openmagpie_schema.watch import (
+    WatchActionDeliveryListResponse,
     WatchActionRunListResponse,
     WatchActionWire,
     WatchInput,
@@ -115,3 +116,21 @@ class WatchApi:
             params["window"] = window
         raw = self._http.get(routes.actions.runs(action_id), params=params or None)
         return WatchActionRunListResponse.model_validate(raw)
+
+    def action_deliveries(
+        self,
+        action_id: str,
+        *,
+        state: str | None = None,
+        after: str | None = None,
+        limit: int | None = None,
+    ) -> WatchActionDeliveryListResponse:
+        params: dict[str, str] = {}
+        if state:
+            params["state"] = state
+        if after:
+            params["after"] = after
+        if limit is not None:
+            params["limit"] = str(limit)
+        raw = self._http.get(routes.actions.deliveries(action_id), params=params or None)
+        return WatchActionDeliveryListResponse.model_validate(raw)
