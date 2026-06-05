@@ -15,6 +15,16 @@ repos:
 
   - repo: local
     hooks:
+      - id: check-branch-name
+        name: branch name convention
+        # Reject a commit on a branch that doesn't match <type>/<kebab-slug>.
+        # Same script CI runs, so local + CI agree ; main + detached HEAD
+        # (rebase) are skipped inside the script.
+        entry: ./scripts/check-branch-name.sh
+        language: system
+        pass_filenames: false
+        always_run: true
+
       - id: check-whitespace
         name: trailing whitespace + final newlines
         # The repo's existing checker — scans tracked text files via git.

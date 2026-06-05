@@ -47,6 +47,7 @@ pyproject.toml + uv.lock    uv workspace root (one lock for all members)
 - **State-machine values get a const object + derived type from the start.** No bare string literals in match arms or status checks. Python: `class Status(Enum): ...`. TypeScript: `const PHASE = {...} as const; type Phase = typeof PHASE[keyof typeof PHASE]`.
 - **No em dashes.** Use commas or periods. Applies to UI text, comments, docs.
 - **Convention docs describe what to do.** No justifications, no historical context, no "we chose X because of Y." Forward-looking constraints are fine; past-decision narratives are not.
+- **Branch names are `<type>/<kebab-slug>`.** Type is a Conventional-Commits prefix (`feat` | `fix` | `docs` | `refactor` | `test` | `chore` | `ci` | `perf` | `build` | `style` | `revert`); `main` is exempt. Enforced by `scripts/check-branch-name.sh` (pre-commit + CI). See [CONTRIBUTING.md](CONTRIBUTING.md) for the per-type meanings and the PR flow.
 
 ## Stack
 

@@ -22,6 +22,17 @@ env:
   POSTGRES_PORT: "5432"
 
 jobs:
+  # PR-only: validate the source branch name. On push to main there's no
+  # feature branch to check (main is exempt), so this job skips.
+  branch-name:
+    name: branch-name
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check branch name
+        run: ./scripts/check-branch-name.sh "${{ github.head_ref }}"
+
   lint:
     name: lint
     runs-on: ubuntu-latest
