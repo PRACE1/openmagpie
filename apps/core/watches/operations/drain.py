@@ -26,9 +26,9 @@ from feeds.services import FeedItemService
 from openmagpie_schema.watch_enums import WatchActionDelivery, WatchActionRunState
 from watches import run_messages
 from watches.actions import registry as actions_registry
-from watches.actions.protocol import ActionOutcome, DeliveryAction, FilterAction
+from watches.actions.protocol import ActionOutcome, DeliveryAction, DeliveryCall, FilterAction
 from watches.models import WatchAction, WatchActionRun
-from watches.services import WatchActionRunService, WatchActionService
+from watches.services import WatchActionDeliveryService, WatchActionRunService, WatchActionService
 
 from .advance import enqueue_next
 from .delivery import build_delivery_inputs
@@ -59,6 +59,10 @@ class WatchDrainOperation:
     def feed_item_svc(self) -> FeedItemService:
         return FeedItemService(account_id=self.account_id)
 
+    @cached_property
+    def delivery_svc(self) -> WatchActionDeliveryService:
+        return WatchActionDeliveryService(account_id=self.account_id)
+
     def run(self) -> ActionOutcome | None:
         """Dispatch the run and persist the outcome ; return it, or None if
         the claim was lost (another drain re-claimed after a reap, see
@@ -71,10 +75,32 @@ class WatchDrainOperation:
         to log and leave to the reaper. The terminal write is a guarded CAS;
         the chain only advances (next action enqueued in the SAME txn) when
         that write WON, so a stale completer never double-enqueues."""
-        action, outcome = self._resolve()
+        action, outcome, call = self._resolve()
         with transaction.atomic():
+            # Record the HTTP call (if any) FIRST so the run can link to it.
+            # The call already happened, so the row is accurate even if the CAS
+            # below loses the claim (a true record of a real POST) ; only the
+            # run->delivery link is conditional on winning.
+            delivery_id = ""
+            if call is not None:
+                delivery = self.delivery_svc.record(
+                    watch_id=str(self.action_run.watch_id),
+                    action_id=str(self.action_run.action_id),
+                    delivery=WatchActionDelivery.INSTANT,
+                    call=call,
+                    outcome_state=outcome.state,
+                    error=outcome.error,
+                    attempt=self.action_run.attempts,
+                    now=self.now,
+                )
+                delivery_id = str(delivery.id)
             committed = self.run_svc.complete(
-                self.action_run, state=outcome.state, result=outcome.result, error=outcome.error, now=self.now
+                self.action_run,
+                state=outcome.state,
+                result=outcome.result,
+                error=outcome.error,
+                delivery_id=delivery_id,
+                now=self.now,
             )
             if committed is None:
                 return None  # lost the claim; the fresh winner owns the advance
@@ -84,11 +110,12 @@ class WatchDrainOperation:
                 enqueue_next(self.action_run, action, now=self.now)
         return outcome
 
-    def _resolve(self) -> tuple[WatchAction | None, ActionOutcome]:
+    def _resolve(self) -> tuple[WatchAction | None, ActionOutcome, DeliveryCall | None]:
         """Load the run's action + item, dispatch to the kind's impl, and
-        return (action, outcome). The action is returned even on a
-        downstream failure so `run` can resolve 'next in chain' if it ever
-        needs to ; it is None only when the action row itself is gone.
+        return (action, outcome, call). `call` is the HTTP-attempt record for a
+        delivery action (None for filters / resolution failures). The action is
+        returned even on a downstream failure so `run` can resolve 'next in
+        chain' ; it is None only when the action row itself is gone.
 
         Every `error` here is a sanitized `run_messages` string (the field
         is operator-facing) ; the raw cause goes to the log keyed by run id."""
@@ -97,19 +124,19 @@ class WatchDrainOperation:
             action = self.action_svc.get(str(run.action_id))
         except WatchAction.DoesNotExist:
             logger.warning("run=%s action=%s no longer exists", run.id, run.action_id)
-            return None, ActionOutcome(state=WatchActionRunState.ERRORED, error=run_messages.ACTION_GONE)
+            return None, ActionOutcome(state=WatchActionRunState.ERRORED, error=run_messages.ACTION_GONE), None
         try:
             item = self.feed_item_svc.get(str(run.feed_item_id))
         except FeedItem.DoesNotExist:
             logger.warning("run=%s feed_item=%s no longer exists", run.id, run.feed_item_id)
-            return action, ActionOutcome(state=WatchActionRunState.ERRORED, error=run_messages.ITEM_GONE)
+            return action, ActionOutcome(state=WatchActionRunState.ERRORED, error=run_messages.ITEM_GONE), None
         try:
             impl = actions_registry.get(action.kind)
         except KeyError:
             logger.warning("run=%s has no executor for kind=%s", run.id, action.kind)
-            return action, ActionOutcome(state=WatchActionRunState.ERRORED, error=run_messages.NO_EXECUTOR)
+            return action, ActionOutcome(state=WatchActionRunState.ERRORED, error=run_messages.NO_EXECUTOR), None
         try:
-            outcome = self._dispatch(action, impl, item)
+            outcome, call = self._dispatch(action, impl, item)
         except Exception as exc:
             # Protocol contract: an impl raises only on UNEXPECTED failure ->
             # retryable FAILED (the attempt was already burned at claim). Raw
@@ -117,13 +144,14 @@ class WatchDrainOperation:
             # transient delivery failure is RETURNED as FAILED, not raised, so
             # the failed attempt is still logged ; this catch is the backstop.)
             logger.exception("run=%s kind=%s failed: %s", run.id, action.kind, exc)
-            return action, ActionOutcome(state=WatchActionRunState.FAILED, error=run_messages.TRANSIENT)
-        return action, outcome
+            return action, ActionOutcome(state=WatchActionRunState.FAILED, error=run_messages.TRANSIENT), None
+        return action, outcome, call
 
-    def _dispatch(self, action: WatchAction, impl: object, item: FeedItem) -> ActionOutcome:
+    def _dispatch(self, action: WatchAction, impl: object, item: FeedItem) -> tuple[ActionOutcome, DeliveryCall | None]:
         """Run the action's impl against the item: a DELIVERY action emits one
-        item (instant) via `deliver`, a FILTER action judges it via `run`. An
-        impl satisfying neither protocol is a permanent ERROR."""
+        item (instant) via `deliver` (returning its call record), a FILTER
+        action judges it via `run`. An impl satisfying neither protocol is a
+        permanent ERROR."""
         if isinstance(impl, DeliveryAction):
             items, context = build_delivery_inputs(
                 [(self.action_run, item)],
@@ -131,8 +159,9 @@ class WatchDrainOperation:
                 delivery=WatchActionDelivery.INSTANT,
                 run_svc=self.run_svc,
             )
-            return impl.deliver(action, items=items, context=context).outcome
+            result = impl.deliver(action, items=items, context=context)
+            return result.outcome, result.call
         if isinstance(impl, FilterAction):
-            return impl.run(action, item_data=item.data)
+            return impl.run(action, item_data=item.data), None
         logger.warning("run=%s kind=%s satisfies no executor protocol", self.action_run.id, action.kind)
-        return ActionOutcome(state=WatchActionRunState.ERRORED, error=run_messages.NO_EXECUTOR)
+        return ActionOutcome(state=WatchActionRunState.ERRORED, error=run_messages.NO_EXECUTOR), None

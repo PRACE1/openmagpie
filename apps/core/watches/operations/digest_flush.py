@@ -30,10 +30,15 @@ from feeds.services import FeedItemService
 from openmagpie_schema.watch_enums import WatchActionDelivery, WatchActionRunState
 from watches import run_messages
 from watches.actions import registry as actions_registry
-from watches.actions.protocol import ActionOutcome, DeliveryAction
+from watches.actions.protocol import ActionOutcome, DeliveryAction, DeliveryCall, delivery_request_key
 from watches.models import WatchAction, WatchActionDigestWindow, WatchActionRun
 from watches.registry import load_config
-from watches.services import WatchActionRunService, WatchActionService, WatchDigestWindowService
+from watches.services import (
+    WatchActionDeliveryService,
+    WatchActionRunService,
+    WatchActionService,
+    WatchDigestWindowService,
+)
 
 from .advance import enqueue_next_batch
 from .delivery import build_delivery_inputs
@@ -78,6 +83,10 @@ class WatchDigestFlushOperation:
     @cached_property
     def digest_svc(self) -> WatchDigestWindowService:
         return WatchDigestWindowService(account_id=self.account_id)
+
+    @cached_property
+    def delivery_svc(self) -> WatchActionDeliveryService:
+        return WatchActionDeliveryService(account_id=self.account_id)
 
     def run(self) -> ActionOutcome | None:
         """Drain one due window: emit its accumulated batch in cap-sized
@@ -188,6 +197,18 @@ class WatchDigestFlushOperation:
             window_until=until,
         )
 
+        # Dedup: if this exact batch already landed (a crash after a successful
+        # POST but before complete_batch committed), DON'T re-POST -- mark the
+        # runs SUCCEEDED linked to that prior delivery. The delivery is recorded
+        # in its OWN commit before completion (below), so it survives that crash
+        # window for this lookup to find.
+        existing = self.delivery_svc.find_succeeded(action_id=self.action_id, request_key=delivery_request_key(items))
+        if existing is not None:
+            logger.info("digest action=%s dedup: batch already delivered (%s)", self.action_id, existing.id)
+            return self._complete_slice(
+                batch_runs, action, ActionOutcome(WatchActionRunState.SUCCEEDED), str(existing.id), len(runs)
+            )
+
         # Emit OUTSIDE any transaction (network). A transient failure is
         # RETURNED as FAILED (so the failed attempt can be logged) ; an
         # unexpected bug raises. Both -> _fail_slice: burn an attempt on the
@@ -205,13 +226,52 @@ class WatchDigestFlushOperation:
             logger.exception("digest flush failed action=%s: %s", self.action_id, exc)
             return self._fail_slice(batch_runs, gone_ids)
         outcome = result.outcome
+        # Record EVERY attempt (success or transient) as a delivery row in its
+        # OWN commit (record() autocommits, we're outside any txn) BEFORE
+        # completing/failing the runs, so a SUCCEEDED row survives a crash here
+        # for the next flush to dedup on instead of re-POSTing.
+        delivery_id = self._record(batch_runs, result.call, outcome) if result.call is not None else ""
         if outcome.state == WatchActionRunState.FAILED:
             return self._fail_slice(batch_runs, gone_ids)
+        return self._complete_slice(batch_runs, action, outcome, delivery_id, len(runs))
 
+    def _record(self, batch_runs: list[WatchActionRun], call: DeliveryCall, outcome: ActionOutcome) -> str:
+        """Persist one HTTP attempt as a WatchActionDelivery and return its id.
+        attempt = the batch's max prior attempts + 1 (this call's number)."""
+        delivery = self.delivery_svc.record(
+            watch_id=str(batch_runs[0].watch_id),
+            action_id=self.action_id,
+            delivery=WatchActionDelivery.DIGEST,
+            call=call,
+            outcome_state=outcome.state,
+            error=outcome.error,
+            attempt=max(r.attempts for r in batch_runs) + 1,
+            now=self.now,
+        )
+        return str(delivery.id)
+
+    def _complete_slice(
+        self,
+        batch_runs: list[WatchActionRun],
+        action: WatchAction,
+        outcome: ActionOutcome,
+        delivery_id: str,
+        total: int,
+    ) -> _SliceResult:
+        """Mark the batch terminal (linked to its delivery), advance the chain
+        on SUCCEEDED, and close the window if that drained it. `more` loops the
+        caller when pending runs remain (a window larger than one slice).
+        `total` is the whole slice (batch + already-completed gone items) for
+        the progress meter."""
         batch_ids = [str(r.id) for r in batch_runs]
         with transaction.atomic():
             self.run_svc.complete_batch(
-                batch_ids, state=outcome.state, result=outcome.result, error=outcome.error, now=self.now
+                batch_ids,
+                state=outcome.state,
+                result=outcome.result,
+                error=outcome.error,
+                delivery_id=delivery_id,
+                now=self.now,
             )
             if outcome.state == WatchActionRunState.SUCCEEDED:
                 # Successor is the same for the whole batch -> resolve once.
@@ -219,7 +279,7 @@ class WatchDigestFlushOperation:
             # close_if_drained returns True iff no pending run remains -> drained.
             # If it didn't close, more slices are queued: loop again.
             closed = self.digest_svc.close_if_drained(self.action_id)
-        return _SliceResult(outcome=outcome, more=not closed, count=len(runs))
+        return _SliceResult(outcome=outcome, more=not closed, count=total)
 
     def _fail_slice(self, batch_runs: list[WatchActionRun], gone_ids: list[str]) -> _SliceResult:
         """A transient batch failure: burn one attempt per run (terminal at the

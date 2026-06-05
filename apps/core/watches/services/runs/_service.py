@@ -161,6 +161,7 @@ class WatchActionRunService(DigestBatchMixin):
         state: WatchActionRunState,
         result: dict | None = None,
         error: str = "",
+        delivery_id: str = "",
         now: datetime | None = None,
     ) -> WatchActionRun | None:
         """Write a terminal state + result onto a claimed (RUNNING) run.
@@ -190,15 +191,27 @@ class WatchActionRunService(DigestBatchMixin):
         # (transient, under the attempts cap) is NOT done, so it stays null and
         # reads as "retrying", not "evaluated". One rule for every site.
         ct = completion_ts(state.value, run.attempts, ts)
-        won = WatchActionRun.objects.filter(id=run.id, state=_RUNNING, attempts=run.attempts).update(
-            state=state.value, result=result or {}, error=error, completed_at=ct, updated_at=ts
-        )
+        # delivery_id links the run to the WatchActionDelivery (HTTP call) that
+        # carried it ; blank for non-delivery runs (filters, the local log) and
+        # left untouched (not cleared) when not supplied.
+        fields: dict = {
+            "state": state.value,
+            "result": result or {},
+            "error": error,
+            "completed_at": ct,
+            "updated_at": ts,
+        }
+        if delivery_id:
+            fields["delivery_id"] = delivery_id
+        won = WatchActionRun.objects.filter(id=run.id, state=_RUNNING, attempts=run.attempts).update(**fields)
         if not won:
             return None
         run.state = state.value
         run.result = result or {}
         run.error = error
         run.completed_at = ct
+        if delivery_id:
+            run.delivery_id = delivery_id
         return run
 
     def list_for_action(
