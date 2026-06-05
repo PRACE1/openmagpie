@@ -13,6 +13,7 @@ from typing import Any
 
 from openmagpie_schema.watch import (
     WatchActionDeliveryListResponse,
+    WatchActionDeliveryView,
     WatchActionRunListResponse,
     WatchActionWire,
     WatchInput,
@@ -33,6 +34,23 @@ __all__ = [
     "WatchView",
     "WatchWire",
 ]
+
+
+def _list_params(
+    *, state: str | None = None, after: str | None = None, limit: int | None = None, window: str | None = None
+) -> dict[str, str] | None:
+    """The cursor-list query params shared by the action runs / deliveries
+    endpoints, dropping the unset ones. None when empty so httpx sends none."""
+    params: dict[str, str] = {}
+    if state:
+        params["state"] = state
+    if after:
+        params["after"] = after
+    if limit is not None:
+        params["limit"] = str(limit)
+    if window:
+        params["window"] = window
+    return params or None
 
 
 class WatchApi:
@@ -104,17 +122,9 @@ class WatchApi:
         limit: int | None = None,
         window: str | None = None,
     ) -> WatchActionRunListResponse:
-        params: dict[str, str] = {}
-        if state:
-            params["state"] = state
-        if after:
-            params["after"] = after
-        if limit is not None:
-            params["limit"] = str(limit)
-        # Activity-summary window preset (server resolves it to bounds).
-        if window:
-            params["window"] = window
-        raw = self._http.get(routes.actions.runs(action_id), params=params or None)
+        # window is the activity-summary preset (server resolves it to bounds).
+        params = _list_params(state=state, after=after, limit=limit, window=window)
+        raw = self._http.get(routes.actions.runs(action_id), params=params)
         return WatchActionRunListResponse.model_validate(raw)
 
     def action_deliveries(
@@ -125,12 +135,10 @@ class WatchApi:
         after: str | None = None,
         limit: int | None = None,
     ) -> WatchActionDeliveryListResponse:
-        params: dict[str, str] = {}
-        if state:
-            params["state"] = state
-        if after:
-            params["after"] = after
-        if limit is not None:
-            params["limit"] = str(limit)
-        raw = self._http.get(routes.actions.deliveries(action_id), params=params or None)
+        params = _list_params(state=state, after=after, limit=limit)
+        raw = self._http.get(routes.actions.deliveries(action_id), params=params)
         return WatchActionDeliveryListResponse.model_validate(raw)
+
+    def action_delivery(self, delivery_id: str) -> WatchActionDeliveryView:
+        raw = self._http.get(routes.deliveries.detail(delivery_id))
+        return WatchActionDeliveryView.model_validate(raw)

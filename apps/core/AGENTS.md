@@ -28,13 +28,15 @@ watches/
     runs.py               WatchActionRunService (enqueue / claim / complete) + Global
     _run_batches.py       DigestBatchMixin (digest_batch / complete_batch / fail_batch)
     digest.py             WatchDigestWindowService (window open/close coordination) + Global
-    deliveries.py         WatchActionDeliveryService (record / find_succeeded dedup / list) for the HTTP-call audit
-  actions/                EXECUTION registry: protocol.py (Action base + FilterAction / DeliveryAction siblings),
-                          registry.py (kind -> impl), semantic_filter.py / webhook.py / log.py, _config.py (load_typed).
-                          DELIVERY kinds emit one self-describing payload (watch + window + per-item source + score)
-                          via deliver(); webhook supports POST | PUT | PATCH and records a WatchActionDelivery per call.
+    deliveries.py         WatchActionDeliveryService (record / list) for the HTTP-call audit
+  actions/                EXECUTION registry: protocol.py (ONE Action interface: run(items, context) -> ActionResult
+                          for every kind, uniform dispatch no branching ; OutboundActionResult adds the `outbound`
+                          OutboundCall record), registry.py (kind -> impl), semantic_filter.py / webhook.py / log.py,
+                          _config.py (load_typed). Webhook emits one self-describing payload (watch + window +
+                          per-item source), supports POST | PUT | PATCH, and returns an OutboundActionResult
+                          so the operations layer logs a WatchActionDelivery per call.
   operations/             one-shot orchestrators: trigger.py, drain.py, digest_flush.py, advance.py (enqueue_next),
-                          delivery.py (build_delivery_inputs: enrich runs+items+watch into DeliveryItem/DeliveryContext)
+                          run_inputs.py (build_run_inputs: enrich runs+items+watch into ActionItem/ActionContext)
   registry.py             CONFIG registry: kind -> Pydantic config class (parse / validate / load_config)
   policy.py               write-time guards (engine registered, digest interval bound, webhook SSRF)
   run_messages.py         operator-facing WatchActionRun.error strings (sanitized; raw cause -> logs)
@@ -161,7 +163,7 @@ for window in WatchDigestWindowService.Global.iter_due():
 
 - **`delivery` is a config field on the delivery kinds** (webhook, log), shared via `DeliveryConfigBase` (`delivery: instant|digest` + `digest_interval_seconds`). `semantic_filter` is a filter, not a delivery, so it doesn't carry these. The presence rule (DIGEST requires a positive interval) is a pure invariant in the shared schema; the magnitude bound (min/max seconds) is settings-coupled and lives in `policy`.
 - **A digest is the ACTION's property, not the run's** — there is no per-run digest flag. A run is "digest" iff its action has a `WatchActionDigestWindow` row. The window is a FIXED window anchored at first arrival (`close_at = now + interval`; later arrivals join without extending it). Window open/close is coordinated by `select_for_update` on the window row INSIDE the caller's transaction (a cache lock can't live in the drain's completion txn).
-- **The flush gathers the action's pending runs as the batch** (capped at `DIGEST_MAX_BATCH_ITEMS`; a larger window drains over successive flushes), emits once via the impl's `run_batch` (webhook: one POST with per-item `key`s for receiver dedup; log: one entry), marks them succeeded + advances each, then closes the window iff drained (re-checked under the row lock so a straggler during emit isn't orphaned). A transient batch failure burns one attempt per run (the digest analog of the claim-time cap) so a down destination drains to terminal instead of re-emitting forever.
+- **The flush gathers the action's pending runs as the batch** (capped at `DIGEST_MAX_BATCH_ITEMS`; a larger window drains over successive flushes), emits once via the impl's `run` (webhook: one POST with per-item `key`s for receiver dedup; log: one entry), marks them succeeded + advances each, then closes the window iff drained (re-checked under the row lock so a straggler during emit isn't orphaned). A transient batch failure burns one attempt per run (the digest analog of the claim-time cap) so a down destination drains to terminal instead of re-emitting forever.
 - **Digest delivery is at-least-once by design**: the emit is OUTSIDE the terminal transaction, so a crash after a successful emit but before the commit re-emits next flush. Webhook carries a per-item idempotency `key`; a duplicate log line is harmless. Receivers MUST dedup on the key.
 
 ## Plugins (connectors, engines, actions)

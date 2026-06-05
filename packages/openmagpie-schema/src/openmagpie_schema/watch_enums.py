@@ -34,7 +34,7 @@ class WatchActionKind(StrEnum):
     LOG = "log"
 
 
-class WatchActionDelivery(StrEnum):
+class DeliveryCadence(StrEnum):
     """Cadence of a DELIVERY action (webhook / log): emit per item, or
     batch a window into one emission. A field in the action's config, not
     a separate kind."""

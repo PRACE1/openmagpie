@@ -1,18 +1,19 @@
 """WebhookAction: deliver feed items to an HTTP endpoint (kind=`webhook`).
 
-Sends one self-describing `WebhookPayload` (watch + window + per-item source +
-score) to the configured URL with the configured method (POST | PUT | PATCH).
-Instant is a one-item batch ; digest is N items in one window: ONE payload
-shape for both. Status handling:
+Sends one self-describing `WebhookPayload` (watch + window + per-item source)
+to the configured URL with the configured method (POST | PUT | PATCH). Instant
+is a one-item batch ; digest is N items in one window: ONE payload shape for
+both. Status handling:
   - 2xx                                  -> SUCCEEDED
   - 5xx / 408 / 429 / connect / timeout  -> FAILED (transient ; the run stays
     retryable, so a later attempt makes a NEW delivery row)
   - blocked destination / 3xx / other 4xx -> ERRORED (permanent)
 Redirects are NOT followed (a redirect Location is an unvetted SSRF hop).
 
-EVERY attempt returns a `DeliveryCall` (even failures) so the operations layer
-can log it as a WatchActionDelivery. The body is URL-free in logs (the URL
-path/query can carry a token).
+Every attempt that reaches the network returns an `OutboundActionResult` (even
+failures) carrying an `OutboundCall`, so the operations layer logs it as a
+WatchActionDelivery. The body is URL-free in logs (the URL path/query can carry
+a token).
 """
 
 from __future__ import annotations
@@ -41,12 +42,12 @@ from watches.models import WatchAction
 
 from ._config import load_typed
 from .protocol import (
-    ActionOutcome,
-    DeliveryCall,
-    DeliveryContext,
-    DeliveryItem,
-    DeliveryResult,
-    delivery_request_key,
+    Action,
+    ActionContext,
+    ActionItem,
+    ActionResult,
+    OutboundActionResult,
+    OutboundCall,
 )
 
 logger = logging.getLogger("watches")
@@ -57,32 +58,30 @@ logger = logging.getLogger("watches")
 _RETRYABLE_4XX = frozenset({408, 429})
 
 
-class WebhookAction:
+class WebhookAction(Action):
     """Delivers items to a URL ; classifies the HTTP response into the run
-    outcome and records the call. `deliver` handles instant (one item) and
-    digest (N items) alike."""
+    result and records the call. `run` handles instant (one item) and digest
+    (N items) alike."""
 
     kind = WatchActionKind.WEBHOOK.value
 
-    def deliver(self, action: WatchAction, *, items: list[DeliveryItem], context: DeliveryContext) -> DeliveryResult:
+    def run(self, action: WatchAction, *, items: list[ActionItem], context: ActionContext) -> ActionResult:
         config = load_typed(action, WebhookConfig, log_label="webhook")
         if config is None:
-            # No call was made: no DeliveryCall to log.
-            return DeliveryResult(ActionOutcome(state=WatchActionRunState.ERRORED, error=run_messages.CONFIG_INVALID))
+            # No call was made: a base result, no OutboundCall to log.
+            return ActionResult(state=WatchActionRunState.ERRORED, error=run_messages.CONFIG_INVALID)
         payload = _build_payload(action, config, items, context)
         return self._deliver(action, config, items, payload)
 
     def _deliver(
-        self, action: WatchAction, config: WebhookConfig, items: list[DeliveryItem], payload: WebhookPayload
-    ) -> DeliveryResult:
+        self, action: WatchAction, config: WebhookConfig, items: list[ActionItem], payload: WebhookPayload
+    ) -> OutboundActionResult:
         body = payload.model_dump(mode="json")
-        request_key = delivery_request_key(items)
         target_host = urlsplit(config.url).hostname or ""
 
-        def call(http_status: int | None) -> DeliveryCall:
+        def make_call(http_status: int | None) -> OutboundCall:
             """The attempt record, shared across every outcome branch."""
-            return DeliveryCall(
-                request_key=request_key,
+            return OutboundCall(
                 target_host=target_host,
                 method=config.method.value,
                 http_status=http_status,
@@ -101,72 +100,72 @@ class WebhookAction:
         )
         if reason:
             logger.warning("webhook: blocked destination for action=%s: %s", action.id, reason)
-            return DeliveryResult(
-                ActionOutcome(state=WatchActionRunState.ERRORED, error=run_messages.WEBHOOK_BLOCKED), call(None)
+            return OutboundActionResult(
+                state=WatchActionRunState.ERRORED, error=run_messages.WEBHOOK_BLOCKED, outbound=make_call(None)
             )
 
+        # Dedup is uniform across cadences: every item carries its `key` in the
+        # body (instant is a one-item batch), so there's no separate header.
         headers = dict(config.headers)
-        # Instant carries a per-item Idempotency-Key header for naive receivers ;
-        # a digest batch identifies each item by its in-body `key` instead.
-        if len(items) == 1:
-            headers["Idempotency-Key"] = items[0].key
         try:
             response = httpx.request(
                 config.method.value, config.url, json=body, headers=headers, timeout=settings.WEBHOOK_TIMEOUT_SECONDS
             )
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
-            return self._classify_status(action, exc.response.status_code, call)
+            return self._classify_status(action, exc.response.status_code, make_call)
         except httpx.HTTPError as exc:
             # Connect / timeout / etc: transient, no status. URL-free log (the
             # raw httpx str carries the url, a secret carrier).
             logger.warning("webhook: action=%s transient %s", action.id, type(exc).__name__)
-            return DeliveryResult(
-                ActionOutcome(state=WatchActionRunState.FAILED, error=run_messages.TRANSIENT), call(None)
+            return OutboundActionResult(
+                state=WatchActionRunState.FAILED, error=run_messages.TRANSIENT, outbound=make_call(None)
             )
 
-        return DeliveryResult(
-            ActionOutcome(
-                state=WatchActionRunState.SUCCEEDED,
-                result=WebhookResult(http_status=response.status_code).model_dump(mode="json"),
-            ),
-            call(response.status_code),
+        return OutboundActionResult(
+            state=WatchActionRunState.SUCCEEDED,
+            result=WebhookResult(http_status=response.status_code).model_dump(mode="json"),
+            outbound=make_call(response.status_code),
         )
 
     def _classify_status(
-        self, action: WatchAction, status: int, call: Callable[[int | None], DeliveryCall]
-    ) -> DeliveryResult:
-        """A non-2xx response -> the right outcome + a DeliveryCall carrying the
+        self, action: WatchAction, status: int, make_call: Callable[[int | None], OutboundCall]
+    ) -> OutboundActionResult:
+        """A non-2xx response -> the right result + an OutboundCall carrying the
         status. follow_redirects stays False, so a 3xx arrives here too."""
         result = WebhookResult(http_status=status).model_dump(mode="json")
         if 300 <= status < 400:
             # A redirect never reaches the receiver and re-redirects on retry:
             # a permanent misconfig (endpoint moved / wrong URL) -> ERRORED.
             logger.warning("webhook: action=%s redirect %s (not followed)", action.id, status)
-            return DeliveryResult(
-                ActionOutcome(state=WatchActionRunState.ERRORED, result=result, error=run_messages.WEBHOOK_REDIRECT),
-                call(status),
+            return OutboundActionResult(
+                state=WatchActionRunState.ERRORED,
+                result=result,
+                error=run_messages.WEBHOOK_REDIRECT,
+                outbound=make_call(status),
             )
         if 400 <= status < 500 and status not in _RETRYABLE_4XX:
             # Permanent client error (bad url / auth / payload): no retry.
             logger.warning("webhook: action=%s permanent %s", action.id, status)
-            return DeliveryResult(
-                ActionOutcome(state=WatchActionRunState.ERRORED, result=result, error=run_messages.WEBHOOK_REJECTED),
-                call(status),
+            return OutboundActionResult(
+                state=WatchActionRunState.ERRORED,
+                result=result,
+                error=run_messages.WEBHOOK_REJECTED,
+                outbound=make_call(status),
             )
         # Transient with a status (5xx / 408 / 429): retryable FAILED.
         logger.warning("webhook: action=%s transient %s", action.id, status)
-        return DeliveryResult(
-            ActionOutcome(state=WatchActionRunState.FAILED, error=run_messages.TRANSIENT), call(status)
+        return OutboundActionResult(
+            state=WatchActionRunState.FAILED, error=run_messages.TRANSIENT, outbound=make_call(status)
         )
 
 
 def _build_payload(
-    action: WatchAction, config: WebhookConfig, items: list[DeliveryItem], context: DeliveryContext
+    action: WatchAction, config: WebhookConfig, items: list[ActionItem], context: ActionContext
 ) -> WebhookPayload:
     """The self-describing body for both cadences: watch ref, cadence, the
-    digest window (None for instant), and the per-item key/score/source plus
-    the field-filtered item body."""
+    digest window (None for instant), and the per-item key/source plus the
+    field-filtered item body."""
     window = (
         WebhookWindow(since=context.window_since, until=context.window_until)
         if context.window_since is not None and context.window_until is not None
@@ -180,7 +179,6 @@ def _build_payload(
         items=[
             WebhookItem(
                 key=it.key,
-                score=it.score,
                 source=WebhookSource(label=it.source_label, kind=it.source_kind),
                 item=_filtered(it.data, config.include_fields),
             )

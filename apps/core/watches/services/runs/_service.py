@@ -13,7 +13,6 @@ from typing import NamedTuple
 from django.db.models import Count
 from django.utils import timezone
 
-from common.db import ID_IN_CHUNK
 from openmagpie_schema.watch_enums import WatchActionRunState
 from watches.models import WatchActionRun
 
@@ -237,20 +236,6 @@ class WatchActionRunService(DigestBatchMixin):
         if after:
             qs = qs.filter(id__lt=after)
         return builtins.list(qs.order_by("-id")[:limit])
-
-    def results_by_id(self, run_ids: Iterable[str], /) -> builtins.dict[str, dict]:
-        """The `result` blob of each requested run (account-scoped), as
-        {id: result}. The delivery builder uses it to look up a webhook run's
-        upstream semantic-filter score via `prior_run_id` in ONE query (no
-        N+1). Missing / other-account ids are simply absent. `id__in` is
-        chunked under ID_IN_CHUNK to stay under the parameter ceiling ; the
-        caller bounds how many ids it passes (a digest batch is capped)."""
-        out: builtins.dict[str, dict] = {}
-        for chunk in itertools.batched(run_ids, ID_IN_CHUNK, strict=False):
-            rows = WatchActionRun.objects.filter(account_id=self.account_id, id__in=chunk).values_list("id", "result")
-            for run_id, result in rows:
-                out[str(run_id)] = result or {}
-        return out
 
     def summary_for_action(
         self,

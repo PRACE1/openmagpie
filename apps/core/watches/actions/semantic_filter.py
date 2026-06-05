@@ -21,17 +21,20 @@ from watches import run_messages
 from watches.models import WatchAction
 from watches.registry import load_config
 
-from .protocol import ActionOutcome
+from .protocol import Action, ActionContext, ActionItem, ActionResult
 
 logger = logging.getLogger("watches")
 
 
-class SemanticFilterAction:
+class SemanticFilterAction(Action):
     """Runs the relevance engine against an item and gates on the score."""
 
     kind = WatchActionKind.SEMANTIC_FILTER.value
 
-    def run(self, action: WatchAction, *, item_data: dict) -> ActionOutcome:
+    def run(self, action: WatchAction, *, items: list[ActionItem], context: ActionContext) -> ActionResult:
+        # A filter judges exactly one item ; it is never digested (no batch).
+        assert len(items) == 1, "semantic_filter runs one item at a time"
+        item_data = items[0].data
         # A corrupt / schema-drifted stored config is a PERMANENT defect:
         # retrying re-parses the same bad blob. ERROR it (terminal) rather
         # than let it propagate to the drain's catch-all -> FAILED, which
@@ -40,7 +43,7 @@ class SemanticFilterAction:
             config = load_config(action)
         except ValidationError as exc:
             logger.exception("semantic_filter: invalid config for action=%s: %s", action.id, exc)
-            return ActionOutcome(state=WatchActionRunState.ERRORED, error=run_messages.CONFIG_INVALID)
+            return ActionResult(state=WatchActionRunState.ERRORED, error=run_messages.CONFIG_INVALID)
         assert isinstance(config, SemanticFilterConfig)  # registry guarantees by kind
 
         # A stored item that can't be rehydrated is a PERMANENT backend
@@ -54,7 +57,7 @@ class SemanticFilterAction:
             # defect worth triaging (a broken connector / schema drift) ;
             # the run carries only the sanitized note, no exception detail.
             logger.exception("semantic_filter: unhydrateable item for action=%s: %s", action.id, exc)
-            return ActionOutcome(state=WatchActionRunState.ERRORED, error=run_messages.ITEM_UNREADABLE)
+            return ActionResult(state=WatchActionRunState.ERRORED, error=run_messages.ITEM_UNREADABLE)
 
         # Empty engine.kind = use the server default (resolved here, not
         # stored, so the deploy default applies at run time). An unregistered
@@ -66,10 +69,10 @@ class SemanticFilterAction:
             engine = engine_registry.get(config.engine.kind or settings.ENGINE_DEFAULT_KIND)
         except KeyError:
             logger.warning("semantic_filter: unknown engine kind=%r for action=%s", config.engine.kind, action.id)
-            return ActionOutcome(state=WatchActionRunState.ERRORED, error=run_messages.ENGINE_UNAVAILABLE)
+            return ActionResult(state=WatchActionRunState.ERRORED, error=run_messages.ENGINE_UNAVAILABLE)
         judgment = engine.judge(payload, instructions=config.instructions, model=config.engine.model or None)
 
         passed = judgment.score >= config.threshold
         result = SemanticFilterResult(passed=passed, score=judgment.score, reason=judgment.reason)
         state = WatchActionRunState.SUCCEEDED if passed else WatchActionRunState.GATED
-        return ActionOutcome(state=state, result=result.model_dump(mode="json"))
+        return ActionResult(state=state, result=result.model_dump(mode="json"))

@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field
 
 from .watch_actions import WatchActionConfigSummary
 from .watch_enums import (
-    WatchActionDelivery,
+    DeliveryCadence,
     WatchActionDeliveryState,
     WatchActionRunState,
     WatchActivityWindow,
@@ -218,32 +218,39 @@ class WatchActionRunListResponse(BaseModel):
 
 
 class WatchActionDeliveryWire(BaseModel):
-    """One WatchActionDelivery on the wire
+    """One WatchActionDelivery on the LIST wire
     (`GET /v1/actions/<action_id>/deliveries`).
 
     One outbound HTTP call ATTEMPT (a digest that retries makes several, one
     row each). `target_host` is the redacted destination host (never the full
-    URL or any secret). `request_key` is the dedup identity. `http_status` is
-    null until the call returns. Datetimes real; renderer encodes."""
+    URL or any secret). `http_status` is null until the call returns. The full
+    `request_payload` is NOT here (it can be a large batch body) ; fetch one
+    delivery's detail (WatchActionDeliveryView) for it. Datetimes real; renderer
+    encodes."""
 
     id: str
     watch_id: str
     action_id: str
-    delivery: WatchActionDelivery
+    delivery: DeliveryCadence
     method: WebhookMethod
     state: WatchActionDeliveryState
     http_status: int | None = None
-    request_key: str = ""
     target_host: str = ""
     item_count: int = 0
     attempt: int = 0
     error: str = ""
-    # The exact body we sent (a WebhookPayload dump), stored point-in-time.
-    # Opaque here; headers are NEVER included (they carry auth tokens).
-    request_payload: dict[str, Any] = Field(default_factory=dict)
     started_at: datetime | None = None
     completed_at: datetime | None = None
     created_at: datetime | None = None
+
+
+class WatchActionDeliveryView(WatchActionDeliveryWire):
+    """`GET /v1/deliveries/<delivery_id>`, the detail: the list row plus the
+    exact `request_payload` we sent (a WebhookPayload dump), stored
+    point-in-time. Opaque here ; headers are NEVER included (auth tokens). Kept
+    off the list wire so a list call doesn't ship every batch body."""
+
+    request_payload: dict[str, Any] = Field(default_factory=dict)
 
 
 class WatchActionDeliveryListResponse(BaseModel):

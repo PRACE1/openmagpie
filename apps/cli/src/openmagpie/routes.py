@@ -17,6 +17,7 @@ _AUTH = f"/{API_VERSION}/auth"
 _FEEDS = f"/{API_VERSION}/feeds"
 _WATCHES = f"/{API_VERSION}/watches"
 _ACTIONS = f"/{API_VERSION}/actions"
+_DELIVERIES = f"/{API_VERSION}/deliveries"
 _ENGINES = f"/{API_VERSION}/engines"
 
 
@@ -87,6 +88,14 @@ class actions:
     @staticmethod
     def deliveries(action_id: str) -> str:
         return f"{_ACTIONS}/{action_id}/deliveries"
+
+
+class deliveries:
+    """`/v1/deliveries/*` — one delivery's detail by its own ULID."""
+
+    @staticmethod
+    def detail(delivery_id: str) -> str:
+        return f"{_DELIVERIES}/{delivery_id}"
 
 
 class engines:

@@ -1,4 +1,4 @@
-"""The webhook kind: HTTP POST delivery config + result.
+"""The webhook kind: HTTP delivery config + result (POST | PUT | PATCH).
 
 The first SECRET-BEARING kind: the URL path/query and header values can
 carry auth tokens, so this is the module that exercises the
@@ -13,7 +13,7 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, Field, field_validator
 
-from openmagpie_schema.watch_enums import WatchActionDelivery, WebhookMethod
+from openmagpie_schema.watch_enums import DeliveryCadence, WebhookMethod
 
 from ._delivery import DeliveryConfigBase
 from ._secrets import REDACTED, looks_redacted_url, redact_url
@@ -23,10 +23,10 @@ from .base import WatchActionConfigBase, WatchActionConfigSummary
 class WebhookConfig(DeliveryConfigBase):
     """Config for a WatchAction with kind == 'webhook'.
 
-    POSTs the item to `url` with `headers` (sent verbatim, so they carry
-    any auth token). `include_fields` whitelists which item fields are sent
-    (empty = all). `delivery` / `digest_interval_seconds` (from the base)
-    pick instant vs batched delivery.
+    Sends the item to `url` via `method` (POST | PUT | PATCH) with `headers`
+    (sent verbatim, so they carry any auth token). `include_fields` whitelists
+    which item fields are sent (empty = all). `delivery` /
+    `digest_interval_seconds` (from the base) pick instant vs batched delivery.
 
     Secret-bearing: `url` path/query and every header VALUE are masked by
     `redacted_dump` and carried forward by `merge_preserving` when the
@@ -115,7 +115,7 @@ class WebhookResult(BaseModel):
     http_status: int
 
 
-# ── Outbound payload contract (the body POSTed to the receiver) ────────────
+# ── Outbound payload contract (the body sent to the receiver) ──────────────
 
 
 class WebhookWatchRef(BaseModel):
@@ -135,20 +135,20 @@ class WebhookWindow(BaseModel):
 
 
 class WebhookSource(BaseModel):
-    """Which feed source an item came from: the source's display `label`
-    (e.g. `r/ClaudeAI`, or an RSS source name) and its connector `kind`."""
+    """Which feed source an item came from: the source's display `label` and
+    its connector `kind`."""
 
     label: str
     kind: str
 
 
 class WebhookItem(BaseModel):
-    """One delivered item: its stable `key` (source:external_id), the upstream
-    semantic-filter `score` (None when no filter ran ahead of this delivery),
-    the originating `source`, and the field-filtered `item` body."""
+    """One delivered item: its stable `key` (source:external_id), the
+    originating `source`, and the field-filtered `item` body. (Upstream run
+    results, e.g. the filter score, are a separate opt-in run-history
+    enrichment ; not carried here yet.)"""
 
     key: str
-    score: float | None = None
     source: WebhookSource
     item: dict[str, Any] = Field(default_factory=dict)
 
@@ -157,10 +157,10 @@ class WebhookPayload(BaseModel):
     """The HTTP body delivered for BOTH cadences. Instant is a one-item batch
     with `window` null ; digest carries N items plus the window bounds. The
     shape is self-describing: a receiver renders it (which watch, which window,
-    per-item source + score) without out-of-band knowledge."""
+    per-item source) without out-of-band knowledge."""
 
     watch: WebhookWatchRef
     action_id: str
-    delivery: WatchActionDelivery
+    delivery: DeliveryCadence
     window: WebhookWindow | None = None
     items: list[WebhookItem] = Field(default_factory=list)

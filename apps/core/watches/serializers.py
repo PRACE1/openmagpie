@@ -19,6 +19,7 @@ from rest_framework import serializers
 from common.pydantic_errors import pydantic_errors_to_drf
 from feeds.services import FeedService
 from openmagpie_schema.watch import (
+    WatchActionDeliveryView,
     WatchActionDeliveryWire,
     WatchActionInput,
     WatchActionRunWire,
@@ -158,27 +159,36 @@ def watch_action_run_wire(run: WatchActionRun) -> WatchActionRunWire:
     )
 
 
+def _delivery_fields(delivery: WatchActionDelivery) -> dict[str, Any]:
+    """The shared list-row fields of a delivery (everything but the payload).
+    The string columns (delivery / method / state) coerce to their enums on
+    the wire models."""
+    return {
+        "id": str(delivery.id),
+        "watch_id": str(delivery.watch_id),
+        "action_id": str(delivery.action_id),
+        "delivery": delivery.delivery,
+        "method": delivery.method,
+        "state": delivery.state,
+        "http_status": delivery.http_status,
+        "target_host": delivery.target_host,
+        "item_count": delivery.item_count,
+        "attempt": delivery.attempt,
+        "error": delivery.error,
+        "started_at": delivery.started_at,
+        "completed_at": delivery.completed_at,
+        "created_at": delivery.created_at,
+    }
+
+
 def watch_action_delivery_wire(delivery: WatchActionDelivery) -> WatchActionDeliveryWire:
-    """One delivery's wire shape (the HTTP-call audit row). The string columns
-    (delivery / method / state) coerce to their enums on the wire model."""
-    return WatchActionDeliveryWire(
-        id=str(delivery.id),
-        watch_id=str(delivery.watch_id),
-        action_id=str(delivery.action_id),
-        delivery=delivery.delivery,
-        method=delivery.method,
-        state=delivery.state,
-        http_status=delivery.http_status,
-        request_key=delivery.request_key,
-        target_host=delivery.target_host,
-        item_count=delivery.item_count,
-        attempt=delivery.attempt,
-        error=delivery.error,
-        request_payload=delivery.request_payload or {},
-        started_at=delivery.started_at,
-        completed_at=delivery.completed_at,
-        created_at=delivery.created_at,
-    )
+    """One delivery's LIST-row shape (no request_payload ; see the detail view)."""
+    return WatchActionDeliveryWire(**_delivery_fields(delivery))
+
+
+def watch_action_delivery_view(delivery: WatchActionDelivery) -> WatchActionDeliveryView:
+    """One delivery's DETAIL shape: the list row plus the stored request_payload."""
+    return WatchActionDeliveryView(**_delivery_fields(delivery), request_payload=delivery.request_payload or {})
 
 
 def watch_wire(watch: Watch, *, feed_ids: list[str]) -> WatchWire:

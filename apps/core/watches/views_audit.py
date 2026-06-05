@@ -9,11 +9,13 @@ focused: this file is read-only audit, that one is mutation.
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from enum import StrEnum
 
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.response import Response
 
+from accounts.api import AccountScopedAPIView
 from common.api_params import parse_limit
 from openmagpie_schema.watch import (
     WatchActionDeliveryListResponse,
@@ -27,8 +29,9 @@ from openmagpie_schema.watch_enums import (
     choices,
 )
 
-from .api import ActionScopedAPIView
-from .serializers import watch_action_delivery_wire, watch_action_run_wire
+from .api import ActionScopedAPIView, WatchActionDeliveryNotFound, WatchSvcMixin
+from .models import WatchActionDelivery
+from .serializers import watch_action_delivery_view, watch_action_delivery_wire, watch_action_run_wire
 
 
 def _window_bounds(window: WatchActivityWindow, now: datetime) -> tuple[datetime, datetime | None]:
@@ -50,6 +53,22 @@ def _window_bounds(window: WatchActivityWindow, now: datetime) -> tuple[datetime
     raise ValueError(f"unhandled window {window!r}")
 
 
+def _validate_state(raw: str | None, enum: type[StrEnum]) -> Response | None:
+    """A 400 Response if `raw` is a non-empty value that isn't a member of
+    `enum`, else None. Shared by both audit views' `?state=` filter (each
+    passes its own state enum), so the validation reads identically."""
+    if raw is None:
+        return None
+    try:
+        enum(raw)
+    except ValueError:
+        return Response(
+            {"state": [f"unknown state {raw!r}; known: {choices(enum)}"]},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    return None
+
+
 class ActionRunsView(ActionScopedAPIView):
     """GET /v1/actions/<action_id>/runs: the action's run log, newest-first,
     cursor-paginated. `?state=` filters by run state. Account scoping is the
@@ -59,14 +78,9 @@ class ActionRunsView(ActionScopedAPIView):
     def get(self, request, action_id: str):
         action = self.action  # 404 if absent from this account
         state = request.query_params.get("state") or None
-        if state is not None:
-            try:
-                WatchActionRunState(state)  # validate against the enum (one source of truth)
-            except ValueError:
-                return Response(
-                    {"state": [f"unknown state {state!r}; known: {choices(WatchActionRunState)}"]},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
+        bad_state = _validate_state(state, WatchActionRunState)
+        if bad_state is not None:
+            return bad_state
         # Activity-summary window: a bounded preset, resolved to concrete
         # bounds on the server clock. Defaults to WEEK ; scopes only the
         # summary (by evaluation time), never the raw row list.
@@ -106,22 +120,35 @@ class ActionRunsView(ActionScopedAPIView):
 class ActionDeliveriesView(ActionScopedAPIView):
     """GET /v1/actions/<action_id>/deliveries: the action's outbound HTTP-call
     log (one row per attempt), newest-first, cursor-paginated. `?state=`
-    filters by delivery state. Account scoping is the isolation."""
+    filters by delivery state. Account scoping is the isolation.
+
+    No summary/window (unlike ActionRunsView): a delivery is a single terminal
+    HTTP attempt, so there's no evaluated-vs-backlog breakdown to roll up ;
+    don't add one for "consistency"."""
 
     def get(self, request, action_id: str):
         action = self.action  # 404 if absent from this account
         state = request.query_params.get("state") or None
-        if state is not None:
-            try:
-                WatchActionDeliveryState(state)  # validate against the enum (one source of truth)
-            except ValueError:
-                return Response(
-                    {"state": [f"unknown state {state!r}; known: {choices(WatchActionDeliveryState)}"]},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
+        bad_state = _validate_state(state, WatchActionDeliveryState)
+        if bad_state is not None:
+            return bad_state
         limit = parse_limit(request)
         after = request.query_params.get("after") or None
         deliveries = self.delivery_svc.list_for_action(str(action.id), after=after, limit=limit, state=state)
         next_cursor = str(deliveries[-1].id) if len(deliveries) == limit else None
         items = [watch_action_delivery_wire(d) for d in deliveries]
         return Response(WatchActionDeliveryListResponse(items=items, next_cursor=next_cursor).model_dump(mode="json"))
+
+
+class ActionDeliveryDetailView(WatchSvcMixin, AccountScopedAPIView):
+    """GET /v1/deliveries/<delivery_id>: one delivery in full, including the
+    exact request_payload that was sent. Addressed by the delivery's own
+    (globally unique) ULID, account-scoped ; the list (lean rows) lives under
+    the action at /v1/actions/<id>/deliveries."""
+
+    def get(self, request, delivery_id: str):
+        try:
+            delivery = self.delivery_svc.get(delivery_id)
+        except WatchActionDelivery.DoesNotExist as exc:
+            raise WatchActionDeliveryNotFound(delivery_id) from exc
+        return Response(watch_action_delivery_view(delivery).model_dump(mode="json"))

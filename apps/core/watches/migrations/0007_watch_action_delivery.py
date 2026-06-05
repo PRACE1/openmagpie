@@ -27,7 +27,6 @@ class Migration(migrations.Migration):
                 ('action_id', models.CharField(max_length=26, verbose_name='action id')),
                 ('delivery', models.CharField(max_length=16, verbose_name='delivery')),
                 ('method', models.CharField(max_length=8, verbose_name='method')),
-                ('request_key', models.CharField(blank=True, default='', max_length=255, verbose_name='request key')),
                 ('target_host', models.CharField(blank=True, default='', max_length=255, verbose_name='target host')),
                 ('state', models.CharField(default='pending', help_text='WatchActionDeliveryState value', max_length=16, verbose_name='state')),
                 ('http_status', models.PositiveSmallIntegerField(blank=True, null=True, verbose_name='http status')),
@@ -41,7 +40,7 @@ class Migration(migrations.Migration):
             options={
                 'verbose_name': 'watch action delivery',
                 'verbose_name_plural': 'watch action deliveries',
-                'indexes': [models.Index(fields=['account_id', 'action_id', 'id'], name='watchdeliv_acct_action_idx'), models.Index(fields=['account_id', 'action_id', 'request_key', 'state'], name='watchdeliv_dedup_idx')],
+                'indexes': [models.Index(fields=['account_id', 'action_id', 'id'], name='watchdeliv_acct_action_idx')],
             },
         ),
     ]

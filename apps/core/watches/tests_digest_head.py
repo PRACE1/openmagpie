@@ -6,7 +6,7 @@ from django.utils import timezone
 
 from feeds.models import Feed, FeedItem
 from openmagpie_schema.watch import WatchActionInput
-from openmagpie_schema.watch_enums import WatchActionDelivery
+from openmagpie_schema.watch_enums import DeliveryCadence
 from watches.models import WatchActionDigestWindow, WatchActionRun
 from watches.operations.digest_flush import WatchDigestFlushOperation
 from watches.operations.drain import WatchDrainOperation
@@ -85,7 +85,7 @@ class DigestHeadTests(TestCase):
         )
         head = self.wsvc.action_svc.list_for_path(watch.initial_path_id)[0]
         self.assertEqual(head.rank, 0)
-        self.assertEqual(head.config.get("delivery"), WatchActionDelivery.DIGEST.value)
+        self.assertEqual(head.config.get("delivery"), DeliveryCadence.DIGEST.value)
 
     def test_can_be_added_as_head(self) -> None:
         # POST /actions (add) onto an empty chain clamps insert to rank 0 ; a
@@ -95,7 +95,7 @@ class DigestHeadTests(TestCase):
             path_id=watch.initial_path_id, action=WatchActionInput(kind="log", config=self._DIGEST)
         )
         self.assertEqual(added.rank, 0)
-        self.assertEqual(added.config.get("delivery"), WatchActionDelivery.DIGEST.value)
+        self.assertEqual(added.config.get("delivery"), DeliveryCadence.DIGEST.value)
 
     def test_can_be_set_on_head(self) -> None:
         # PUT /actions/<id> (set_config) editing the rank-0 row to a digest is
@@ -109,7 +109,7 @@ class DigestHeadTests(TestCase):
         head = self.wsvc.action_svc.list_for_path(watch.initial_path_id)[0]
         self.wsvc.action_svc.set_config(head, spec=WatchActionInput(kind="log", config=self._DIGEST))
         head.refresh_from_db()
-        self.assertEqual(head.config.get("delivery"), WatchActionDelivery.DIGEST.value)
+        self.assertEqual(head.config.get("delivery"), DeliveryCadence.DIGEST.value)
 
     def test_remove_promoting_digest_to_head_is_allowed(self) -> None:
         # Removing the filter from [filter, digest] leaves the digest as head

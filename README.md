@@ -69,6 +69,7 @@ graph TD
 - **Source-agnostic**: every connector yields a typed `SourcePayload`; engines and actions operate on the same shape no matter the source.
 - **Bring your own LLM**: Ollama (local) today; the `Engine` Protocol + `validate_model` hook makes adding Anthropic/OpenAI/others a small change with no watch-layer churn.
 - **Per-run audit log**: every action execution is a `WatchActionRun` row (pending → succeeded / gated / failed / errored), inspectable via `magpie watch action activity`. A filter that scores below threshold is `gated` and stops the chain.
+- **Delivery audit**: every outbound delivery call (webhook today) is recorded as a `WatchActionDelivery`, one row per attempt, with its state, HTTP status, redacted host, item count, attempt number, and the exact body sent (stored point-in-time). Inspect with `magpie watch action deliveries <action_id>` (the list) and `magpie watch action delivery <id>` (the full payload). Delivery is at-least-once; receivers dedup on the per-item `key`. Kind-agnostic by design: a future `slack` delivery reuses the same audit.
 - **Instant or digest delivery**: delivery actions fire per item, or batch a rolling window into one emission on a cadence.
 - **Pluggable action kinds**: `semantic_filter`, `webhook`, `log` out of the box; one config class + one impl + two registry entries to add a kind.
 - **Self-hostable**: Django + Postgres; Docker Compose dev loop; your data and credentials stay yours.
@@ -86,13 +87,14 @@ graph TD
 | Engines | Ollama (`ollama`) |
 | Action kinds | `semantic_filter` (LLM-judged), `webhook`, `log` |
 | Delivery modes | instant, digest |
+| Webhook methods | `POST`, `PUT`, `PATCH` |
+| Delivery audit | per-attempt `WatchActionDelivery` (webhook) |
 
 ## Webhook payload
 
 A `webhook` action POSTs (or PUTs / PATCHes) one self-describing body. Instant
 and digest use the SAME shape; instant is just a one-item batch with `window`
-null. Each item carries the source it came from and the upstream
-`semantic_filter` score (null when no filter ran ahead of the delivery):
+null. Each item carries the source it came from:
 
 ```json
 {
@@ -102,8 +104,7 @@ null. Each item carries the source it came from and the upstream
   "window": {"since": "2026-06-05T12:00:00Z", "until": "2026-06-05T13:00:00Z"},
   "items": [
     {
-      "key": "reddit:abc123",
-      "score": 0.86,
+      "key": "reddit_subreddit:abc123",
       "source": {"label": "r/ClaudeAI", "kind": "reddit_subreddit"},
       "item": {"title": "...", "url": "..."}
     }
@@ -112,11 +113,12 @@ null. Each item carries the source it came from and the upstream
 ```
 
 `item` is the feed item narrowed to the action's `include_fields` (empty sends
-all fields). Each item's `key` is `source:external_id`; instant deliveries also
-send it as an `Idempotency-Key` header. Every call is recorded for review:
+all fields). Each item's `key` is `source:external_id`; receivers dedup on it
+(delivery is at-least-once). Every call is recorded for review:
 
 ```bash
-make dev-cli ARGS="watch action deliveries <webhook_action_id>"   # state, HTTP status, item count per call
+make dev-cli ARGS="watch action deliveries <webhook_action_id>"   # the list: state / HTTP / host / items / attempt per call
+make dev-cli ARGS="watch action delivery <delivery_id>"           # one call in full, incl. the exact body sent
 ```
 
 ## Quick start

@@ -127,7 +127,11 @@ class WebhookDeliveryRecordTests(TestCase):
         self.assertEqual(runs.count(), 3)
         self.assertTrue(all(r.state == "succeeded" and r.delivery_id == str(delivery.id) for r in runs))
 
-    def test_digest_dedup_skips_repost_after_crash(self) -> None:
+    def test_digest_replay_is_at_least_once(self) -> None:
+        # No server-side dedup: a crash AFTER the POST but BEFORE the runs were
+        # marked leaves them pending, so the next flush re-POSTs (at-least-once).
+        # Receivers dedup per item on the in-body `key` ; the server just logs a
+        # second attempt.
         now = timezone.now()
         a1, window = self._digest_watch(2, now=now)
         later = window.close_at + timedelta(seconds=1)
@@ -137,22 +141,19 @@ class WebhookDeliveryRecordTests(TestCase):
             self._flush_due(later)
         self.assertEqual(req.call_count, 1)
 
-        # Simulate a crash AFTER the POST committed its delivery but BEFORE the
-        # runs were marked: reset the runs to pending and reopen the window.
+        # Simulate the crash: reset the runs to pending and reopen the window.
         WatchActionRun.objects.filter(action_id=str(a1.id)).update(state="pending", completed_at=None, delivery_id="")
         window.refresh_from_db()
         window.close_at = now
         window.save(update_fields=["close_at"])
 
-        succeeded = WatchActionDelivery.objects.get(action_id=str(a1.id))
         block2, request2 = _http(200)
         with block2, request2 as req2:
             WatchDigestFlushOperation(window, now=now + timedelta(seconds=2)).run()
 
-        self.assertEqual(req2.call_count, 0)  # dedup: no re-POST
-        self.assertEqual(WatchActionDelivery.objects.filter(action_id=str(a1.id)).count(), 1)
-        runs = WatchActionRun.objects.filter(action_id=str(a1.id))
-        self.assertTrue(all(r.state == "succeeded" and r.delivery_id == str(succeeded.id) for r in runs))
+        self.assertEqual(req2.call_count, 1)  # re-POST (at-least-once), no server dedup
+        self.assertEqual(WatchActionDelivery.objects.filter(action_id=str(a1.id)).count(), 2)  # one row per attempt
+        self.assertEqual(WatchActionRun.objects.filter(action_id=str(a1.id), state="succeeded").count(), 2)
 
     def test_digest_failed_then_succeeded_logs_each_attempt(self) -> None:
         now = timezone.now()

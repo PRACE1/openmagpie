@@ -180,7 +180,6 @@ class ActionDeliveriesRouteTests(TestCase):
             action_id=action_id,
             delivery="instant",
             method="POST",
-            request_key="reddit:1",
             target_host="h.example.com",
             state="succeeded",
             http_status=200,
@@ -195,6 +194,32 @@ class ActionDeliveriesRouteTests(TestCase):
         self.assertEqual(item["http_status"], 200)
         self.assertEqual(item["method"], "POST")
         self.assertEqual(item["item_count"], 1)
+        self.assertNotIn("request_payload", item)  # lean list ; payload is on the detail only
+
+    def _make_delivery(self, watch_id: str, action_id: str) -> str:
+        action = WatchAction.objects.get(id=action_id)
+        d = WatchActionDelivery.objects.create(
+            account_id=action.account_id,
+            watch_id=watch_id,
+            action_id=action_id,
+            delivery="instant",
+            method="POST",
+            target_host="h.example.com",
+            state="succeeded",
+            http_status=200,
+            item_count=1,
+            request_payload={"items": [{"key": "reddit:1"}]},
+        )
+        return str(d.id)
+
+    def test_delivery_detail_includes_payload(self) -> None:
+        watch_id, action_id = self._webhook_action()
+        delivery_id = self._make_delivery(watch_id, action_id)
+        resp = self.client.get(f"/v1/deliveries/{delivery_id}")
+        self.assertEqual(resp.status_code, 200, resp.content)
+        body = resp.json()
+        self.assertEqual(body["id"], delivery_id)
+        self.assertEqual(body["request_payload"], {"items": [{"key": "reddit:1"}]})
 
     def test_bad_state_is_400(self) -> None:
         _watch_id, action_id = self._webhook_action()
@@ -203,3 +228,6 @@ class ActionDeliveriesRouteTests(TestCase):
 
     def test_unknown_action_is_404(self) -> None:
         self.assertEqual(self.client.get(f"/v1/actions/{ulid.ulid()}/deliveries").status_code, 404)
+
+    def test_unknown_delivery_is_404(self) -> None:
+        self.assertEqual(self.client.get(f"/v1/deliveries/{ulid.ulid()}").status_code, 404)

@@ -17,13 +17,20 @@ class WatchActionDelivery(BaseModel):
     on that column and "which call carried this run" is the run's pointer.
 
     Retry is NOT driven here: the run state owns requeue. This row only RECORDS
-    each attempt and serves the dedup short-circuit (`request_key`).
+    each attempt. Delivery is at-least-once and receivers dedup per item on the
+    in-body `key`, so there is no server-side dedup field.
 
     `request_payload` is the exact body we sent (the WebhookPayload), stored
     point-in-time so the log is faithful even after the items are pruned or the
     config changes. Headers are NEVER stored (they carry auth tokens) ; the
     body carries no secrets. `target_host` is the bare destination host (no
-    path/query, which can carry a token)."""
+    path/query, which can carry a token).
+
+    GROWTH: append-only, one row per HTTP attempt (every outcome), each holding
+    the full batch body in `request_payload`. So storage grows with delivery
+    volume x batch size x retries. No retention/pruning yet ; it shares the
+    deferred ActionRun-retention story (post-v1) and would prune oldest-first by
+    the ULID pk per action."""
 
     account_id = models.CharField(_("account id"), max_length=26)
     watch_id = models.CharField(_("watch id"), max_length=26)
@@ -32,10 +39,6 @@ class WatchActionDelivery(BaseModel):
     delivery = models.CharField(_("delivery"), max_length=16)
     # The HTTP verb used (WebhookMethod value).
     method = models.CharField(_("method"), max_length=8)
-    # Dedup identity: instant = the item key (source:external_id), digest = a
-    # stable hash of the sorted item keys. Indexed with (account, action,
-    # state) so the flush can short-circuit on a prior SUCCEEDED attempt.
-    request_key = models.CharField(_("request key"), max_length=255, blank=True, default="")
     # Redacted destination host (never the full URL or any secret).
     target_host = models.CharField(_("target host"), max_length=255, blank=True, default="")
     state = models.CharField(
@@ -65,12 +68,6 @@ class WatchActionDelivery(BaseModel):
             # Per-action audit log (magpie watch action deliveries <id>),
             # newest-first by ULID pk. account_id-first for scoping.
             models.Index(fields=["account_id", "action_id", "id"], name="watchdeliv_acct_action_idx"),
-            # The flush dedup lookup: a SUCCEEDED attempt with this request_key
-            # for this action (crash-after-POST replay guard).
-            models.Index(
-                fields=["account_id", "action_id", "request_key", "state"],
-                name="watchdeliv_dedup_idx",
-            ),
         ]
 
     def __str__(self) -> str:

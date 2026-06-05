@@ -1,95 +1,65 @@
-"""The Action interface: what it means to RUN one WatchAction against a
-FeedItem.
+"""The Action interface: what it means to RUN one WatchAction against feed
+item(s), and the typed inputs/outputs it works with.
 
-Distinct from the CONFIG layer (`watches.registry`, kind -> Pydantic
-config class, validation). This is the EXECUTION layer: kind -> runnable
-impl. A `WatchActionRun` in the drain is dispatched to the `Action` for
-its `kind`, which does the work (judge / POST / log) and returns an
-`ActionOutcome` saying how the run + the chain should proceed.
+Distinct from the CONFIG layer (`watches.registry`, kind -> Pydantic config
+class, validation). This is the EXECUTION layer: kind -> runnable impl. The
+drain/flush look up the impl for a run's `kind` and call ONE method, `run`,
+for every kind (filter or delivery) ; uniform dispatch, no branching. A
+filter judges one item ; a delivery emits one (instant) or many (digest).
 
-Module per capability (not a catch-all base): `protocol.py` (this),
-`registry.py` (kind -> impl), `semantic_filter.py` (the first impl). The
-`Action` interface is a NEUTRAL base shared by every kind ; a filter is
-not the parent of a webhook.
+Module per capability: `protocol.py` (this), `registry.py` (kind -> impl),
+`semantic_filter.py` / `webhook.py` / `log.py` (the impls). `_config.py`
+holds the shared typed-config loader.
 """
 
 from __future__ import annotations
 
-import hashlib
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Protocol, runtime_checkable
+from typing import Protocol
 
-from openmagpie_schema.watch_enums import WatchActionDelivery, WatchActionRunState
+from openmagpie_schema.watch_enums import DeliveryCadence, WatchActionRunState
 from watches.models import WatchAction
 
 
 @dataclass(frozen=True)
-class ActionOutcome:
-    """How a single action run resolved. The drain persists `state` +
-    `result` onto the WatchActionRun and advances the chain IFF
-    `state == SUCCEEDED`.
-
-    - `state`: the terminal run state an impl returns ; SUCCEEDED
-      (advance the chain), GATED (clean stop, e.g. a filter pass=false),
-      ERRORED (a permanent defect the impl detected, e.g. unhydrateable
-      item / invalid config / unknown engine / blocked destination), or
-      FAILED (a TRANSIENT failure the impl already classified, e.g. a 5xx /
-      connect error from a delivery; retryable). Filters never return FAILED
-      (the drain sets it on an UNEXPECTED raise) ; delivery impls DO, so the
-      failed attempt can still be logged with its DeliveryCall. SKIPPED is
-      reserved (deliberate non-run) and unused today.
-    - `result`: the kind-specific result blob (validated per kind), stored
-      on the run for the audit log. A semantic filter writes
-      `SemanticFilterResult`.
-    - `error`: operator-facing note carried on any non-clean terminal
-      state (ERRORED today ; a future SKIPPED). Empty for SUCCEEDED / GATED.
-      Sanitized — the raw cause goes to the logs, see `watches.run_messages`.
-    """
-
-    state: WatchActionRunState
-    result: dict = field(default_factory=dict)
-    error: str = ""
-
-
-@dataclass(frozen=True)
-class DeliveryItem:
-    """One enriched item handed to a delivery action: the FeedItem's stored
-    `data` dump, its stable `key` (source:external_id), the originating source
-    (`source_label` / `source_kind` from the FeedItem row, e.g. `r/ClaudeAI` /
-    `reddit_subreddit`), and the upstream semantic-filter `score` (None when no
-    filter ran ahead of this delivery). NOT the wire body: the action narrows
-    `data` by `include_fields` into the WebhookItem it sends."""
+class ActionItem:
+    """One enriched item handed to an action: the FeedItem's stored `data`
+    dump, its stable `key` (source:external_id), and the originating source
+    (`source_label` / `source_kind` from the FeedItem row). A filter reads
+    `data` and ignores the rest ; a delivery uses all of it. NOT the wire body:
+    a delivery narrows `data` by `include_fields` into what it sends. (Upstream
+    run results, e.g. the filter score, are deliberately NOT here ; that
+    run-chain provenance is a separate opt-in enrichment, walked only for
+    deliveries that request it.)"""
 
     data: dict
     key: str
     source_label: str
     source_kind: str
-    score: float | None = None
 
 
 @dataclass(frozen=True)
-class DeliveryContext:
-    """Call-level context shared by every item in one delivery: which watch
-    (id + name, so a receiver can label the listener), the cadence, and the
-    digest window bounds (both None for instant)."""
+class ActionContext:
+    """Call-level context shared by every item in one run: which watch (id +
+    name, so a receiver can label the listener), the delivery cadence, and the
+    digest window bounds (both None for instant / filters)."""
 
     watch_id: str
     watch_name: str
-    delivery: WatchActionDelivery
+    delivery: DeliveryCadence
     window_since: datetime | None = None
     window_until: datetime | None = None
 
 
 @dataclass(frozen=True)
-class DeliveryCall:
-    """The record of ONE outbound HTTP attempt, returned by a delivery action
-    so the operations layer can persist a WatchActionDelivery row. Present for
-    every webhook attempt (success, permanent error, transient failure) ; None
-    for the local log action (no HTTP call). `request_payload` is the exact
-    body sent (no headers)."""
+class OutboundCall:
+    """The record of ONE outbound HTTP attempt, carried on an
+    `OutboundActionResult` so the operations layer can persist a
+    WatchActionDelivery row. `request_payload` is the exact body sent (no
+    headers). `http_status` is None when no response arrived (blocked /
+    connect error)."""
 
-    request_key: str
     target_host: str
     method: str
     http_status: int | None
@@ -98,64 +68,50 @@ class DeliveryCall:
 
 
 @dataclass(frozen=True)
-class DeliveryResult:
-    """What `deliver()` returns: the run `outcome` (persisted on every run in
-    the batch + drives chain advance / retry) and the optional `call` record
-    (persisted as a WatchActionDelivery when present)."""
+class ActionResult:
+    """How a run resolved, for EVERY kind. The drain/flush persist `state` +
+    `result` onto the WatchActionRun and advance the chain IFF
+    `state == SUCCEEDED`.
 
-    outcome: ActionOutcome
-    call: DeliveryCall | None = None
+    - `state`: SUCCEEDED (advance), GATED (clean stop, a filter pass=false),
+      ERRORED (a permanent defect the impl detected: unhydrateable item /
+      invalid config / unknown engine / blocked destination), or FAILED (a
+      TRANSIENT failure the impl already classified, e.g. a 5xx / connect
+      error from a delivery; retryable). Filters never return FAILED (the
+      drain sets it on an UNEXPECTED raise) ; deliveries DO, so the failed
+      attempt is still recorded. SKIPPED is reserved (deliberate non-run).
+    - `result`: the kind-specific result blob (validated per kind), stored on
+      the run for the audit log (a semantic filter writes `SemanticFilterResult`).
+    - `error`: operator-facing note on a non-clean terminal state. Empty for
+      SUCCEEDED / GATED. Sanitized ; the raw cause goes to the logs (see
+      `watches.run_messages`)."""
+
+    state: WatchActionRunState
+    result: dict = field(default_factory=dict)
+    error: str = ""
+
+
+@dataclass(frozen=True)
+class OutboundActionResult(ActionResult):
+    """An `ActionResult` from an action that made an outbound HTTP call (the
+    webhook kind). Adds the `outbound` record so the operations layer logs a
+    WatchActionDelivery and links the run(s) to it. The persistence path checks
+    `isinstance(result, OutboundActionResult)` ; everything else reads the base
+    fields, so dispatch stays uniform. `outbound` is keyword-only so it can
+    follow the base's defaulted fields without a default of its own (it is
+    always present on an outbound result)."""
+
+    outbound: OutboundCall = field(kw_only=True)
 
 
 class Action(Protocol):
-    """The NEUTRAL base every action kind satisfies: it just declares its
-    `kind` (matches a `WatchActionKind` value). A filter is NOT the parent of
-    a webhook ; `FilterAction` and `DeliveryAction` are siblings that each
-    extend this base. The registry is keyed on it (`dict[str, Action]`) ; the
-    drain narrows to the concrete protocol to dispatch."""
+    """A runnable action kind. Declares its `kind` (matches a `WatchActionKind`
+    value) and runs against one item (instant / filter) or many (digest) via
+    ONE method. Returns an `ActionResult` (or an `OutboundActionResult` for a
+    kind that made an HTTP call) ; raises only on UNEXPECTED failure (the
+    drain/flush map that to a retryable FAILED). `context` is ignored by kinds
+    that don't need it (filters)."""
 
     kind: str
 
-
-@runtime_checkable
-class FilterAction(Action, Protocol):
-    """A FILTER action (e.g. semantic_filter): judges one item and gates the
-    chain. `run` receives the `WatchAction` row (carries the config blob) and
-    the FeedItem's stored `data` dump (the connector SourcePayload it judges).
-    Returns an `ActionOutcome` ; raises only on UNEXPECTED failure (the drain
-    maps that to a retryable FAILED)."""
-
-    def run(self, action: WatchAction, *, item_data: dict) -> ActionOutcome: ...
-
-
-@runtime_checkable
-class DeliveryAction(Action, Protocol):
-    """A DELIVERY action (webhook, log): emits one or more enriched items to a
-    sink and returns a `DeliveryResult`. Instant is a one-item batch ; digest
-    is N items (one window). Unifies the instant + digest paths on one method
-    so the wire payload has ONE shape. `deliver` returns FAILED (not raises)
-    on a TRANSIENT failure so the failed attempt is still recorded ; it raises
-    only on an UNEXPECTED bug (the operations layer maps that to retryable
-    FAILED). A filter is never digested, so it stays a plain `FilterAction`."""
-
-    def deliver(
-        self, action: WatchAction, *, items: list[DeliveryItem], context: DeliveryContext
-    ) -> DeliveryResult: ...
-
-
-def item_key(data: dict) -> str:
-    """An item's stable identity (source:external_id), the per-item dedup key
-    carried in the body and the instant Idempotency-Key header."""
-    return f"{data.get('source', '')}:{data.get('external_id', '')}"
-
-
-def delivery_request_key(items: list[DeliveryItem]) -> str:
-    """The dedup identity of one delivery ATTEMPT: a single item's key for
-    instant, a stable hash of the sorted keys for a digest batch. Deterministic
-    so a crash-after-POST replay (same items) computes the same key and the
-    flush can short-circuit on a prior SUCCEEDED delivery."""
-    keys = sorted(i.key for i in items)
-    if len(keys) == 1:
-        return keys[0]
-    digest = hashlib.sha256("\n".join(keys).encode()).hexdigest()
-    return f"digest:{digest}"
+    def run(self, action: WatchAction, *, items: list[ActionItem], context: ActionContext) -> ActionResult: ...
