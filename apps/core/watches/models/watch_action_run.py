@@ -48,6 +48,10 @@ class WatchActionRun(BaseModel):
     # The run that queued this one (the prior action in the chain). Blank
     # for the chain's first run (queued by the trigger pass, not a run).
     prior_run_id = models.CharField(_("prior run id"), max_length=26, blank=True, default="")
+    # The WatchActionDelivery (HTTP call) that carried this run, set when a
+    # delivery action's call lands. Blank for non-delivery runs (filters), for
+    # the local log action (no HTTP call), and before the call is made.
+    delivery_id = models.CharField(_("delivery id"), max_length=26, blank=True, default="")
 
     class Meta:
         verbose_name = _("watch action run")

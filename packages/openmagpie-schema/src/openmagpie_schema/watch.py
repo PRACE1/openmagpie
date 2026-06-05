@@ -238,6 +238,9 @@ class WatchActionDeliveryWire(BaseModel):
     item_count: int = 0
     attempt: int = 0
     error: str = ""
+    # The exact body we sent (a WebhookPayload dump), stored point-in-time.
+    # Opaque here; headers are NEVER included (they carry auth tokens).
+    request_payload: dict[str, Any] = Field(default_factory=dict)
     started_at: datetime | None = None
     completed_at: datetime | None = None
     created_at: datetime | None = None
