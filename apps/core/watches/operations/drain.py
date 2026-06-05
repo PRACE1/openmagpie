@@ -23,14 +23,15 @@ from django.utils import timezone
 
 from feeds.models import FeedItem
 from feeds.services import FeedItemService
-from openmagpie_schema.watch_enums import WatchActionRunState
+from openmagpie_schema.watch_enums import WatchActionDelivery, WatchActionRunState
 from watches import run_messages
 from watches.actions import registry as actions_registry
-from watches.actions.protocol import ActionOutcome
+from watches.actions.protocol import ActionOutcome, DeliveryAction, FilterAction
 from watches.models import WatchAction, WatchActionRun
 from watches.services import WatchActionRunService, WatchActionService
 
 from .advance import enqueue_next
+from .delivery import build_delivery_inputs
 
 logger = logging.getLogger("watches")
 
@@ -108,11 +109,30 @@ class WatchDrainOperation:
             logger.warning("run=%s has no executor for kind=%s", run.id, action.kind)
             return action, ActionOutcome(state=WatchActionRunState.ERRORED, error=run_messages.NO_EXECUTOR)
         try:
-            outcome = impl.run(action, item_data=item.data)
+            outcome = self._dispatch(action, impl, item)
         except Exception as exc:
             # Protocol contract: an impl raises only on UNEXPECTED failure ->
             # retryable FAILED (the attempt was already burned at claim). Raw
-            # cause to the log; the run carries only the sanitized note.
+            # cause to the log; the run carries only the sanitized note. (A
+            # transient delivery failure is RETURNED as FAILED, not raised, so
+            # the failed attempt is still logged ; this catch is the backstop.)
             logger.exception("run=%s kind=%s failed: %s", run.id, action.kind, exc)
             return action, ActionOutcome(state=WatchActionRunState.FAILED, error=run_messages.TRANSIENT)
         return action, outcome
+
+    def _dispatch(self, action: WatchAction, impl: object, item: FeedItem) -> ActionOutcome:
+        """Run the action's impl against the item: a DELIVERY action emits one
+        item (instant) via `deliver`, a FILTER action judges it via `run`. An
+        impl satisfying neither protocol is a permanent ERROR."""
+        if isinstance(impl, DeliveryAction):
+            items, context = build_delivery_inputs(
+                [(self.action_run, item)],
+                watch_id=str(self.action_run.watch_id),
+                delivery=WatchActionDelivery.INSTANT,
+                run_svc=self.run_svc,
+            )
+            return impl.deliver(action, items=items, context=context).outcome
+        if isinstance(impl, FilterAction):
+            return impl.run(action, item_data=item.data)
+        logger.warning("run=%s kind=%s satisfies no executor protocol", self.action_run.id, action.kind)
+        return ActionOutcome(state=WatchActionRunState.ERRORED, error=run_messages.NO_EXECUTOR)

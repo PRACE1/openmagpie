@@ -1,9 +1,10 @@
-"""LogAction: write one feed item to the server log (kind=`log`).
+"""LogAction: write feed items to the server log (kind=`log`).
 
-The simplest delivery: render a one-line summary under the config's
-`prefix` and log it. Naturally idempotent (re-logging on a retry is
-harmless), so it always SUCCEEDS unless its own config is invalid. Ports
-the v1 log notifier into the per-item v2 action interface.
+The simplest delivery: render a one-line summary per item under the config's
+`prefix` and log it (instant = one line, digest = a numbered block). Naturally
+idempotent (re-logging on a retry is harmless), so it always SUCCEEDS unless
+its own config is invalid. Makes no HTTP call, so its `DeliveryResult` carries
+no `DeliveryCall` (no WatchActionDelivery row).
 """
 
 from __future__ import annotations
@@ -16,35 +17,32 @@ from watches import run_messages
 from watches.models import WatchAction
 
 from ._config import load_typed
-from .protocol import ActionOutcome
+from .protocol import ActionOutcome, DeliveryContext, DeliveryItem, DeliveryResult
 
 logger = logging.getLogger("watches")
 
 
 class LogAction:
-    """Logs one item under the configured prefix ; always SUCCEEDS."""
+    """Logs items under the configured prefix ; always SUCCEEDS. Instant logs
+    one line, digest a numbered block."""
 
     kind = WatchActionKind.LOG.value
 
-    def run(self, action: WatchAction, *, item_data: dict) -> ActionOutcome:
+    def deliver(self, action: WatchAction, *, items: list[DeliveryItem], context: DeliveryContext) -> DeliveryResult:
         config = load_typed(action, LogConfig, log_label="log")
         if config is None:
-            return ActionOutcome(state=WatchActionRunState.ERRORED, error=run_messages.CONFIG_INVALID)
-        line = _render(config, item_data)
-        logger.info(line)
-        return ActionOutcome(
-            state=WatchActionRunState.SUCCEEDED, result=LogResult(rendered=line).model_dump(mode="json")
-        )
-
-    def run_batch(self, action: WatchAction, *, items: list[dict]) -> ActionOutcome:
-        config = load_typed(action, LogConfig, log_label="log")
-        if config is None:
-            return ActionOutcome(state=WatchActionRunState.ERRORED, error=run_messages.CONFIG_INVALID)
-        lines = [f"{_render(config, item)} ({i + 1}/{len(items)})" for i, item in enumerate(items)]
-        rendered = f"{config.prefix} digest of {len(items)}:\n" + "\n".join(lines)
+            return DeliveryResult(ActionOutcome(state=WatchActionRunState.ERRORED, error=run_messages.CONFIG_INVALID))
+        if len(items) == 1:
+            rendered = _render(config, items[0].data)
+        else:
+            lines = [f"{_render(config, it.data)} ({i + 1}/{len(items)})" for i, it in enumerate(items)]
+            rendered = f"{config.prefix} digest of {len(items)}:\n" + "\n".join(lines)
         logger.info(rendered)
-        return ActionOutcome(
-            state=WatchActionRunState.SUCCEEDED, result=LogResult(rendered=rendered).model_dump(mode="json")
+        # No HTTP call -> no DeliveryCall (the log is not an outbound delivery).
+        return DeliveryResult(
+            ActionOutcome(
+                state=WatchActionRunState.SUCCEEDED, result=LogResult(rendered=rendered).model_dump(mode="json")
+            )
         )
 
 

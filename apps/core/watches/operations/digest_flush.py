@@ -3,7 +3,7 @@
 The per-window unit under `process_due_digests`. The command does the
 global work (iterate due windows) ; `WatchDigestFlushOperation` takes one
 window and emits its accumulated batch through the delivery impl's
-`run_batch`, looping cap-sized slices until the window is drained. Mirrors
+`deliver`, looping cap-sized slices until the window is drained. Mirrors
 `WatchDrainOperation`: a one-shot operation with account-scoped services,
 `.run()` once.
 
@@ -18,21 +18,25 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from functools import cached_property
 
 from django.db import transaction
 from django.utils import timezone
+from pydantic import ValidationError
 
+from feeds.models import FeedItem
 from feeds.services import FeedItemService
-from openmagpie_schema.watch_enums import WatchActionRunState
+from openmagpie_schema.watch_enums import WatchActionDelivery, WatchActionRunState
 from watches import run_messages
 from watches.actions import registry as actions_registry
-from watches.actions.protocol import ActionOutcome, BatchAction
-from watches.models import WatchAction, WatchActionDigestWindow
+from watches.actions.protocol import ActionOutcome, DeliveryAction
+from watches.models import WatchAction, WatchActionDigestWindow, WatchActionRun
+from watches.registry import load_config
 from watches.services import WatchActionRunService, WatchActionService, WatchDigestWindowService
 
 from .advance import enqueue_next_batch
+from .delivery import build_delivery_inputs
 
 logger = logging.getLogger("watches")
 
@@ -153,21 +157,19 @@ class WatchDigestFlushOperation:
         # Build the batch in ONE query (no per-run fetch), dropping runs whose
         # item is gone (mark them ERRORED).
         item_by_id = self.feed_item_svc.get_many(str(r.feed_item_id) for r in runs)
-        items: list[dict] = []
-        batch_runs = []
+        pairs: list[tuple[WatchActionRun, FeedItem]] = []
         gone_ids: list[str] = []
         for run in runs:
             item = item_by_id.get(str(run.feed_item_id))
             if item is None:
                 gone_ids.append(str(run.id))
                 continue
-            items.append(item.data)
-            batch_runs.append(run)
+            pairs.append((run, item))
         if gone_ids:
             self.run_svc.complete_batch(
                 gone_ids, state=WatchActionRunState.ERRORED, error=run_messages.ITEM_GONE, now=self.now
             )
-        if not items:
+        if not pairs:
             self._close()
             return _SliceResult(
                 outcome=ActionOutcome(state=WatchActionRunState.ERRORED, error=run_messages.ITEM_GONE),
@@ -175,34 +177,36 @@ class WatchDigestFlushOperation:
                 count=len(runs),
             )
 
-        # Emit OUTSIDE any transaction (network) ; an impl raises only on a
-        # transient failure -> burn an attempt on the batch and leave the
-        # still-retryable runs pending + window open for the next cron flush.
-        # Runs that hit the attempts cap go terminal FAILED (fail_batch) so a
-        # down destination drains the window instead of re-emitting forever ;
-        # once the last run is terminal, close_if_drained closes the window.
-        # Stop the loop on a transient failure: the failed runs stay PENDING
-        # and (gather is least-tried-first) sink behind never-tried runs, so
-        # looping would re-emit a now-LOWER-priority slice -- and a transient
-        # failure usually means the destination is down, so don't hammer it
-        # with the rest this pass. Fresh slices already went out before this
-        # one (they sorted ahead) ; the next cron tick retries, with the cron
-        # interval as the backoff spacing.
-        # `impl` came from _resolve_action (already verified BatchAction).
+        batch_runs = [run for run, _ in pairs]
+        since, until = self._window_bounds(action)
+        items, context = build_delivery_inputs(
+            pairs,
+            watch_id=str(batch_runs[0].watch_id),
+            delivery=WatchActionDelivery.DIGEST,
+            run_svc=self.run_svc,
+            window_since=since,
+            window_until=until,
+        )
+
+        # Emit OUTSIDE any transaction (network). A transient failure is
+        # RETURNED as FAILED (so the failed attempt can be logged) ; an
+        # unexpected bug raises. Both -> _fail_slice: burn an attempt on the
+        # batch, leave still-retryable runs pending + window open for the next
+        # cron flush, and STOP the loop. Runs that hit the attempts cap go
+        # terminal FAILED so a down destination drains the window instead of
+        # re-emitting forever. Stopping matters: the failed runs sink behind
+        # never-tried runs (gather is least-tried-first), so looping would
+        # re-emit a lower-priority slice and hammer a likely-down destination ;
+        # the next cron tick retries, with the cron interval as backoff.
+        # `impl` came from _resolve_action (already verified DeliveryAction).
         try:
-            outcome = impl.run_batch(action, items=items)
+            result = impl.deliver(action, items=items, context=context)
         except Exception as exc:
             logger.exception("digest flush failed action=%s: %s", self.action_id, exc)
-            with transaction.atomic():
-                self.run_svc.fail_batch([str(r.id) for r in batch_runs], now=self.now)
-                self.digest_svc.close_if_drained(self.action_id)
-            # Only the gone runs went terminal this slice ; the batch stays
-            # pending for the next cron flush, so it isn't counted as drained.
-            return _SliceResult(
-                outcome=ActionOutcome(state=WatchActionRunState.FAILED, error=run_messages.TRANSIENT),
-                more=False,
-                count=len(gone_ids),
-            )
+            return self._fail_slice(batch_runs, gone_ids)
+        outcome = result.outcome
+        if outcome.state == WatchActionRunState.FAILED:
+            return self._fail_slice(batch_runs, gone_ids)
 
         batch_ids = [str(r.id) for r in batch_runs]
         with transaction.atomic():
@@ -217,6 +221,35 @@ class WatchDigestFlushOperation:
             closed = self.digest_svc.close_if_drained(self.action_id)
         return _SliceResult(outcome=outcome, more=not closed, count=len(runs))
 
+    def _fail_slice(self, batch_runs: list[WatchActionRun], gone_ids: list[str]) -> _SliceResult:
+        """A transient batch failure: burn one attempt per run (terminal at the
+        cap), close the window if that drained it, and STOP the loop. Only the
+        gone runs went terminal this slice, so they are the drained count ; the
+        batch stays pending for the next cron flush."""
+        with transaction.atomic():
+            self.run_svc.fail_batch([str(r.id) for r in batch_runs], now=self.now)
+            self.digest_svc.close_if_drained(self.action_id)
+        return _SliceResult(
+            outcome=ActionOutcome(state=WatchActionRunState.FAILED, error=run_messages.TRANSIENT),
+            more=False,
+            count=len(gone_ids),
+        )
+
+    def _window_bounds(self, action: WatchAction) -> tuple[datetime | None, datetime | None]:
+        """The window the batch covers: `until` = the window close, `since` =
+        close minus the configured interval. `since` is None when the config no
+        longer loads (deliver() ERRORs on it anyway) or has no interval."""
+        close_at = self.window.close_at
+        if close_at is None:
+            return None, None
+        try:
+            config = load_config(action)
+        except ValidationError:
+            return None, close_at
+        interval = getattr(config, "digest_interval_seconds", 0) or 0
+        since = close_at - timedelta(seconds=interval) if interval else None
+        return since, close_at
+
     def _close(self) -> None:
         """Close the window iff drained, in its own short txn (the row lock
         composes with the caller's, but the empty/error paths have no other
@@ -224,10 +257,10 @@ class WatchDigestFlushOperation:
         with transaction.atomic():
             self.digest_svc.close_if_drained(self.action_id)
 
-    def _resolve_action(self) -> tuple[WatchAction | None, BatchAction | None, str | None]:
-        """The digest action + its batch-capable impl, or (None, None,
-        sanitized error) when the action is gone, has no executor, or can't
-        batch. The impl is returned so the caller emits without re-fetching."""
+    def _resolve_action(self) -> tuple[WatchAction | None, DeliveryAction | None, str | None]:
+        """The digest action + its delivery impl, or (None, None, sanitized
+        error) when the action is gone, has no executor, or isn't a delivery
+        kind. The impl is returned so the caller emits without re-fetching."""
         try:
             action = self.action_svc.get(self.action_id)
         except WatchAction.DoesNotExist:
@@ -238,7 +271,7 @@ class WatchDigestFlushOperation:
         except KeyError:
             logger.warning("digest flush: action=%s has no executor for kind=%s", self.action_id, action.kind)
             return None, None, run_messages.NO_EXECUTOR
-        if not isinstance(impl, BatchAction):
-            logger.warning("digest flush: action=%s kind=%s can't batch", self.action_id, action.kind)
+        if not isinstance(impl, DeliveryAction):
+            logger.warning("digest flush: action=%s kind=%s can't deliver", self.action_id, action.kind)
             return None, None, run_messages.NO_EXECUTOR
         return action, impl, None
