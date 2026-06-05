@@ -8,6 +8,7 @@ import builtins
 import itertools
 from collections.abc import Iterable
 from datetime import datetime
+from typing import NamedTuple
 
 from django.db.models import Count
 from django.utils import timezone
@@ -18,6 +19,16 @@ from watches.models import WatchActionRun
 from .._run_batches import DigestBatchMixin
 from ._common import _ENQUEUE_CHUNK, _FAILED, _PENDING, _RUNNING, completion_ts
 from ._drain import WatchActionRunGlobal
+
+
+class ActivitySummary(NamedTuple):
+    """`summary_for_action` result. Named (not a bare tuple) so the view reads
+    by attribute and a future bucket doesn't shift positional unpacks."""
+
+    evaluated: dict[WatchActionRunState, int]  # terminal states judged in the window
+    pending: int
+    running: int
+    retrying: int
 
 
 class WatchActionRunService(DigestBatchMixin):
@@ -220,15 +231,17 @@ class WatchActionRunService(DigestBatchMixin):
         *,
         since: datetime,
         until: datetime | None = None,
-    ) -> tuple[dict[WatchActionRunState, int], int, int, int]:
+    ) -> ActivitySummary:
         """Activity for one action: `(evaluated, pending, running, retrying)`.
         `evaluated` is a per-terminal-state `{state: count}` (enum-keyed) of
         runs JUDGED in [since, until) — windowed on `completed_at` (evaluation
         time, NOT enqueue). The rest are the CURRENT (un-windowed) backlog:
-        `pending`/`running` haven't run to a resting state; `retrying` is a
-        transient FAILED still under the attempts cap (FAILED with no
-        completed_at) — surfaced so a retry-pending run isn't invisible.
-        `since` required (no all-time scan). GROUP BY + three counts."""
+        `pending`/`running` haven't run to a resting state; `retrying` is an
+        INSTANT-path transient FAILED still under the attempts cap (FAILED
+        with no completed_at), surfaced so a retry-pending run isn't invisible.
+        NOTE digest-path transient retries stay PENDING (fail_batch keeps them
+        there), so they count under `pending`, not `retrying`. `since`
+        required (no all-time scan). GROUP BY + three counts."""
         base = WatchActionRun.objects.filter(account_id=self.account_id, action_id=action_id)
         # Index coverage: the evaluated GROUP BY rides `watchrun_activity_idx`
         # (account, action, completed_at); the backlog counts filter on state
@@ -246,4 +259,4 @@ class WatchActionRunService(DigestBatchMixin):
         # Retry-pending: FAILED but not yet terminal (no completed_at) — the
         # invariant makes this exactly "transient, will be re-claimed".
         retrying = base.filter(state=_FAILED, completed_at__isnull=True).count()
-        return evaluated, pending, running, retrying
+        return ActivitySummary(evaluated=evaluated, pending=pending, running=running, retrying=retrying)

@@ -144,8 +144,9 @@ def action_activity(
     the individual runs with --list.
 
     Default shows what the action EVALUATED in the window (succeeded / gated
-    / failed / ...) plus the live pending backlog. Any row-level filter
-    (--list / --state / --after) switches to the paginated run log."""
+    / failed (exhausted) / ...) plus the live backlog (pending / running /
+    retrying). Any row-level filter (--list / --state / --after) switches to
+    the paginated run log."""
     api = app_ctx().api.watch
     if list_ or state or after:
         _print_runs(api.action_runs(action_id, state=state, after=after, limit=limit))
