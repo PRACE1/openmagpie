@@ -38,6 +38,14 @@ _WINDOW_LABELS = {
 _EVALUATED_ORDER = [s for s in WatchActionRunState if s not in BACKLOG_STATES]
 
 
+def _evaluated_label(state: WatchActionRunState) -> str:
+    """Row label for the EVALUATED table. FAILED here is the EXHAUSTED kind
+    (terminal, completed) ; the transient/retry-pending FAILED is the
+    separate `retrying` backlog row. Spell it out so the two never read as
+    one count split across tables."""
+    return "failed (exhausted)" if state is WatchActionRunState.FAILED else state.value
+
+
 def _score(run: WatchActionRunWire) -> str:
     """The semantic-filter score from the result blob, 2dp ; '-' for kinds
     that don't score (log / webhook) or runs that never produced one."""
@@ -172,7 +180,7 @@ def _print_summary(action_id: str, resp: WatchActionRunListResponse) -> None:
         console.Column("RUNS", lambda kv: kv[1]),
     ]
     console.header(f"action {action_id}")
-    console.table([(st.value, str(s.evaluated.get(st, 0))) for st in _EVALUATED_ORDER], pair_cols)
+    console.table([(_evaluated_label(st), str(s.evaluated.get(st, 0))) for st in _EVALUATED_ORDER], pair_cols)
     console.log("")  # blank line between the two tables
     backlog_cols: list[console.Column[tuple[str, str]]] = [
         console.Column("BACKLOG (now)", lambda kv: kv[0], width=24),

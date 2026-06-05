@@ -101,6 +101,13 @@ class WatchActionRunState(StrEnum):
 #                which needs the attempts count, so terminality of a FAILED
 #                run is decided alongside the cap (see the server's
 #                `completion_ts`), not by membership in this set.
+#
+# A retryable FAILED (transient, under the cap) is therefore in NEITHER
+# BACKLOG_STATES nor TERMINAL_STATES — it's classified positionally by
+# completion_ts (no completed_at => "retrying"). So BACKLOG_STATES is the
+# pending+running queue only and deliberately UNDERCOUNTS the live work ; a
+# caller wanting the full live queue adds the retry-pending failures
+# (FAILED with no completed_at) — what the summary's `retrying` bucket is.
 BACKLOG_STATES = frozenset({WatchActionRunState.PENDING, WatchActionRunState.RUNNING})
 CLAIMABLE_STATES = frozenset({WatchActionRunState.PENDING, WatchActionRunState.FAILED})
 TERMINAL_STATES = frozenset(
