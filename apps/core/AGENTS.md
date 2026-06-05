@@ -12,7 +12,7 @@ core/
   sources/         Connectors (RedditSubRedditConnector, ...) + SourcePayload hierarchy + per-(source,kind) registry
   feeds/           Feed + Source + FeedItem models, poll orchestrator, item log
   engine/          Engine Protocol + OllamaEngine + registry
-  watches/         Watch + WatchFeed + WatchPath + WatchAction + WatchActionRun + WatchActionDigestWindow
+  watches/         Watch + WatchFeed + WatchPath + WatchAction + WatchActionRun + WatchActionDigestWindow + WatchActionDelivery
   conf/            settings (base + local override), urls, wsgi
 ```
 
@@ -22,20 +22,25 @@ delivery is another). The `watches/` sub-structure:
 
 ```
 watches/
-  models/                 one file per model (Watch, WatchFeed, WatchPath, WatchAction, WatchActionRun, WatchActionDigestWindow)
+  models/                 one file per model (Watch, WatchFeed, WatchPath, WatchAction, WatchActionRun, WatchActionDigestWindow, WatchActionDelivery)
   services/
     watches/              WatchService (+ _actions.py chain ops, _global.py cross-tenant)
     runs.py               WatchActionRunService (enqueue / claim / complete) + Global
     _run_batches.py       DigestBatchMixin (digest_batch / complete_batch / fail_batch)
     digest.py             WatchDigestWindowService (window open/close coordination) + Global
-  actions/                EXECUTION registry: protocol.py (Action / BatchAction), registry.py (kind -> impl),
-                          semantic_filter.py / webhook.py / log.py, _config.py (load_typed)
-  operations/             one-shot orchestrators: trigger.py, drain.py, digest_flush.py, advance.py (enqueue_next)
+    deliveries.py         WatchActionDeliveryService (record / find_succeeded dedup / list) for the HTTP-call audit
+  actions/                EXECUTION registry: protocol.py (Action base + FilterAction / DeliveryAction siblings),
+                          registry.py (kind -> impl), semantic_filter.py / webhook.py / log.py, _config.py (load_typed).
+                          DELIVERY kinds emit one self-describing payload (watch + window + per-item source + score)
+                          via deliver(); webhook supports POST | PUT | PATCH and records a WatchActionDelivery per call.
+  operations/             one-shot orchestrators: trigger.py, drain.py, digest_flush.py, advance.py (enqueue_next),
+                          delivery.py (build_delivery_inputs: enrich runs+items+watch into DeliveryItem/DeliveryContext)
   registry.py             CONFIG registry: kind -> Pydantic config class (parse / validate / load_config)
   policy.py               write-time guards (engine registered, digest interval bound, webhook SSRF)
   run_messages.py         operator-facing WatchActionRun.error strings (sanitized; raw cause -> logs)
   management/commands/    process_due_watches (trigger) / process_due_runs (drain) / process_due_digests (flush)
-  api.py / views.py / serializers.py / urls.py / constants.py
+  api.py / views.py (watch/action CRUD) / views_audit.py (runs + deliveries read views)
+  serializers.py / urls.py / action_urls.py (leaf /v1/actions/<id>) / constants.py
 ```
 
 ## File shape per app

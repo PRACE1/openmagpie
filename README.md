@@ -87,6 +87,38 @@ graph TD
 | Action kinds | `semantic_filter` (LLM-judged), `webhook`, `log` |
 | Delivery modes | instant, digest |
 
+## Webhook payload
+
+A `webhook` action POSTs (or PUTs / PATCHes) one self-describing body. Instant
+and digest use the SAME shape; instant is just a one-item batch with `window`
+null. Each item carries the source it came from and the upstream
+`semantic_filter` score (null when no filter ran ahead of the delivery):
+
+```json
+{
+  "watch": {"id": "01K...", "name": "ai-webhook"},
+  "action_id": "01K...",
+  "delivery": "digest",
+  "window": {"since": "2026-06-05T12:00:00Z", "until": "2026-06-05T13:00:00Z"},
+  "items": [
+    {
+      "key": "reddit:abc123",
+      "score": 0.86,
+      "source": {"label": "r/ClaudeAI", "kind": "reddit_subreddit"},
+      "item": {"title": "...", "url": "..."}
+    }
+  ]
+}
+```
+
+`item` is the feed item narrowed to the action's `include_fields` (empty sends
+all fields). Each item's `key` is `source:external_id`; instant deliveries also
+send it as an `Idempotency-Key` header. Every call is recorded for review:
+
+```bash
+make dev-cli ARGS="watch action deliveries <webhook_action_id>"   # state, HTTP status, item count per call
+```
+
 ## Quick start
 
 ### Prereq: an Ollama instance to talk to
@@ -194,6 +226,7 @@ See [AGENTS.md](AGENTS.md) for design conventions (char pointers, typed-blob pat
 ## Documentation
 
 - [CONTRIBUTING.md](CONTRIBUTING.md): contribution flow, branch naming, running the checks.
+- [CHANGELOG.md](CHANGELOG.md): notable changes per release.
 - [magpie CLI reference](apps/cli/README.md): install + the full command list.
 - [AGENTS.md](AGENTS.md): cross-cutting design conventions, plus per-area notes: [apps/core](apps/core/AGENTS.md) · [apps/cli](apps/cli/AGENTS.md) · [web](web/AGENTS.md).
 
