@@ -1,4 +1,4 @@
-.PHONY: quickstart install-cli up build down logs logs-core logs-web dev-exec dev-manage dev-test dev-makemigrations dev-dbshell dev-migrate dev-bootstrap dev-tick up-jobs down-jobs _job-up dev-lint dev-lint-fix dev-types dev-check dev-web dev-web-shell dev-cli-sync dev-cli hooks
+.PHONY: quickstart install-cli up build down logs logs-core logs-web dev-exec dev-manage dev-test dev-makemigrations dev-dbshell dev-migrate dev-bootstrap dev-tick up-jobs down-jobs _job-up dev-lint dev-lint-fix dev-types dev-check dev-web dev-web-reinstall dev-web-shell dev-cli-sync dev-cli hooks
 
 quickstart: ## One command from a fresh clone: env + build (wait healthy) + migrate
 	@test -f apps/core/.env || { cp apps/core/.env.example apps/core/.env; echo "Created apps/core/.env from .env.example"; }
@@ -6,7 +6,8 @@ quickstart: ## One command from a fresh clone: env + build (wait healthy) + migr
 	$(MAKE) dev-migrate
 	@echo ""
 	@echo "Ready. Next:"
-	@echo "  Web:  http://localhost:3001  (create an account; you're signed in)"
+	@echo "  App:  http://localhost:3001  (create an account; you're signed in)"
+	@echo "  Site: http://localhost:3000  (marketing landing)"
 	@echo "  CLI:  make install-cli   then   magpie auth login"
 	@echo ""
 	@echo "Heads up: OpenMagpie is BYO-LLM. Point OLLAMA_URL in apps/core/.env at"
@@ -36,7 +37,7 @@ logs: ## Tail all Docker container logs
 logs-core: ## Tail Django logs
 	docker compose logs -f core
 
-logs-web: ## Tail Next.js web logs
+logs-web: ## Tail Next.js web logs (app + marketing)
 	docker compose logs -f web
 
 dev-exec: ## Run a command in a container (e.g. make dev-exec SVC=core CMD="uv run ruff check .")
@@ -104,8 +105,12 @@ down-jobs: ## Stop the background tickers started by up-jobs
 		else echo "$$n not running"; fi; \
 	done
 
-dev-web: ## Start (or restart) just the Next.js dev container and tail its logs
+dev-web: ## Start (or restart) the Next.js dev container (app + marketing) and tail its logs
 	docker compose up -d web
+	docker compose logs -f web
+
+dev-web-reinstall: ## Recreate the web container so it re-runs pnpm install (after adding a web dependency), then tail logs
+	docker compose up -d --force-recreate web
 	docker compose logs -f web
 
 dev-web-shell: ## Open a shell in the web container

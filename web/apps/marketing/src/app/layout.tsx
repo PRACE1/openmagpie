@@ -1,6 +1,6 @@
 import { Poppins, Geist_Mono } from "next/font/google";
 import { Providers } from "./providers";
-import { buildMetadata } from "@magpie/api-utils/site";
+import { buildMetadata, siteMeta } from "@magpie/api-utils/site";
 import "./globals.css";
 
 const poppins = Poppins({
@@ -16,9 +16,12 @@ const geistMono = Geist_Mono({
   display: "swap",
 });
 
-// Shared base (brand name title, description, icons, metadataBase). The app is
-// a different surface than marketing, so it can override OG/Twitter here later.
-export const metadata = buildMetadata();
+// Marketing leads with the tagline title; base + OG/Twitter come from the
+// shared composer. The file-based opengraph-image/twitter-image attach
+// automatically.
+export const metadata = buildMetadata({
+  title: `${siteMeta.name} - ${siteMeta.tagline}`,
+});
 
 export default function RootLayout({
   children,
