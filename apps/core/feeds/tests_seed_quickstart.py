@@ -103,6 +103,19 @@ class SeedQuickstartTests(TestCase):
         self.assertEqual(Feed.objects.count(), 0)
         self.assertEqual(Watch.objects.count(), 0)
 
+    def test_watch_create_failure_cleans_up_the_feed(self) -> None:
+        # The two creates are deliberately NOT one transaction.atomic() (that
+        # would re-nest the chain lock inside a transaction and release it
+        # before commit; see apps/core/AGENTS.md). Instead a watch-create
+        # failure deletes the feed by hand, so no orphan is left behind.
+        with (
+            mock.patch.object(WatchService, "create", side_effect=RuntimeError("boom")),
+            self.assertRaises(RuntimeError),
+        ):
+            call_command("seed_quickstart", starter=STARTER, days=3)
+        self.assertEqual(Feed.objects.count(), 0)
+        self.assertEqual(Watch.objects.count(), 0)
+
     def test_idempotent_second_call_no_duplicates(self) -> None:
         call_command("seed_quickstart", starter=STARTER, days=3)
         call_command("seed_quickstart", starter=STARTER, days=3)
@@ -196,6 +209,14 @@ class SeedQuickstartTests(TestCase):
                 self.assertIn("mapping", str(ctx.exception))
             finally:
                 path.unlink()
+
+    def test_negative_days_raises_commanderror(self) -> None:
+        # A negative lookback is a future watermark (feeds/policy rejects it);
+        # surface a clean CommandError before creating anything.
+        with self.assertRaises(CommandError):
+            call_command("seed_quickstart", starter=STARTER, days=-1)
+        self.assertEqual(Feed.objects.count(), 0)
+        self.assertFalse(UserService.Global.email_exists("local@openmagpie.local"))
 
     @override_settings(IS_CLOUD=True)
     def test_gated_to_local(self) -> None:

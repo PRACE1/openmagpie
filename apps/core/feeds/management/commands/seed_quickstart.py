@@ -1,7 +1,8 @@
 """Seed an example feed + watch into a local dev account.
 
-Local only (gated to DJANGO_ENV=local, never cloud) and needs no auth: a
-fresh clone reaches a real match in one command. The seed only creates
+A local-development tool: it refuses to run when DJANGO_ENV=cloud (so it
+is safe anywhere that is not cloud) and needs no auth, so a fresh clone
+reaches a real match in one command. The seed only creates
 data (account, user, feed, watch); ticking the pipeline is a separate
 step. Each source's first-tick watermark is set to `now - days` so the
 opening tick scores a backlog instead of only brand-new posts.
@@ -19,14 +20,14 @@ from typing import Any
 import yaml
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError, CommandParser
-from django.db import transaction
 from django.utils import timezone
 from pydantic import ValidationError
 
 from accounts.services import AccountService, UserProfileService, UserService
 from feeds.services import FeedService
-from openmagpie_schema.feed import SourceInput
+from openmagpie_schema.feed import CuratedFeedConfig, SourceInput
 from openmagpie_schema.watch import WatchActionInput
+from openmagpie_schema.watch_enums import WatchActionKind
 from watches.policy import PolicyError
 from watches.registry import validate_config
 from watches.services import WatchService
@@ -59,7 +60,7 @@ class Command(BaseCommand):
 
     def handle(self, *args: Any, **options: Any) -> None:
         if settings.IS_CLOUD:
-            raise CommandError("seed_quickstart is local only (DJANGO_ENV=local)")
+            raise CommandError("seed_quickstart refuses to run when DJANGO_ENV=cloud")
 
         starter = options["starter"]
         # Read-only id lookup (no create) so `make local-seed` can echo a
@@ -73,6 +74,11 @@ class Command(BaseCommand):
 
         days = options["days"]
         reset = options["reset"]
+        if days < 0:
+            # A negative lookback is a future watermark, which feeds/policy.py
+            # rejects (it would silently disable the source). Surface it as a
+            # clean CommandError, like the command's other operator errors.
+            raise CommandError(f"--days must be >= 0 (got {days})")
 
         user_id, account_id, account_name, email, password = self._get_or_create_account()
         feed_yaml, watch_yaml = self._load_starter(starter)
@@ -99,17 +105,22 @@ class Command(BaseCommand):
         watermark = timezone.now() - timedelta(days=days)
         sources = [SourceInput(**s).model_copy(update={"last_event_at": watermark}) for s in feed_yaml["sources"]]
         actions = self._parse_actions(watch_yaml["actions"])
-        # One transaction so a watch failure can't leave an orphaned feed (and
-        # so the feed/watch pair stays consistent for the idempotency check).
-        with transaction.atomic():
-            feed = feed_svc.create(
-                user_id=user_id,
-                name=feed_yaml["name"],
-                kind=feed_yaml.get("kind", "curated"),
-                poll_interval_seconds=feed_yaml.get("poll_interval_seconds", 300),
-                data=feed_yaml.get("data", {}),
-                sources=sources,
-            )
+        # NB: do NOT wrap these two creates in one transaction.atomic().
+        # WatchService.create runs replace_chain (which takes path_chain_lock)
+        # OUTSIDE its own transaction on purpose; an outer atomic would re-nest
+        # that lock inside a transaction and release it before commit, which
+        # the chain-lock HARD RULE forbids (apps/core/AGENTS.md). To still avoid
+        # an orphaned feed, delete it by hand if the watch fails (the --reset /
+        # partial-seed path recovers it too, but this keeps a clean run clean).
+        feed = feed_svc.create(
+            user_id=user_id,
+            name=feed_yaml["name"],
+            kind=feed_yaml.get("kind", CuratedFeedConfig.FEED_KIND),
+            poll_interval_seconds=feed_yaml.get("poll_interval_seconds", 300),
+            data=feed_yaml.get("data", {}),
+            sources=sources,
+        )
+        try:
             watch = watch_svc.create(
                 user_id=user_id,
                 name=watch_yaml["name"],
@@ -117,17 +128,27 @@ class Command(BaseCommand):
                 feed_ids=[str(feed.id)],
                 actions=actions,
             )
+        except Exception:
+            feed_svc.delete(feed)
+            raise
 
         gate_action_id = self._gate_action_id(watch_svc.initial_actions(watch))
         self._report(feed, watch, sources, days, account_name, email, password, gate_action_id)
 
+    @staticmethod
+    def _seed_email() -> str:
+        return os.environ.get("SEED_EMAIL", DEFAULT_EMAIL).strip().lower()
+
+    @staticmethod
+    def _existing_user(email: str) -> Any:
+        # The seed user if it already exists, else None. Read-only (no create),
+        # so both the get-or-create and the side-effect-free lookup share it.
+        return UserService.Global.get_by_email(email) if UserService.Global.email_exists(email) else None
+
     def _get_or_create_account(self) -> tuple[str, str, str, str, str]:
-        email = os.environ.get("SEED_EMAIL", DEFAULT_EMAIL).strip().lower()
+        email = self._seed_email()
         password = os.environ.get("SEED_PASSWORD", DEFAULT_PASSWORD)
-        if UserService.Global.email_exists(email):
-            user = UserService.Global.get_by_email(email)
-        else:
-            user = UserService.Global.create(email=email, password=password)
+        user = self._existing_user(email) or UserService.Global.create(email=email, password=password)
         user_id = str(user.id)
 
         profile = UserProfileService.Global.primary_for_user(user_id=user_id)
@@ -174,10 +195,9 @@ class Command(BaseCommand):
     def _find_account_id(self) -> str | None:
         # Resolve the seed account without creating one (the --print-activity
         # path must not have side effects). None if the seed user/profile is absent.
-        email = os.environ.get("SEED_EMAIL", DEFAULT_EMAIL).strip().lower()
-        if not UserService.Global.email_exists(email):
+        user = self._existing_user(self._seed_email())
+        if user is None:
             return None
-        user = UserService.Global.get_by_email(email)
         profile = UserProfileService.Global.primary_for_user(user_id=str(user.id))
         return str(profile.account_id) if profile is not None else None
 
@@ -196,7 +216,7 @@ class Command(BaseCommand):
     def _gate_action_id(actions: list[Any]) -> str | None:
         # The chain's semantic_filter (the gate); its activity is the
         # matched-vs-filtered breakdown a first user wants. None if absent.
-        return next((str(a.id) for a in actions if str(a.kind) == "semantic_filter"), None)
+        return next((str(a.id) for a in actions if str(a.kind) == WatchActionKind.SEMANTIC_FILTER), None)
 
     @staticmethod
     def _parse_actions(raw_actions: list[dict[str, Any]]) -> list[WatchActionInput]:
