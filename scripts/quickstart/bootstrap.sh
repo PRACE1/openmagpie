@@ -5,8 +5,9 @@
 #   curl -fsSL https://openmagpie.ai | sh
 #
 # Clones the repo and hands off to scripts/quickstart/run.sh (build the stack,
-# migrate, seed an example feed + watch, install git hooks). Local development
-# only; OpenMagpie is BYO-LLM, so run.sh points at an Ollama you control.
+# migrate, install the local CLI, seed an example feed + watch, install git
+# hooks). Local development only; OpenMagpie is BYO-LLM, so run.sh points at an
+# Ollama you control.
 #
 # POSIX sh (no bashisms), like every scripts/*.sh (shellcheck -s sh enforces it
 # in pre-commit + CI), so the whole `curl ... | sh` flow is bash-free.
