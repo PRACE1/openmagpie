@@ -14,7 +14,9 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT"
 
 # Shared helpers (manage(), is_truthy()). Sourced after cd so the path resolves.
-# shellcheck source=scripts/quickstart/_lib.sh
+# Don't follow the source: pre-commit lints one file at a time, so _lib.sh isn't
+# in the input set; it's linted on its own.
+# shellcheck source=/dev/null
 . ./scripts/quickstart/_lib.sh
 
 STARTER="${STARTER:-selfhosted-opensource}"

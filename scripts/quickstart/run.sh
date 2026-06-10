@@ -5,9 +5,9 @@
 # bootstrap (scripts/quickstart/bootstrap.sh) right after it clones, and runnable
 # on its own from a checkout:  ./scripts/quickstart/run.sh
 #
-# POSIX sh, like everything on the installer path (the scripts/check-docker.sh
-# and scripts/hooks.sh it calls are sh too), so the whole curl|sh flow is
-# bash-free.
+# POSIX sh, like everything on the installer path (the scripts/quickstart/
+# preflight.sh and scripts/hooks.sh it calls are sh too), so the whole curl|sh
+# flow is bash-free.
 set -eu
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -15,7 +15,9 @@ cd "$ROOT"
 
 # Shared helpers (manage(), is_truthy()). Sourced after cd so the relative path
 # resolves; keeps the truthy SKIP_DATA_SEED parse + manage() in one place.
-# shellcheck source=scripts/quickstart/_lib.sh
+# Don't follow the source: pre-commit lints one file at a time, so _lib.sh isn't
+# in the input set; it's linted on its own.
+# shellcheck source=/dev/null
 . ./scripts/quickstart/_lib.sh
 
 # Invoke siblings via `sh <script>` (not `./<script>`) for the same reason the
