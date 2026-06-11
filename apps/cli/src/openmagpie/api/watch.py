@@ -12,9 +12,6 @@ import builtins
 from typing import Any
 
 from openmagpie_schema.watch import (
-    WatchActionDeliveryListResponse,
-    WatchActionDeliveryView,
-    WatchActionRunListResponse,
     WatchActionWire,
     WatchInput,
     WatchListResponse,
@@ -34,23 +31,6 @@ __all__ = [
     "WatchView",
     "WatchWire",
 ]
-
-
-def _list_params(
-    *, state: str | None = None, after: str | None = None, limit: int | None = None, window: str | None = None
-) -> dict[str, str] | None:
-    """The cursor-list query params shared by the action runs / deliveries
-    endpoints, dropping the unset ones. None when empty so httpx sends none."""
-    params: dict[str, str] = {}
-    if state:
-        params["state"] = state
-    if after:
-        params["after"] = after
-    if limit is not None:
-        params["limit"] = str(limit)
-    if window:
-        params["window"] = window
-    return params or None
 
 
 class WatchApi:
@@ -97,6 +77,12 @@ class WatchApi:
         items = (raw or {}).get("items") or []
         return [WatchActionWire.model_validate(it) for it in items]
 
+    def get_action(self, action_id: str) -> WatchActionWire:
+        """GET one action's definition (kind + redacted config + summary) by its
+        own id; the watch/chain is resolved server-side, not in the path."""
+        raw = self._http.get(routes.actions.detail(action_id))
+        return WatchActionWire.model_validate(raw)
+
     def add_action(
         self, watch_id: str, kind: str, config: dict[str, Any], *, rank: int | None = None
     ) -> WatchActionWire:
@@ -106,39 +92,9 @@ class WatchApi:
         raw = self._http.post(routes.watches.actions(watch_id), json_body=body)
         return WatchActionWire.model_validate(raw)
 
-    def set_action(self, action_id: str, kind: str, config: dict[str, Any]) -> WatchActionWire:
+    def edit_action(self, action_id: str, kind: str, config: dict[str, Any]) -> WatchActionWire:
         raw = self._http.put(routes.actions.detail(action_id), json_body={"kind": kind, "config": config})
         return WatchActionWire.model_validate(raw)
 
-    def remove_action(self, action_id: str) -> None:
+    def delete_action(self, action_id: str) -> None:
         self._http.delete(routes.actions.detail(action_id))
-
-    def action_runs(
-        self,
-        action_id: str,
-        *,
-        state: str | None = None,
-        after: str | None = None,
-        limit: int | None = None,
-        window: str | None = None,
-    ) -> WatchActionRunListResponse:
-        # window is the activity-summary preset (server resolves it to bounds).
-        params = _list_params(state=state, after=after, limit=limit, window=window)
-        raw = self._http.get(routes.actions.runs(action_id), params=params)
-        return WatchActionRunListResponse.model_validate(raw)
-
-    def action_deliveries(
-        self,
-        action_id: str,
-        *,
-        state: str | None = None,
-        after: str | None = None,
-        limit: int | None = None,
-    ) -> WatchActionDeliveryListResponse:
-        params = _list_params(state=state, after=after, limit=limit)
-        raw = self._http.get(routes.actions.deliveries(action_id), params=params)
-        return WatchActionDeliveryListResponse.model_validate(raw)
-
-    def action_delivery(self, delivery_id: str) -> WatchActionDeliveryView:
-        raw = self._http.get(routes.deliveries.detail(delivery_id))
-        return WatchActionDeliveryView.model_validate(raw)

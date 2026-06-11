@@ -108,14 +108,22 @@ def _feed_summary(feed: Feed) -> FeedConfigSummary:
         return _EMPTY_SUMMARY
 
 
-def _feed_item_wire(item: FeedItem) -> FeedItemWire:
-    return FeedItemWire(
-        id=str(item.id),
-        source_kind=str(item.source_kind),
-        source_label=str(item.source_label),
-        external_id=str(item.external_id),
-        occurred_at=item.occurred_at,
-        data=item.data or {},
+def feed_item_wire(item: FeedItem) -> FeedItemWire:
+    """One FeedItem's wire row. Used inline by `feed_view`'s recent-item list and
+    by the item audit views (`/v1/feeds/<id>/items`, `/v1/feed-items/<id>`).
+
+    `model_validate` (not the kwarg constructor) so the `data` dump is parsed
+    into the typed `FeedItemData` union at this boundary; a raw dict is not
+    statically one of the payload models."""
+    return FeedItemWire.model_validate(
+        {
+            "id": str(item.id),
+            "source_kind": str(item.source_kind),
+            "source_label": str(item.source_label),
+            "external_id": str(item.external_id),
+            "occurred_at": item.occurred_at,
+            "data": item.data or {},
+        }
     )
 
 
@@ -157,15 +165,14 @@ def _feed_sources(feed: Feed) -> list[Source]:
     return SourceService(account_id=str(feed.account_id)).list(feed)
 
 
-def feed_view(feed: Feed, *, recent_items: list[FeedItem] | None = None) -> FeedView:
-    """GET-detail response: envelope + summary + the recent item log
-    ("sort by new and go") + the feed's currently-attached Source rows."""
-    items = recent_items or []
+def feed_view(feed: Feed) -> FeedView:
+    """GET-detail (CONFIG) response: envelope + summary + the feed's
+    currently-attached Source rows. The item log is NOT here ; it has its own
+    paginated route (`GET /v1/feeds/<id>/items`)."""
     sources_qs = _feed_sources(feed)
     return FeedView(
         **feed_wire(feed).model_dump(),
         summary=_feed_summary(feed),
-        recent_items=[_feed_item_wire(i) for i in items],
         sources=[source_wire(s) for s in sources_qs],
         source_count=len(sources_qs),
     )

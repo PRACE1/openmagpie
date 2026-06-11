@@ -16,21 +16,26 @@ import yaml
 from openmagpie_schema.watch import WatchActionInput
 
 from ... import console
-from ...api.watch import WatchActionWire, WatchInput, WatchMutationResponse, WatchView, WatchWire
+from ...api.watch import WatchActionWire, WatchInput, WatchMutationResponse, WatchView
 from ...context import AppContext, app_ctx
 from .._shared import (
     _abort_unexpected,
     _check_format,
+    _columns_option,
+    _emit_columns_paginated,
+    _emit_detail,
     _emit_doc,
     _handle_api_errors,
+    _jsonl_rows_option,
+    _list_output_option,
     _open_editor_or_abort,
     _parse_yaml_or_abort,
+    _print_columns_option,
     _read_file_or_abort,
+    _transpose_option,
+    col,
 )
 from ._apps import WATCH_TEMPLATE_YAML, watch_app
-
-_DEFAULT_LIST_LIMIT = 50
-
 
 # ── Template ───────────────────────────────────────────────────────────
 
@@ -40,7 +45,6 @@ def template(
     format: str = typer.Option(
         "yaml",
         "--format",
-        "-F",
         case_sensitive=False,
         help="Output format: `yaml` (commented; default) or `json` (structural; no comments).",
     ),
@@ -65,7 +69,7 @@ def create(
 ) -> None:
     """Create a watch from a YAML config."""
     if file is None:
-        body_text = _edit_template_or_abort()
+        body_text = _open_editor_or_abort(WATCH_TEMPLATE_YAML)
     elif file == "-":
         body_text = sys.stdin.read()
     else:
@@ -80,10 +84,19 @@ def create(
 
 @watch_app.command("get")
 @_handle_api_errors
-def get(watch_id: str = typer.Argument(..., help="Watch id.")) -> None:
+def get(
+    watch_id: str = typer.Argument(..., help="Watch id."),
+    jsonl: bool = typer.Option(False, "--jsonl", help="Emit the watch as one JSON object instead of a field table."),
+    output: str | None = typer.Option(None, "--output", "-o", help="Write to a file instead of stdout."),
+) -> None:
     """Show one watch's config + action chain."""
     detail = app_ctx().api.watch.get(watch_id)
-    _print_watch(detail, f"Watch {detail.id}  [{console.active_or_paused(detail.is_active)}]")
+    _emit_detail(
+        render=lambda: _print_watch(detail, f"Watch {detail.id}  [{console.active_or_paused(detail.is_active)}]"),
+        json_obj=detail.model_dump_json,
+        jsonl=jsonl,
+        output=output,
+    )
 
 
 @watch_app.command("edit")
@@ -97,7 +110,7 @@ def edit(
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation prompt. Required for piped input."),
 ) -> None:
     """Full-replace edit of one watch (name, active, feeds, action chain).
-    For a single-action tweak, `magpie watch action add/remove` is the
+    For a single-action tweak, `magpie watch action add/edit/delete` is the
     surgical alternative."""
     ac = app_ctx()
     detail = ac.api.watch.get(watch_id)
@@ -125,7 +138,7 @@ def delete(
         if not sys.stdin.isatty():
             console.warn(f"Piped input: can't prompt. Re-run with --yes to delete {detail.name} ({detail.id}).")
             raise typer.Exit(code=1)
-        console.error(f"Delete watch {detail.name} ({detail.id})? This cannot be undone.")
+        console.warn(f"Delete watch {detail.name} ({detail.id})? This cannot be undone.")
         if not typer.confirm("Delete?"):
             console.warn("Aborted.")
             raise typer.Exit(code=1)
@@ -136,50 +149,49 @@ def delete(
 # ── List ───────────────────────────────────────────────────────────────
 
 
+# Default `watch list` columns, as dot-paths into a watch record. ACTIVE maps the
+# bool to the same active/paused label `watch get` shows; FEEDS is a list of feed
+# ids the renderer joins with `, ` (scalars), not a JSON array. Empty cells render
+# `-` on both surfaces (the uniform table convention; `get` aligns to it too).
+_WATCH_COLUMNS = [
+    col("ID:id"),
+    col("NAME:name"),
+    col("ACTIVE:is_active", fmt=console.active_or_paused),
+    col("FEEDS:feed_ids"),
+]
+
+
 @watch_app.command("list")
 @_handle_api_errors
 def list_(
-    limit: int = typer.Option(_DEFAULT_LIST_LIMIT, "--limit", "-l", help="Max watches per page."),
-    after: str | None = typer.Option(None, "--after", "-a", help="Cursor (watch id) to fetch the page after."),
-    all_: bool = typer.Option(False, "--all", help="Page through every watch in the account."),
+    after: str | None = typer.Option(None, "--after", help="Cursor (watch id) to page after."),
+    limit: int | None = typer.Option(None, "--limit", "-l", help="Rows per page."),
+    columns: str | None = _columns_option(),
+    transpose: bool = _transpose_option("watch"),
+    print_columns: bool = _print_columns_option("watch"),
+    jsonl: bool = _jsonl_rows_option("watch"),
+    output: str | None = _list_output_option(paginated=True),
 ) -> None:
     """List watches in the caller's account, newest first.
 
-    Cursor-paginated: a single call shows up to `--limit` watches. Pass
-    the `--after <id>` cursor printed at the bottom for the next page, or
-    `--all` to follow the cursor across pages automatically.
-    """
-    api = app_ctx().api.watch
-    rows: list[WatchWire] = []
-    next_cursor: str | None = None
-    while True:
-        page = api.list(after=after, limit=limit)
-        rows.extend(page.items)
-        next_cursor = page.next_cursor
-        if not all_ or not page.next_cursor:
-            break
-        after = page.next_cursor
-    columns: list[console.Column[WatchWire]] = [
-        console.Column("ID", lambda w: w.id),
-        console.Column("NAME", lambda w: w.name),
-        console.Column("STATUS", lambda w: console.active_or_paused(w.is_active)),
-        console.Column("FEEDS", lambda w: ", ".join(w.feed_ids) or "(no feeds)"),
-    ]
-    if not console.table(rows, columns):
-        console.log("No watches yet. Try `magpie watch template`.")
-    elif next_cursor:
-        console.log(f"  (more available; rerun with --after {next_cursor}, or --all)")
+    Cursor-paginated: on a terminal it prompt-pages (Fetch next page? [Y/n]);
+    piped/`-o` it emits one page plus the next cursor for a scripted loop."""
+    _emit_columns_paginated(
+        fetch=lambda cursor, lim: app_ctx().api.watch.list(after=cursor, limit=lim),
+        after=after,
+        limit=limit,
+        record_of=lambda w, _: w.model_dump(mode="json"),
+        default_columns=_WATCH_COLUMNS,
+        columns=columns,
+        transpose=transpose,
+        print_columns=print_columns,
+        jsonl=jsonl,
+        output=output,
+        empty_msg="No watches yet. Try `magpie watch template`.",
+    )
 
 
 # ── Helpers ────────────────────────────────────────────────────────────
-
-
-def _edit_template_or_abort() -> str:
-    edited = typer.edit(WATCH_TEMPLATE_YAML, extension=".yaml")
-    if edited is None:
-        console.warn("Edit cancelled.")
-        raise typer.Exit(code=1) from None
-    return edited
 
 
 def _reject_if_unmodified_template(body_text: str) -> None:
@@ -251,8 +263,8 @@ def _print_watch(obj: WatchMutationResponse | WatchView, title: str) -> None:
     console.header(title)
     config_rows: list[tuple[str, str]] = [
         ("name", obj.name),
-        ("feeds", ", ".join(obj.feed_ids) or "(none)"),
-        ("chain", f"{len(obj.actions)} action(s)" if obj.actions else "(no actions)"),
+        ("feeds", ", ".join(obj.feed_ids) or console.EMPTY),
+        ("chain", f"{len(obj.actions)} action(s)"),
     ]
     config_columns: list[console.Column[tuple[str, str]]] = [
         console.Column("FIELD", lambda kv: kv[0], width=16),
@@ -265,6 +277,6 @@ def _print_watch(obj: WatchMutationResponse | WatchView, title: str) -> None:
     chain_columns: list[console.Column[WatchActionWire]] = [
         console.Column("RANK", lambda a: str(a.rank)),
         console.Column("KIND", lambda a: a.kind),
-        console.Column("SUMMARY", lambda a: a.summary.detail or "(no summary)"),
+        console.Column("SUMMARY", lambda a: a.summary.detail or console.EMPTY),
     ]
     console.table(obj.actions, chain_columns)

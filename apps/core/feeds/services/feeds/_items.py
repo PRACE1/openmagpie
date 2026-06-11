@@ -262,12 +262,13 @@ class FeedItemService:
             if len(chunk) < chunk_size:
                 return
 
-    def list_recent_items(self, feed: Feed, /, *, limit: int) -> builtins.list[FeedItem]:
-        # builtins.list: the method name shadows the builtin in this
-        # class's annotation scope.
-        """Recent FeedItems newest-first (by ULID pk). The 'sort by new
-        and go' surface; all of the feed's streams interleaved."""
+    def list_for_feed(self, feed: Feed, /, *, after: str | None = None, limit: int = 50) -> builtins.list[FeedItem]:
+        """This account's items for one feed, newest-first (ULID pk),
+        cursor-paginated for the audit CLI (`feed item list --feed`): pass
+        `after=<id>` to fetch rows whose id is strictly less (older), omit for the
+        newest page. Scoped by (account, feed)."""
         self._assert_scope(str(feed.account_id), "feed")
-        return builtins.list(
-            FeedItem.objects.filter(account_id=self.account_id, feed_id=feed.id).order_by("-id")[:limit]
-        )
+        qs = FeedItem.objects.filter(account_id=self.account_id, feed_id=feed.id)
+        if after:
+            qs = qs.filter(id__lt=after)
+        return builtins.list(qs.order_by("-id")[:limit])

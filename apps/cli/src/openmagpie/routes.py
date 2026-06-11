@@ -16,8 +16,11 @@ API_VERSION = "v1"
 _AUTH = f"/{API_VERSION}/auth"
 _FEEDS = f"/{API_VERSION}/feeds"
 _WATCHES = f"/{API_VERSION}/watches"
+_FEED_SOURCES = f"/{API_VERSION}/feed-sources"
+_FEED_ITEMS = f"/{API_VERSION}/feed-items"
 _ACTIONS = f"/{API_VERSION}/actions"
-_DELIVERIES = f"/{API_VERSION}/deliveries"
+_ACTION_ACTIVITY = f"/{API_VERSION}/action-activity"
+_ACTION_DELIVERIES = f"/{API_VERSION}/action-deliveries"
 _ENGINES = f"/{API_VERSION}/engines"
 
 
@@ -53,8 +56,28 @@ class feeds:
         return f"{_FEEDS}/{feed_id}/sources"
 
     @staticmethod
-    def source_detail(feed_id: str, source_id: str) -> str:
-        return f"{_FEEDS}/{feed_id}/sources/{source_id}"
+    def items(feed_id: str) -> str:
+        # The feed-scoped item log (newest-first, cursor-paginated); the by-own-id
+        # detail of one item is parent-qualified (see `feed_items` below).
+        return f"{_FEEDS}/{feed_id}/items"
+
+
+class feed_sources:
+    """`/v1/feed-sources/<id>` — one source by its own ULID (a dependent record
+    of its feed; the feed is resolved server-side, not passed in the path)."""
+
+    @staticmethod
+    def detail(source_id: str) -> str:
+        return f"{_FEED_SOURCES}/{source_id}"
+
+
+class feed_items:
+    """`/v1/feed-items/<id>`: one feed item by its own ULID (a dependent record
+    of its feed; the LIST is `/v1/feeds/<id>/items`). Read-only."""
+
+    @staticmethod
+    def detail(item_id: str) -> str:
+        return f"{_FEED_ITEMS}/{item_id}"
 
 
 class watches:
@@ -69,13 +92,16 @@ class watches:
     @staticmethod
     def actions(watch_id: str) -> str:
         # Chain-level list/add stay watch-scoped (no action id yet). Per-action
-        # ops (edit/remove/runs) live under `routes.actions`, keyed on the
+        # ops (get/edit/delete/runs) live under `routes.actions`, keyed on the
         # action's own id.
         return f"{_WATCHES}/{watch_id}/actions"
 
 
 class actions:
-    """`/v1/actions/*` — per-action ops keyed on the action's own ULID."""
+    """`/v1/actions/*` — per-action ops keyed on the action's own ULID. The
+    audit LISTS are nested here (`activity` = the run log, `deliveries`); the
+    by-own-id detail of one run / delivery is parent-qualified (see `activity`
+    / `deliveries` below)."""
 
     @staticmethod
     def detail(action_id: str) -> str:
@@ -83,19 +109,31 @@ class actions:
 
     @staticmethod
     def runs(action_id: str) -> str:
-        return f"{_ACTIONS}/{action_id}/runs"
+        # Method name follows the model (WatchActionRun); path follows the public
+        # noun (activity). Phase 2 reshapes this client, so leave the name as-is.
+        return f"{_ACTIONS}/{action_id}/activity"
 
     @staticmethod
     def deliveries(action_id: str) -> str:
         return f"{_ACTIONS}/{action_id}/deliveries"
 
 
+class action_activity:
+    """`/v1/action-activity/<id>` — one run ("activity entry") by its own ULID
+    (a dependent record of its action; the LIST is `/v1/actions/<id>/activity`)."""
+
+    @staticmethod
+    def detail(activity_id: str) -> str:
+        return f"{_ACTION_ACTIVITY}/{activity_id}"
+
+
 class deliveries:
-    """`/v1/deliveries/*` — one delivery's detail by its own ULID."""
+    """`/v1/action-deliveries/*` — one delivery's detail by its own ULID
+    (a dependent record of its action, so the route is parent-qualified)."""
 
     @staticmethod
     def detail(delivery_id: str) -> str:
-        return f"{_DELIVERIES}/{delivery_id}"
+        return f"{_ACTION_DELIVERIES}/{delivery_id}"
 
 
 class engines:

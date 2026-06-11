@@ -1,8 +1,15 @@
-"""`magpie watch action ...` verbs: surgical single-action chain edits.
+"""`magpie watch action ...` verbs: surgical single-action chain ops.
 
-The complement to the whole-watch YAML on `watch create`/`edit`: add or
-drop one action without round-tripping the full config. Both wrap the
-same server `/v1/watches/<id>/actions` endpoints.
+The complement to the whole-watch YAML on `watch create`/`edit`: inspect, add,
+edit, or drop one action without round-tripping the full config. `list`/`add`
+take `--watch` (no action id yet); `get`/`edit`/`delete` take the action's own
+id. `template` emits the starter file `add`/`edit` consume. All wrap the server's
+`/v1/watches/<id>/actions` (chain list/add) and `/v1/actions/<id>` (per-action
+get/edit/delete) endpoints.
+
+The run / delivery AUDIT for an action is not here: it lives under the flat
+`magpie activity` and `magpie delivery` nouns (observability is queried, not
+walked through its parent chain).
 """
 
 from __future__ import annotations
@@ -14,270 +21,169 @@ from typing import Any
 import typer
 import yaml
 
-from openmagpie_schema.watch import (
-    WatchActionDeliveryListResponse,
-    WatchActionDeliveryWire,
-    WatchActionRunListResponse,
-    WatchActionRunWire,
-    WatchActionWire,
-)
-from openmagpie_schema.watch_enums import (
-    BACKLOG_STATES,
-    WatchActionDeliveryState,
-    WatchActionRunState,
-    WatchActivityWindow,
-    choices,
-)
+from openmagpie_schema.watch import WatchActionWire
 
 from ... import console
 from ...context import app_ctx
-from .._shared import _handle_api_errors, _read_file_or_abort
-from ._apps import action_app
+from .._shared import (
+    _check_format,
+    _columns_option,
+    _emit_columns_items,
+    _emit_detail,
+    _emit_doc,
+    _handle_api_errors,
+    _jsonl_rows_option,
+    _list_output_option,
+    _open_editor_or_abort,
+    _print_columns_option,
+    _print_detail,
+    _read_file_or_abort,
+    _transpose_option,
+    col,
+)
+from ._apps import WATCH_ACTION_TEMPLATE_YAML, action_app
 
-# Human labels for the (server-resolved) activity windows, keyed by the
-# shared enum so there are no magic strings. Server owns preset -> bounds ;
-# the CLI just picks a value and renders the label off `summary.window`.
-_WINDOW_LABELS = {
-    WatchActivityWindow.DAY: "last 24 hours",
-    WatchActivityWindow.YESTERDAY: "yesterday",
-    WatchActivityWindow.WEEK: "last 7 days",
-    WatchActivityWindow.MONTH: "last 30 days",
-}
-
-# Evaluated states, in the order the summary prints them — DERIVED from the
-# shared enum (everything but the live BACKLOG_STATES) so a new
-# WatchActionRunState shows up automatically instead of being silently
-# dropped (client consumes the enum, never re-encodes it).
-_EVALUATED_ORDER = [s for s in WatchActionRunState if s not in BACKLOG_STATES]
-
-
-def _evaluated_label(state: WatchActionRunState) -> str:
-    """Row label for the EVALUATED table. FAILED here is the EXHAUSTED kind
-    (terminal, completed) ; the transient/retry-pending FAILED is the
-    separate `retrying` backlog row. Spell it out so the two never read as
-    one count split across tables."""
-    return "failed (exhausted)" if state is WatchActionRunState.FAILED else state.value
-
-
-def _score(run: WatchActionRunWire) -> str:
-    """The semantic-filter score from the result blob, 2dp ; '-' for kinds
-    that don't score (log / webhook) or runs that never produced one."""
-    score = run.result.get("score")
-    return f"{score:.2f}" if isinstance(score, (int, float)) else "-"
+# Default `watch action list` columns, as `HEADER:dot-path` into an action record.
+_ACTION_COLUMNS = [col("ID:id"), col("RANK:rank"), col("KIND:kind"), col("SUMMARY:summary.detail")]
 
 
 @action_app.command("list")
 @_handle_api_errors
-def action_list(watch_id: str = typer.Argument(..., help="Watch id.")) -> None:
+def action_list(
+    watch_id: str = typer.Option(..., "--watch", "-w", help="Watch id whose action chain to list."),
+    columns: str | None = _columns_option(),
+    transpose: bool = _transpose_option("action"),
+    print_columns: bool = _print_columns_option("action"),
+    jsonl: bool = _jsonl_rows_option("action"),
+    output: str | None = _list_output_option(paginated=False),
+) -> None:
     """List a watch's action chain, in rank order."""
-    actions = app_ctx().api.watch.list_actions(watch_id)
-    columns: list[console.Column[WatchActionWire]] = [
-        console.Column("ID", lambda a: a.id),
-        console.Column("RANK", lambda a: str(a.rank)),
-        console.Column("KIND", lambda a: a.kind),
-        console.Column("SUMMARY", lambda a: a.summary.detail or "(no summary)"),
+    _emit_columns_items(
+        items=app_ctx().api.watch.list_actions(watch_id),
+        record_of=lambda a: a.model_dump(mode="json"),
+        default_columns=_ACTION_COLUMNS,
+        columns=columns,
+        transpose=transpose,
+        print_columns=print_columns,
+        jsonl=jsonl,
+        output=output,
+        empty_msg="No actions yet. Add one with `magpie watch action add`.",
+    )
+
+
+@action_app.command("get")
+@_handle_api_errors
+def action_get(
+    action_id: str = typer.Argument(..., help="Action id (from `magpie watch action list`)."),
+    jsonl: bool = typer.Option(False, "--jsonl", help="Emit the action as one JSON object instead of a field table."),
+    output: str | None = typer.Option(None, "--output", "-o", help="Write to a file instead of stdout."),
+) -> None:
+    """Show one action's definition (kind + config) by its own id."""
+    action = app_ctx().api.watch.get_action(action_id)
+    _emit_detail(
+        render=lambda: _print_action_detail(action), json_obj=action.model_dump_json, jsonl=jsonl, output=output
+    )
+
+
+def _print_action_detail(a: WatchActionWire) -> None:
+    fields: list[tuple[str, str]] = [
+        ("kind", a.kind),
+        ("rank", str(a.rank)),
+        ("summary", a.summary.detail or console.EMPTY),
     ]
-    if not console.table(actions, columns):
-        console.log("No actions yet. Add one with `magpie watch action add`.")
+    _print_detail(f"action {a.id}", fields)
+    console.log("\nconfig:")  # the server-redacted config blob, in full
+    console.log(json.dumps(a.config, indent=2, sort_keys=True))
+
+
+@action_app.command("template")
+def action_template(
+    format: str = typer.Option(
+        "yaml",
+        "--format",
+        case_sensitive=False,
+        help="Output format: `yaml` (commented; default) or `json` (structural; no comments).",
+    ),
+    output: str | None = typer.Option(None, "--output", "-o", help="Write to a file instead of stdout."),
+) -> None:
+    """Emit a starter single-action file (the `{kind, config}` shape `add` / `edit` consume)."""
+    fmt = _check_format(format)
+    _emit_doc(WATCH_ACTION_TEMPLATE_YAML, format=fmt, output=output)
 
 
 @action_app.command("add")
 @_handle_api_errors
 def action_add(
-    watch_id: str = typer.Argument(..., help="Watch id."),
-    file: str = typer.Option(..., "--file", "-f", help="YAML/JSON action config ('-' for stdin)."),
+    watch_id: str = typer.Option(..., "--watch", "-w", help="Watch id whose chain to add to."),
+    file: str | None = typer.Option(
+        None, "--file", "-f", help="YAML/JSON action ('-' for stdin). Omit to fill in a template in $EDITOR."
+    ),
     rank: int | None = typer.Option(None, "--rank", "-r", help="Insert position (0-based). Appends when omitted."),
 ) -> None:
-    """Add one action to a watch's chain from a config file.
+    """Add one action to a watch's chain.
 
-    The file is one action: `{kind: <kind>, config: {...}}` ; the same
-    shape as an entry in a watch template's `actions:` list."""
-    text = sys.stdin.read() if file == "-" else _read_file_or_abort(file)
+    One action: `{kind: <kind>, config: {...}}` (the same shape as an entry in a
+    watch template's `actions:` list, or `magpie watch action template`). Omit
+    `-f` to fill in the template in $EDITOR."""
+    if file is None:
+        text = _open_editor_or_abort(WATCH_ACTION_TEMPLATE_YAML)
+    elif file == "-":
+        text = sys.stdin.read()
+    else:
+        text = _read_file_or_abort(file)
     kind, config = _parse_action_or_abort(text)
     created = app_ctx().api.watch.add_action(watch_id, kind, config, rank=rank)
     console.success(f"Added {created.kind} at rank {created.rank} ({created.id})")
 
 
-@action_app.command("set")
+@action_app.command("edit")
 @_handle_api_errors
-def action_set(
-    action_id: str = typer.Argument(..., help="Action id (from `watch action list`)."),
-    file: str = typer.Option(..., "--file", "-f", help="YAML/JSON action config ('-' for stdin)."),
+def action_edit(
+    action_id: str = typer.Argument(..., help="Action id (from `magpie watch action list`)."),
+    file: str | None = typer.Option(
+        None, "--file", "-f", help="YAML/JSON action ('-' for stdin). Omit to edit the current config in $EDITOR."
+    ),
 ) -> None:
     """Replace one action's config in place (same position in the chain).
 
-    The file is one action: `{kind: <kind>, config: {...}}` ; `kind` may
-    differ from the current one to swap the node's kind."""
-    text = sys.stdin.read() if file == "-" else _read_file_or_abort(file)
+    One action: `{kind: <kind>, config: {...}}` ; `kind` may differ from the
+    current one to swap the node's kind. Omit `-f` to edit the action's current
+    config in $EDITOR (a masked secret left in place is preserved server-side)."""
+    api = app_ctx().api.watch
+    if file is None:
+        current = api.get_action(action_id)
+        seed = yaml.safe_dump({"kind": current.kind, "config": current.config}, sort_keys=False)
+        text = _open_editor_or_abort(seed)
+    elif file == "-":
+        text = sys.stdin.read()
+    else:
+        text = _read_file_or_abort(file)
     kind, config = _parse_action_or_abort(text)
-    updated = app_ctx().api.watch.set_action(action_id, kind, config)
+    updated = api.edit_action(action_id, kind, config)
     console.success(f"Updated action {updated.id} ({updated.kind}, rank {updated.rank})")
 
 
-@action_app.command("remove")
+@action_app.command("delete")
 @_handle_api_errors
-def action_remove(
-    action_id: str = typer.Argument(..., help="Action id (from `watch action list`)."),
+def action_delete(
+    action_id: str = typer.Argument(..., help="Action id (from `magpie watch action list`)."),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation prompt. Required for piped input."),
 ) -> None:
-    """Remove one action from a watch's chain (the chain renumbers to stay dense)."""
-    ac = app_ctx()
+    """Delete one action from a watch's chain by its own id (the chain renumbers
+    to stay dense). The watch is resolved server-side."""
+    api = app_ctx().api.watch
+    action = api.get_action(action_id)  # resolve first so the confirm names what goes
+    label = f"{action.kind} at rank {action.rank} ({action_id})"
     if not yes:
         if not sys.stdin.isatty():
-            console.warn(f"Piped input: can't prompt. Re-run with --yes to remove action {action_id}.")
+            console.warn(f"Piped input: can't prompt. Re-run with --yes to delete action {label}.")
             raise typer.Exit(code=1)
-        if not typer.confirm(f"Remove action {action_id}?"):
+        console.warn(f"Delete action {label}? The chain renumbers to stay dense.")
+        if not typer.confirm("Delete?"):
             console.warn("Aborted.")
             raise typer.Exit(code=1)
-    ac.api.watch.remove_action(action_id)
-    console.success(f"Removed action {action_id}")
-
-
-@action_app.command("activity")
-@_handle_api_errors
-def action_activity(
-    action_id: str = typer.Argument(..., help="Action id (from `watch action list`)."),
-    window: str | None = typer.Option(
-        None, "--window", "-w", help=f"Summary window by evaluation time ({choices(WatchActivityWindow)})."
-    ),
-    list_: bool = typer.Option(False, "--list", "-l", help="List individual runs instead of the summary."),
-    state: str | None = typer.Option(
-        None, "--state", "-s", help=f"Filter rows by state ({choices(WatchActionRunState)}). Implies --list."
-    ),
-    after: str | None = typer.Option(None, "--after", "-a", help="Cursor (run id) to page rows after. Implies --list."),
-    limit: int | None = typer.Option(None, "--limit", "-n", help="Max rows to show (--list mode)."),
-) -> None:
-    """An action's activity: a state breakdown over a window by default, or
-    the individual runs with --list.
-
-    Default shows what the action EVALUATED in the window (succeeded / gated
-    / failed (exhausted) / ...) plus the live backlog (pending / running /
-    retrying). Any row-level filter (--list / --state / --after) switches to
-    the paginated run log."""
-    api = app_ctx().api.watch
-    if list_ or state or after:
-        _print_runs(api.action_runs(action_id, state=state, after=after, limit=limit))
-        return
-    # Default window resolved from the shared enum (no magic string) ;
-    # validated client-side for a clean local error before the round-trip.
-    win = window or WatchActivityWindow.WEEK.value
-    try:
-        WatchActivityWindow(win)
-    except ValueError as exc:
-        raise typer.BadParameter(f"unknown window {win!r}; choose from {choices(WatchActivityWindow)}") from exc
-    # limit=1: summary mode doesn't show rows, but the endpoint always returns
-    # a page ; ask for the smallest. The server resolves the window to bounds
-    # and attaches the summary.
-    _print_summary(action_id, api.action_runs(action_id, window=win, limit=1))
-
-
-def _print_summary(action_id: str, resp: WatchActionRunListResponse) -> None:
-    s = resp.summary
-    if s is None:  # defensive ; the first-page call always carries one
-        console.log("No summary available.")
-        return
-    # `.get` fallback: an unmapped (e.g. newly-added) window still renders
-    # its raw value rather than raising KeyError mid-output.
-    label = _WINDOW_LABELS.get(s.window, s.window.value)
-    # Two pivoted 2-column tables (same renderer as every list view): what
-    # the action EVALUATED in the window, then the live backlog. Kept apart
-    # because the backlog isn't time-bound (pending/running have no
-    # evaluation time). Window label rides in the first column header.
-    pair_cols: list[console.Column[tuple[str, str]]] = [
-        console.Column(f"EVALUATED ({label})", lambda kv: kv[0], width=24),
-        console.Column("RUNS", lambda kv: kv[1]),
-    ]
-    console.header(f"action {action_id}")
-    console.table([(_evaluated_label(st), str(s.evaluated.get(st, 0))) for st in _EVALUATED_ORDER], pair_cols)
-    console.log("")  # blank line between the two tables
-    backlog_cols: list[console.Column[tuple[str, str]]] = [
-        console.Column("BACKLOG (now)", lambda kv: kv[0], width=24),
-        console.Column("RUNS", lambda kv: kv[1]),
-    ]
-    backlog = [("pending", str(s.pending)), ("running", str(s.running)), ("retrying", str(s.retrying))]
-    console.table(backlog, backlog_cols)
-    console.log("\nDrill in: --list (runs) | -s <state> (filter) | -w <window>")
-
-
-def _print_runs(resp: WatchActionRunListResponse) -> None:
-    if not resp.items:
-        console.log("No runs match.")
-        return
-    columns: list[console.Column[WatchActionRunWire]] = [
-        console.Column("RUN ID", lambda r: r.id),
-        console.Column("STATE", lambda r: str(r.state)),
-        console.Column("SCORE", _score),
-        console.Column("ITEM", lambda r: r.feed_item_id),
-        console.Column("COMPLETED", lambda r: console.timestamp(r.completed_at)),
-        console.Column("ERROR", lambda r: r.error or "-"),
-    ]
-    console.table(resp.items, columns)
-    if resp.next_cursor:
-        console.log(f"\nNext page: --after {resp.next_cursor}")
-
-
-@action_app.command("deliveries")
-@_handle_api_errors
-def action_deliveries(
-    action_id: str = typer.Argument(..., help="Action id (from `watch action list`)."),
-    state: str | None = typer.Option(
-        None, "--state", "-s", help=f"Filter by delivery state ({choices(WatchActionDeliveryState)})."
-    ),
-    after: str | None = typer.Option(None, "--after", "-a", help="Cursor (delivery id) to page after."),
-    limit: int | None = typer.Option(None, "--limit", "-n", help="Max rows to show."),
-) -> None:
-    """A webhook action's outbound HTTP-call log: one row per attempt (a digest
-    that retries makes several), with the response status and item count. Other
-    action kinds make no HTTP call, so their list is empty."""
-    resp = app_ctx().api.watch.action_deliveries(action_id, state=state, after=after, limit=limit)
-    _print_deliveries(resp)
-
-
-def _print_deliveries(resp: WatchActionDeliveryListResponse) -> None:
-    if not resp.items:
-        console.log("No deliveries match.")
-        return
-    columns: list[console.Column[WatchActionDeliveryWire]] = [
-        console.Column("DELIVERY ID", lambda d: d.id),
-        console.Column("STATE", lambda d: str(d.state)),
-        console.Column("METHOD", lambda d: str(d.method)),
-        console.Column("HTTP", lambda d: str(d.http_status) if d.http_status is not None else "-"),
-        console.Column("HOST", lambda d: d.target_host or "-"),
-        console.Column("ITEMS", lambda d: str(d.item_count)),
-        console.Column("ATTEMPT", lambda d: str(d.attempt)),
-        console.Column("COMPLETED", lambda d: console.timestamp(d.completed_at)),
-        console.Column("ERROR", lambda d: d.error or "-"),
-    ]
-    console.table(resp.items, columns)
-    if resp.next_cursor:
-        console.log(f"\nNext page: --after {resp.next_cursor}")
-
-
-@action_app.command("delivery")
-@_handle_api_errors
-def action_delivery(
-    delivery_id: str = typer.Argument(..., help="Delivery id (from `watch action deliveries`)."),
-) -> None:
-    """Show one delivery in full, including the exact request body that was sent."""
-    d = app_ctx().api.watch.action_delivery(delivery_id)
-    fields: list[tuple[str, str]] = [
-        ("state", str(d.state)),
-        ("http", str(d.http_status) if d.http_status is not None else "-"),
-        ("method", str(d.method)),
-        ("host", d.target_host or "-"),
-        ("items", str(d.item_count)),
-        ("attempt", str(d.attempt)),
-        ("completed", console.timestamp(d.completed_at)),
-        ("error", d.error or "-"),
-    ]
-    cols: list[console.Column[tuple[str, str]]] = [
-        console.Column("FIELD", lambda kv: kv[0], width=12),
-        console.Column("VALUE", lambda kv: kv[1]),
-    ]
-    console.header(f"delivery {d.id}")
-    console.table(fields, cols)
-    console.log("\nrequest payload:")
-    console.log(json.dumps(d.request_payload, indent=2, sort_keys=True))
+    api.delete_action(action_id)
+    console.success(f"Deleted action {label}")
 
 
 def _parse_action_or_abort(text: str) -> tuple[str, dict[str, Any]]:

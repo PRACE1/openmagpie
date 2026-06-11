@@ -1,9 +1,10 @@
-"""`magpie feed` verbs: template, create, list, get, view, edit, delete.
+"""`magpie feed` verbs: template, create, list, get, edit, delete.
 
 A Feed is the curated set of sources the server polls; its items are the
-"sort by new and go" surface (`feed view`) and what Watches subscribe to.
+"sort by new and go" surface (`feed item list`) and what Watches subscribe to.
 YAML is the on-disk format. `create` and `edit` share the validate ->
-preview -> confirm -> apply flow. Source-list verbs live in `_sources.py`.
+preview -> confirm -> apply flow. The source set lives under `feed source`
+(`_sources.py`), the item log under `feed item` (`_items.py`).
 """
 
 from __future__ import annotations
@@ -13,25 +14,27 @@ import sys
 import typer
 import yaml
 
-from openmagpie_schema.feed import FeedItemWire
-
 from ... import console
-from ...api.feed import FeedEnvelope, FeedMutationResponse, FeedView, FeedWire
+from ...api.feed import FeedEnvelope, FeedMutationResponse, FeedView
 from ...context import AppContext, app_ctx
 from .._shared import (
     _abort_unexpected,
     _check_format,
+    _columns_option,
+    _emit_columns_paginated,
+    _emit_detail,
     _emit_doc,
     _handle_api_errors,
+    _jsonl_rows_option,
+    _list_output_option,
     _open_editor_or_abort,
     _parse_yaml_or_abort,
+    _print_columns_option,
     _read_file_or_abort,
+    _transpose_option,
+    col,
 )
 from ._apps import FEED_TEMPLATE_YAML, feed_app
-
-_DEFAULT_VIEW_LIMIT = 25
-_DEFAULT_LIST_LIMIT = 50
-
 
 # ── Template ───────────────────────────────────────────────────────────
 
@@ -41,7 +44,6 @@ def template(
     format: str = typer.Option(
         "yaml",
         "--format",
-        "-F",
         case_sensitive=False,
         help="Output format: `yaml` (commented; default) or `json` (structural; no comments).",
     ),
@@ -66,7 +68,7 @@ def create(
 ) -> None:
     """Create a feed from a YAML config."""
     if file is None:
-        body_text = _edit_template_or_abort()
+        body_text = _open_editor_or_abort(FEED_TEMPLATE_YAML)
     elif file == "-":
         body_text = sys.stdin.read()
     else:
@@ -76,35 +78,24 @@ def create(
     _run_mutation(app_ctx(), body, feed_id=None, dry_run=dry_run, yes=yes)
 
 
-# ── Get / View / Edit / Delete (single feed) ───────────────────────────
+# ── Get / Edit / Delete (single feed) ───────────────────────────────────
 
 
 @feed_app.command("get")
 @_handle_api_errors
-def get(feed_id: str = typer.Argument(..., help="Feed id.")) -> None:
+def get(
+    feed_id: str = typer.Argument(..., help="Feed id."),
+    jsonl: bool = typer.Option(False, "--jsonl", help="Emit the feed as one JSON object instead of a field table."),
+    output: str | None = typer.Option(None, "--output", "-o", help="Write to a file instead of stdout."),
+) -> None:
     """Show one feed's config in the caller's account."""
     detail = app_ctx().api.feed.get(feed_id)
-    _print_feed(detail, f"Feed {detail.id}  [{console.active_or_paused(detail.is_active)}]")
-
-
-@feed_app.command("view")
-@_handle_api_errors
-def view(
-    feed_id: str = typer.Argument(..., help="Feed id."),
-    limit: int = typer.Option(_DEFAULT_VIEW_LIMIT, "--limit", "-l", help="Max items to show."),
-) -> None:
-    """Sort by new and go: the feed's recent items, newest first."""
-    detail = app_ctx().api.feed.get(feed_id, limit=limit)
-    if not detail.recent_items:
-        console.log("No items yet.")
-        return
-    console.header(f"{detail.name} ; {len(detail.recent_items)} recent item(s)")
-    columns: list[console.Column[FeedItemWire]] = [
-        console.Column("SOURCE", lambda i: i.source_label),
-        console.Column("TITLE", lambda i: str((i.data or {}).get("title") or i.external_id)[:80]),
-        console.Column("EXTERNAL ID", lambda i: i.external_id),
-    ]
-    console.table(detail.recent_items, columns)
+    _emit_detail(
+        render=lambda: _print_feed(detail, f"Feed {detail.id}  [{console.active_or_paused(detail.is_active)}]"),
+        json_obj=detail.model_dump_json,
+        jsonl=jsonl,
+        output=output,
+    )
 
 
 @feed_app.command("edit")
@@ -119,7 +110,7 @@ def edit(
 ) -> None:
     """Full-replace edit of one feed's config (retention + default_field_map).
     `kind` is server-immutable. Source list mutations go through the
-    dedicated verbs (`magpie feed set-sources` / `remove-source`); the
+    dedicated verbs (`magpie feed source set` / `delete`); the
     edit YAML deliberately covers only feed-level knobs."""
     ac = app_ctx()
     detail = ac.api.feed.get(feed_id)
@@ -154,7 +145,7 @@ def delete(
         if not sys.stdin.isatty():
             console.warn(f"Piped input: can't prompt. Re-run with --yes to delete {detail.name} ({detail.id}).")
             raise typer.Exit(code=1)
-        console.error(f"Delete feed {detail.name} ({detail.id})? This cannot be undone.")
+        console.warn(f"Delete feed {detail.name} ({detail.id})? This cannot be undone.")
         if not typer.confirm("Delete?"):
             console.warn("Aborted.")
             raise typer.Exit(code=1)
@@ -165,51 +156,49 @@ def delete(
 # ── List ───────────────────────────────────────────────────────────────
 
 
+# Default `feed list` columns, as dot-paths into a feed record. POLL appends the
+# unit the value can't (`300s`); ACTIVE maps the bool to the same active/paused
+# label `feed get` shows, so list + detail agree. `fmt` is the per-cell hook.
+_FEED_COLUMNS = [
+    col("ID:id"),
+    col("NAME:name"),
+    col("KIND:kind"),
+    col("POLL:poll_interval_seconds", fmt=lambda v: f"{v}s"),
+    col("ACTIVE:is_active", fmt=console.active_or_paused),
+]
+
+
 @feed_app.command("list")
 @_handle_api_errors
 def list_(
-    limit: int = typer.Option(_DEFAULT_LIST_LIMIT, "--limit", "-l", help="Max feeds per page."),
-    after: str | None = typer.Option(None, "--after", "-a", help="Cursor (feed id) to fetch the page after."),
-    all_: bool = typer.Option(False, "--all", help="Page through every feed in the account."),
+    after: str | None = typer.Option(None, "--after", help="Cursor (feed id) to page after."),
+    limit: int | None = typer.Option(None, "--limit", "-l", help="Rows per page."),
+    columns: str | None = _columns_option(),
+    transpose: bool = _transpose_option("feed"),
+    print_columns: bool = _print_columns_option("feed"),
+    jsonl: bool = _jsonl_rows_option("feed"),
+    output: str | None = _list_output_option(paginated=True),
 ) -> None:
     """List feeds in the caller's account, newest first.
 
-    Cursor-paginated: a single call shows up to `--limit` feeds. Pass the
-    `--after <id>` cursor printed at the bottom to get the next page, or
-    `--all` to follow the cursor across pages automatically.
-    """
-    api = app_ctx().api.feed
-    rows: list[FeedWire] = []
-    next_cursor: str | None = None
-    while True:
-        page = api.list(after=after, limit=limit)
-        rows.extend(page.items)
-        next_cursor = page.next_cursor
-        if not all_ or not page.next_cursor:
-            break
-        after = page.next_cursor
-    columns: list[console.Column[FeedWire]] = [
-        console.Column("ID", lambda f: f.id),
-        console.Column("NAME", lambda f: f.name),
-        console.Column("KIND", lambda f: f.kind),
-        console.Column("POLL", lambda f: f"{f.poll_interval_seconds}s"),
-        console.Column("STATUS", lambda f: console.active_or_paused(f.is_active)),
-    ]
-    if not console.table(rows, columns):
-        console.log("No feeds yet. Try `magpie feed template`.")
-    elif next_cursor:
-        console.log(f"  (more available; rerun with --after {next_cursor}, or --all)")
+    Cursor-paginated: on a terminal it prompt-pages (Fetch next page? [Y/n]);
+    piped/`-o` it emits one page plus the next cursor for a scripted loop."""
+    _emit_columns_paginated(
+        fetch=lambda cursor, lim: app_ctx().api.feed.list(after=cursor, limit=lim),
+        after=after,
+        limit=limit,
+        record_of=lambda f, _: f.model_dump(mode="json"),
+        default_columns=_FEED_COLUMNS,
+        columns=columns,
+        transpose=transpose,
+        print_columns=print_columns,
+        jsonl=jsonl,
+        output=output,
+        empty_msg="No feeds yet. Try `magpie feed template`.",
+    )
 
 
 # ── Helpers ────────────────────────────────────────────────────────────
-
-
-def _edit_template_or_abort() -> str:
-    edited = typer.edit(FEED_TEMPLATE_YAML, extension=".yaml")
-    if edited is None:
-        console.warn("Edit cancelled.")
-        raise typer.Exit(code=1) from None
-    return edited
 
 
 def _reject_if_unmodified_template(body_text: str) -> None:
@@ -268,12 +257,14 @@ def _edit_seed(detail: FeedView) -> FeedEnvelope:
     rendered to $EDITOR would then carry a `sources:` block that the
     server's PUT path silently discards (FeedService.update reads
     only name / poll_interval_seconds / data). Explicit pop is the
-    right shape: source list changes go through `set-sources` /
-    `remove-source`, and the operator should never see an editable
+    right shape: source list changes go through `feed source set` /
+    `delete`, and the operator should never see an editable
     sources block here."""
     body = detail.model_dump()
-    # Pop server-managed / read-only / sub-resource fields.
-    for key in ("sources", "source_count", "recent_items", "summary"):
+    # Pop the non-config fields so the seed is editable knobs only: `sources`
+    # (see above; edited via `feed source set`/`delete`) and the read-only /
+    # server-computed projections source_count / summary.
+    for key in ("sources", "source_count", "summary"):
         body.pop(key, None)
     return FeedEnvelope.model_validate(body)
 
@@ -281,11 +272,9 @@ def _edit_seed(detail: FeedView) -> FeedEnvelope:
 def _sources_value(obj: FeedMutationResponse | FeedView) -> str:
     """The `sources` cell: `(count) name, name, ...`. The table renderer
     truncates the long list to the column cap (a 1093-source feed shows the
-    count + a peek, not the whole roster) ; the full list is `feed sources`.
+    count + a peek, not the whole roster) ; the full list is `feed source list`.
     `(count)` alone when rows aren't echoed (e.g. the create dry-run, which
-    reports the would-be count without materializing Source rows)."""
-    if obj.source_count == 0:
-        return "(0) (none)"
+    reports the would-be count without materializing Source rows) or a 0 feed `(0)`."""
     # SourceWire.spec is the typed SourceSpec union; use `.display()`
     # (every variant implements it) ; `.get(...)` would AttributeError.
     display = ", ".join(s.spec.display() for s in obj.sources)

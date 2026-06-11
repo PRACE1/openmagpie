@@ -36,6 +36,50 @@ cli/src/openmagpie/
   commands/          # Typer subcommands. Thin orchestration only.
 ```
 
+## Command shape: positionals, scope flags, observability
+
+The command tree splits by how data is used, not by ORM containment.
+
+- **What one parent OWNS nests** (real containment): `feed` + `feed source` + `feed item`, `watch` + `watch action`. This holds whether the child is operator-authored config (`source`, `action`) or server-produced content (`item`, read-only: `list` / `get`, no create / edit / delete). It is a part of exactly one feed/watch, so you address it under that parent.
+- **Observability you query is flat and top-level**, filter-first, addressed by a scope flag, never walked through its parents: `activity`, `delivery`. These are run/delivery audit that spans an action over time (not part of the action's definition), so they stand on their own rather than nesting under `watch action`.
+
+Argument rule, uniform across every noun:
+
+- **A bare positional is the resource's OWN id.** It never changes meaning between verbs under one noun.
+- **A scope flag appears only when the command has no own id to act on** (`list` / `add` / bulk `set`). See the short-flag map below. (`set` = declaratively replace a whole COLLECTION by scope, e.g. `feed source set --feed`; it is NOT the single-resource mutation, which is `edit` by own id. Don't name a one-resource edit `set`.)
+- **Own-id mutations (`get` / `edit` / `delete`) take only the own id; the server resolves the parent and guards account scope** (e.g. `feed source delete <source_id>` deletes by id, with the server confirming the source belongs to a feed you own). The confirm prompt names the resolved resource itself, not its parent, when the wire carries no parent label (e.g. `SourceWire` has no feed name). The parent is a guard, never an id you have to look up first.
+- **`delete` is the single destructive verb on every noun** (`feed` / `watch` / `feed source` / `watch action`). There is no `remove`: a child belongs to exactly one parent and isn't detachable, so removing it from the set IS deleting its row. One verb, predictable for humans and LLM callers.
+- A scope flag is also forced when a resource is not addressable by its own id in the data layer. `WatchAction` and `Source` are both id-addressable (`watch action delete <action_id>` / `feed source delete <source_id>` need no scope, resolved via `/v1/feed-sources/<id>`); for any future resource that isn't, prefer adding id-only resolution over forcing the caller to supply a scope id.
+
+Short flags are decided once here, not per command. A flag gets a short only when it is unambiguous and frequently typed; long-only is fine, and inventing a short for symmetry is not.
+
+| flag | short | note |
+|---|---|---|
+| `--file` | `-f` | reserved for file / config input, everywhere |
+| `--output` | `-o` | reserved for the output-file destination (write to a file instead of stdout), everywhere; already live on `feed`/`watch` create + `feed source` export. NOT a format selector |
+| `--watch` | `-w` | scope (config commands; observability is action-scoped only, see below) |
+| `--action` | `-a` | scope |
+| `--state` | `-s` | filter, on subcommands |
+| `--server` | `-s` | global, root callback only (passed before the subcommand). Typer scopes it apart from the subcommand `--state`, so there is no parse clash, but don't mint a third `-s` |
+| `--limit` | `-l` | page size on every list / observability view (rows per fetch; the prompt-paged loop fetches this many per confirmed page, not a grand total). ONE short everywhere |
+| `--rank` | `-r` | insert position, `watch action add` only |
+| `--dry-run` | `-n` | preview-only, on the create / edit / set mutations |
+| `--yes` | `-y` | skip the confirm prompt; required when stdin is not a TTY so a pipe can't silently mutate |
+| `--feed` | none | no good short once `-f` is files; only on `feed source` / `feed item` ops, where the noun already reads |
+| `--after` | none | cursor, rarely hand-typed; `-a` is `--action` |
+| `--window` | none | the `summary` preset; long-only (`-w` is `--watch`) |
+| `--format` | none | config-doc output serialization (`yaml`/`json`) on the `template` / `export` commands. NOT the observability format selector (that is `--jsonl`, a data-row stream, not a document) |
+
+`--list` is RETIRED by the reshape, freeing its short: the `summary` vs `list` subcommand split replaced it, so `-l` is now `--limit` everywhere.
+
+**Every read offers machine output.** Uniformly across `feed` / `watch` / `activity` / `delivery`, every `get` and `list` view renders a human table by default and accepts `--jsonl` (NDJSON: one object per row, or the single object for `get`) + `-o <file>` (write there instead of stdout). New read commands MUST carry both. Single-object `get` and the unpaginated lists (`feed source`, `watch action`, which the server returns in one call) are single-shot; the cursor-paginated lists (`feed`, `watch`, `feed item`, `activity`, `delivery`) page as below.
+
+The paginated views render a human table by default. **Paging follows the terminal, not the format.** On an interactive TTY (and not `-o`), the view is PROMPT-PAGED: render a page, then `Fetch next page? [Y/n]` (Enter advances), looping until the user declines or the cursor runs out, with earlier pages in the terminal's scrollback (each page is its own table, so there is no cross-page alignment problem; no bespoke `n`/`p` keys). This applies to BOTH the table and `--jsonl`. Table pages carry a `Page: <n>` marker (blank line, marker, table directly below); `--jsonl` gets NO marker (it would corrupt the NDJSON), so the prompt itself delineates its pages. `--jsonl` emits one NDJSON object per row (no bespoke `--format`: `--jsonl | jq` owns custom shaping); `-o`/`--output` only chooses *where* output goes (a file instead of stdout, the reserved meaning above), never *what format*. Off a TTY (piped, redirected) both the table and `--jsonl` print a single page plus a `Next page: --after <id>` hint (on stdout for the table, on stderr for `--jsonl` so stdout stays pure NDJSON). Scripted pagination uses `-o <file>` (always single-page): the page's rows go to the file, which **frees stdout to carry the next cursor** (a bare id, empty when none remain), so `next=$(magpie ... --after "$next" -o page)` loops with `--after`. The cursor is on stdout-because-the-data-was-redirected, NOT stderr (stderr is for diagnostics; a value a script depends on must be a real channel, not a scraped log line). Phase 3 layers on top: a richer `$PAGER` (`less`) browsing view (lazy cross-page fetch, scroll-back + search across the whole set) and `--follow` (live tail, dedupe by id, Ctrl-C stops).
+
+Today `activity` and `delivery` are **action-scoped only** (`--action` / `-a`): the runs and deliveries endpoints are addressed by the action's own id in the path, with no watch-level rollup or `?watch=` filter. A watch-scoped observability view (`--watch` on `activity` / `delivery`) needs a new aggregate endpoint and is deferred to Phase 2; until then `-w` is a scope flag for the config commands (`watch action list --watch`) only.
+
+Every noun now follows this shape; new commands MUST too.
+
 ## AppContext
 
 Built once by the root Typer callback into a `contextvars.ContextVar`. Subcommands pull it via `app_ctx()` / `app_api()` / `app_config()`. No `ctx: typer.Context` threading in command signatures.
@@ -104,16 +148,27 @@ OS / Python runtime details are intentionally OUT: they're noise on a security U
 
 `MagpieClient.get` / `post` accept an optional `headers` parameter for one-off concerns like the device-flow `X-Device-Secret` polling proof. Resource clients in `api/` build those at the call site rather than threading them through the client.
 
-## List output: `console.table`
+## List output: `console.table` + the `--columns` projection
 
-Every `list`-style view (feeds, watches, sources, action chains, run
-activity, feed items) renders through `console.table(rows, columns)` — the
-default styling. Don't hand-roll `console.log(f"  {a} | {b}")` rows.
+`console.table(rows, columns)` is the underlying renderer (labeled header,
+aligned divider, truncation) for every tabular surface; don't hand-roll
+`console.log(f"  {a} | {b}")` rows. Two layers sit on it:
 
-- `columns` is a `list[console.Column[T]]`; each `Column(label, render)`
-  pairs a header label with `render(row) -> str`, formatting straight off
-  the typed wire object (`FeedWire`, `WatchActionRunWire`, ...). Annotate the
-  list with the wire type so the lambdas stay typed.
+- **List views** (feed / watch / feed item / feed source / watch action /
+  activity / delivery) render through the dot-path `--columns` mechanic in
+  `commands/_shared/columns/` (`extract.py` parses a `HEADER:path` token and
+  renders a cell from the row's JSON; `options.py` declares the flag family;
+  `render.py` is the emit, `_emit_columns_paginated` / `_emit_columns_items`).
+  A view declares its defaults as `col("HEADER:path")` specs (an optional width
+  or a `fmt` per column); the table is a thin projection of the same record
+  `--jsonl` emits, so `--columns <paths>` / `--print-columns` / `--transpose`
+  fall out for free.
+- **Detail field tables** (`get` / `summary`, via `_print_detail`) build a
+  small `list[console.Column[T]]` by hand: each `Column(label, render)` pairs a
+  header with `render(row) -> str` off the typed wire object (`FeedWire`,
+  `WatchActionRunWire`, ...). Annotate the list with the wire type so the
+  lambdas stay typed.
+
 - `table` prints a labeled header + aligned dashed divider, pads columns to
   the widest cell so headers line up over values, and returns `False` for an
   empty set so the caller prints its own empty-state message.
@@ -122,6 +177,11 @@ default styling. Don't hand-roll `console.log(f"  {a} | {b}")` rows.
   per-column `width` to let a column run wider.
 - **When a column is the row's pk (`id`), it goes FIRST.** Other identifiers
   (a source's `external_id`) are not the pk and stay where they read best.
+- **An absent / empty value renders `console.EMPTY` (`-`)**: the ONE marker,
+  shared by table cells (the `--columns` projection: missing path, None, "",
+  empty list/dict) AND `get`/`summary` detail fields, so list and detail never
+  disagree on "nothing here". Never hand-write `"-"` or a bespoke `"(none)"` /
+  `"(no summary)"`; use `console.EMPTY`. `--jsonl` emits the real null, not this.
 - Paginated views accumulate the page items into one list, then make a
   single `table` call + the cursor hint.
 
@@ -142,11 +202,11 @@ The CLI never opens a server-supplied URL blindly. `_safe_authorize_url` require
 
 ## File-driven config commands
 
-Commands that create / edit server-side resources from operator-authored config (`magpie feed create`, `magpie watch create`, and their `edit` / `set-sources` siblings) accept YAML on disk or stdin, plus a no-argument variant that opens `$EDITOR` on a template:
+Commands that create / edit server-side resources from operator-authored config (`magpie feed create`, `magpie watch create`, and their `edit` / `feed source set` siblings) accept YAML on disk or stdin, plus a no-argument variant that opens `$EDITOR` on a template:
 
 - `magpie watch create -f watch.yaml`
 - `magpie watch create -f -` (stdin)
-- `magpie watch create` (opens `$EDITOR` on the template via `typer.edit`)
+- `magpie watch create` (opens `$EDITOR` on the template via the stdlib editor helper `_open_editor_or_abort` in `_shared/files.py` - NOT `typer.edit`, which typer 0.26 dropped)
 - `magpie watch template` emits the skeleton to stdout for piping or redirecting
 
 A creating command validates server-side before it mutates: it POSTs once with `?dry_run=true` (server runs the identical serializer/service validation and returns the would-be record without persisting), prints a preview, then prompts to confirm. `--dry-run` stops after the preview; `--yes` skips the prompt and is required when stdin is not a TTY so a pipe can't silently create. Dry-run is a parameter on the real endpoint, not a separate validate route, so the preview's *validation* cannot drift from the create path. It is a validation preview, not a create-success guarantee (persistence can still fail).

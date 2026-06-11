@@ -10,9 +10,9 @@ bounds) lives in core `feeds.policy`.
 """
 
 from datetime import datetime
-from typing import Any, ClassVar, Literal
+from typing import Annotated, Any, ClassVar, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, computed_field
 
 from .configs import SourceSpec
 from .wire import ConfigBlob
@@ -72,7 +72,7 @@ class CuratedFeedConfig(FeedConfig):
     # Item-log retention window. Bounds checked in policy ([1, 365]).
     retention_days: int = 30
     # Connector-readable defaults; row-level `field_map` overrides per key.
-    default_field_map: dict[str, str] = {}
+    default_field_map: dict[str, str] = Field(default_factory=dict)
 
     model_config = {"extra": "ignore"}
 
@@ -100,7 +100,7 @@ class CuratedFeedConfig(FeedConfig):
 
 
 class SourceInput(BaseModel):
-    """One source on a feed-create or set-sources payload.
+    """One source on a feed-create or `feed source set` payload.
 
     `meta` is operator-supplied free-form tags; the recorder copies it
     onto each FeedItem the source produces. `field_map` overrides the
@@ -113,31 +113,109 @@ class SourceInput(BaseModel):
     backfill knob. Server policy rejects future values."""
 
     spec: SourceSpec
-    meta: dict[str, str] = {}
-    field_map: dict[str, str] = {}
+    meta: dict[str, str] = Field(default_factory=dict)
+    field_map: dict[str, str] = Field(default_factory=dict)
     last_event_at: datetime | None = None
 
 
 class SourceWire(BaseModel):
-    """One Source row on the read path."""
+    """One Source row on the read path.
+
+    Relies on pydantic's DEFAULT `extra="ignore"` (no explicit model_config): the
+    output-only `display` computed field is absent from the input schema, so
+    re-validating a `model_dump()` (which includes `display`) silently drops it and
+    recomputes, rather than erroring as it would under `extra="forbid"`."""
 
     id: str
     spec: SourceSpec
-    meta: dict[str, str] = {}
-    field_map: dict[str, str] = {}
-    last_event_at: Any = None
-    created_at: Any = None
+    meta: dict[str, str] = Field(default_factory=dict)
+    field_map: dict[str, str] = Field(default_factory=dict)
+    last_event_at: Any = None  # datetime | None; renderer encodes
+    created_at: Any = None  # datetime | None; renderer encodes
+
+    @computed_field
+    @property
+    def display(self) -> str:
+        """The source's human label, kind-polymorphic (e.g. `r/foo`, or an RSS
+        feed's name/url). Provided on the wire so a consumer reads one labeled
+        field instead of re-deriving it per kind from `spec`; it is the same
+        `SourceSpec.display()` the server records onto FeedItem.source_label."""
+        return self.spec.display()
 
 
 # ── Wire (read-path response envelope) ────────────────────────────────────
 
 
+# ── Item payload (the typed `FeedItem.data` dump) ─────────────────────────
+#
+# `FeedItem.data` is one connector SourcePayload's `model_dump()`. The server's
+# SourcePayload hierarchy (apps/core/sources) carries connector machinery
+# (sample(), parsing, registry) that doesn't cross the wire ; these mirror only
+# the DATA fields a reader consumes, so the canonical engine inputs (title /
+# content / url ...) are typed and connector-specific fields (subreddit, ...)
+# are typed per kind. `kind` is the PAYLOAD_KIND (e.g. "new_post"), NOT the
+# connector kind on FeedItemWire.source_kind (e.g. "reddit_subreddit").
+
+
+class FeedItemPayload(BaseModel):
+    """Base payload: the canonical engine-input fields every connector maps
+    onto, plus a catch-all for keys this build doesn't model. `extra="allow"`
+    keeps unmodeled connector fields readable, and this is also the FALLBACK
+    union member: a payload whose `kind` matches no known variant (a newer
+    connector, or older data) validates here instead of breaking the read."""
+
+    model_config = {"extra": "allow"}
+
+    kind: str = ""
+    external_id: str = ""
+    source: str = ""
+    occurred_at: Any = None  # datetime | None; renderer ISO-encodes
+    title: str = ""
+    content: str = ""
+    url: str = ""
+    parent_external_id: str = ""
+
+
+class RssEntryPayload(FeedItemPayload):
+    """`rss_entry`: one RSS/Atom entry (RssEntryConnector)."""
+
+    kind: Literal["rss_entry"]  # required, so a non-rss dump can't match here
+    author: str = ""
+    feed_url: str = ""
+    categories: list[str] = Field(default_factory=list)
+
+
+class NewRedditPostPayload(FeedItemPayload):
+    """`new_post`: one post off a subreddit's /new (RedditSubredditConnector)."""
+
+    kind: Literal["new_post"]  # required, so a non-reddit dump can't match here
+    author: str = ""
+    permalink: str = ""
+    subreddit: str = ""
+
+
+# Tried left-to-right so a dump resolves to its concrete variant (matched on the
+# required `kind` literal) and only falls to the permissive base when no variant
+# claims it. Variants REQUIRE their `kind`, so an empty / kind-less dict can't
+# greedily match the first variant and lands on the base instead. CAVEAT: a dump
+# whose `kind` matches a variant but whose other fields fail that variant's
+# validation (e.g. `categories: "oops"` on rss_entry) ALSO degrades to the base,
+# raw fields kept in model_extra, not an error - robust for a read/display wire,
+# but a consumer keying on `isinstance(data, RssEntryPayload)` won't see the
+# malformed row (canonical fields like `title` still read off the base).
+FeedItemData = Annotated[
+    RssEntryPayload | NewRedditPostPayload | FeedItemPayload,
+    Field(union_mode="left_to_right"),
+]
+
+
 class FeedItemWire(BaseModel):
     """One persisted FeedItem on the wire ; the "sort by new and go" unit.
 
-    `data` is the connector SourcePayload's dump (opaque to the CLI; the
-    server owns the per-source schema). Datetimes stay real; the renderer
-    ISO-encodes them.
+    `data` is the connector SourcePayload's dump, parsed into a typed
+    `FeedItemData` (canonical fields typed for every kind; connector-specific
+    fields typed per known kind; unknown kinds fall to the permissive base).
+    Datetimes stay real; the renderer ISO-encodes them.
 
     `source_kind` is the connector kind (e.g. `"reddit_subreddit"`),
     denormalized from the producing Source. `source_label` is the
@@ -149,7 +227,7 @@ class FeedItemWire(BaseModel):
     source_label: str = ""
     external_id: str
     occurred_at: Any = None  # datetime | None; renderer encodes
-    data: ConfigBlob = {}
+    data: FeedItemData = Field(default_factory=FeedItemPayload)
 
 
 class FeedWire(BaseModel):
@@ -165,7 +243,7 @@ class FeedWire(BaseModel):
     next_poll_at: Any = None
     # creator, audit/display only (account-scoped reads, not an ownership filter)
     user_id: str
-    data: ConfigBlob = {}
+    data: ConfigBlob = Field(default_factory=dict)
     created_at: Any = None
 
 
@@ -176,21 +254,32 @@ class FeedListResponse(BaseModel):
     the next page; `next_cursor` is the id to send back, or null when the
     page wasn't full (= no more rows)."""
 
-    items: list[FeedWire] = []
+    items: list[FeedWire] = Field(default_factory=list)
+    next_cursor: str | None = None
+
+
+class FeedItemListResponse(BaseModel):
+    """`GET /v1/feeds/<id>/items` -> `{"items": [...], "next_cursor": <id>|None}`.
+
+    Cursor-paginated by ULID pk, newest-first. Pass `?after=<id>` to fetch the
+    next page; `next_cursor` is the id to send back, or null when the page wasn't
+    full (= no more rows)."""
+
+    items: list[FeedItemWire] = Field(default_factory=list)
     next_cursor: str | None = None
 
 
 class FeedView(FeedWire):
-    """`GET /v1/feeds/<id>` - read view: envelope + display `summary` +
-    the recent item log (this is the "sort by new and go" surface; the
-    detail endpoint IS the reader, no separate route needed)."""
+    """`GET /v1/feeds/<id>` - the feed's CONFIG detail: the kind-independent
+    envelope + display `summary` + its currently-attached Source rows. The item
+    log is NOT carried here; it has its own paginated route
+    (`GET /v1/feeds/<id>/items`, the `feed item list` reader)."""
 
-    summary: FeedConfigSummary = FeedConfigSummary()
-    recent_items: list[FeedItemWire] = []
+    summary: FeedConfigSummary = Field(default_factory=FeedConfigSummary)
     # The feed's currently-attached Source rows. Populated on GET-detail
     # so a single call shows everything the operator wants to see; list
     # pages keep their bare wire to avoid per-row joins.
-    sources: list[SourceWire] = []
+    sources: list[SourceWire] = Field(default_factory=list)
     source_count: int = 0
 
 
@@ -202,8 +291,8 @@ class FeedMutationResponse(FeedWire):
     source list without an extra GET."""
 
     id: str | None = None
-    summary: FeedConfigSummary = FeedConfigSummary()
-    sources: list[SourceWire] = []
+    summary: FeedConfigSummary = Field(default_factory=FeedConfigSummary)
+    sources: list[SourceWire] = Field(default_factory=list)
     source_count: int = 0
     dry_run: bool
 
@@ -222,10 +311,10 @@ class SourceSetResult(BaseModel):
 
 
 class SourceSetPayload(BaseModel):
-    """Round-trip file format for `magpie feed export-sources` /
-    `magpie feed set-sources`. Operators or their scrape scripts can
+    """Round-trip file format for `magpie feed source export` /
+    `magpie feed source set`. Operators or their scrape scripts can
     construct this directly; the bare `list[SourceInput]` shape is
     also accepted on input for hand-rolled cases."""
 
     version: Literal["v1"] = "v1"
-    sources: list[SourceInput] = []
+    sources: list[SourceInput] = Field(default_factory=list)
