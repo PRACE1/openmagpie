@@ -166,14 +166,15 @@ class FeedItemPayload(BaseModel):
 
     model_config = {"extra": "allow"}
 
-    kind: str = ""
-    external_id: str = ""
-    source: str = ""
-    occurred_at: Any = None  # datetime | None; renderer ISO-encodes
-    title: str = ""
-    content: str = ""
-    url: str = ""
-    parent_external_id: str = ""
+    kind: str = ""  # PAYLOAD_KIND discriminator (e.g. "hn_feed"), not the connector kind (FeedItemWire.source_kind)
+    external_id: str = ""  # the item's stable id on its source; FeedItem dedup keys on it
+    source: str = ""  # the connector kind that produced it (e.g. "hn_feed", "reddit_subreddit")
+    occurred_at: Any = None  # when the item was published at its source; datetime | None, renderer ISO-encodes
+    title: str = ""  # the item's headline (engine input)
+    content: str = ""  # the item's own body, the poster's words ("" for a bare link); engine input
+    url: str = ""  # the item's canonical page on its source (Reddit comments, HN discussion); not the off-site link
+    external_url: str = ""  # off-platform link this item points to ("" if self-contained); the article fetch reads this
+    parent_external_id: str = ""  # external_id of the parent item (a comment's root story); "" for top-level
 
 
 class RssEntryPayload(FeedItemPayload):
@@ -194,6 +195,29 @@ class NewRedditPostPayload(FeedItemPayload):
     subreddit: str = ""
 
 
+class HackerNewsFeedPayload(FeedItemPayload):
+    """`hn_feed`: one Hacker News story / Show HN / Ask HN post (HackerNewsFeedConnector)."""
+
+    kind: Literal["hn_feed"]  # required, so a non-hn dump can't match here
+    author: str = ""
+    points: int = 0
+    num_comments: int = 0
+    feed: str = ""  # new / show / ask
+
+
+class HackerNewsCommentPayload(FeedItemPayload):
+    """`hn_comment`: one Hacker News comment (HackerNewsCommentConnector).
+
+    `title` carries the parent story's headline (the relevance engine scores
+    only title+content, so a bare comment is unjudgeable without it); `content`
+    is the comment body; `parent_external_id` is the root story id."""
+
+    kind: Literal["hn_comment"]  # required, so a non-hn dump can't match here
+    author: str = ""
+    feed: str = ""  # always "comments"
+    story_title: str = ""
+
+
 # Tried left-to-right so a dump resolves to its concrete variant (matched on the
 # required `kind` literal) and only falls to the permissive base when no variant
 # claims it. Variants REQUIRE their `kind`, so an empty / kind-less dict can't
@@ -204,7 +228,7 @@ class NewRedditPostPayload(FeedItemPayload):
 # but a consumer keying on `isinstance(data, RssEntryPayload)` won't see the
 # malformed row (canonical fields like `title` still read off the base).
 FeedItemData = Annotated[
-    RssEntryPayload | NewRedditPostPayload | FeedItemPayload,
+    RssEntryPayload | NewRedditPostPayload | HackerNewsFeedPayload | HackerNewsCommentPayload | FeedItemPayload,
     Field(union_mode="left_to_right"),
 ]
 

@@ -41,7 +41,12 @@ from openmagpie_schema.engine import EngineStatus
 from sources.payloads import SourcePayload
 
 from ..base import EngineRequestRejected, JudgmentJSON, JudgmentResult
-from .prompts import CONTENT_TRUNCATE, SYSTEM_PROMPT, USER_PROMPT_TEMPLATE
+from .prompts import (
+    CONTENT_TRUNCATE,
+    SYSTEM_PROMPT,
+    USER_PROMPT_TEMPLATE,
+    render_linked_article,
+)
 
 # Reachability/model-list probe timeout (s); the chat call gets a longer one
 # since a local model can be slow to judge.
@@ -94,12 +99,24 @@ class OpenAICompatEngine:
             "json_schema": {"name": "judgment", "schema": schema, "strict": True},
         }
 
-    def _chat_params(self, *, model: str, instructions: str, payload: SourcePayload) -> dict[str, Any]:
+    def _chat_params(
+        self,
+        *,
+        model: str,
+        instructions: str,
+        payload: SourcePayload,
+        external_content: str | None = None,
+    ) -> dict[str, Any]:
+        # render_linked_article handles truncation, the nonce-fenced block, and the
+        # paired system rule; empty external_content -> empty fragments, leaving the
+        # prompt exactly as it was pre-enrichment.
+        parts = render_linked_article(external_content or "")
         user_prompt = USER_PROMPT_TEMPLATE.format(
             instructions=instructions,
             source=payload.source,
             title=payload.title,
             content=payload.content[:CONTENT_TRUNCATE],
+            external_section=parts.user_section,
         )
         params = {
             "model": model,
@@ -107,7 +124,7 @@ class OpenAICompatEngine:
             # across runs, so the prompt is what's under test, not LLM noise.
             "temperature": 0,
             "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "system", "content": SYSTEM_PROMPT.format(article_rule=parts.system_rule)},
                 {"role": "user", "content": user_prompt},
             ],
         }
@@ -120,6 +137,7 @@ class OpenAICompatEngine:
         *,
         instructions: str,
         model: str | None = None,
+        external_content: str | None = None,
     ) -> JudgmentResult:
         # Per-call model override; None means "use this instance's default"
         # (settings.ENGINE_MODEL from env).
@@ -131,7 +149,9 @@ class OpenAICompatEngine:
                 "no model configured: set ENGINE_MODEL (or the action's engine.model). "
                 "List your LLM's models with: python -m engine.scripts.probe <ENGINE_BASE_URL>"
             )
-        params = self._chat_params(model=use_model, instructions=instructions, payload=payload)
+        params = self._chat_params(
+            model=use_model, instructions=instructions, payload=payload, external_content=external_content
+        )
         started = time.perf_counter()
         # Permanent 4xx config defects -> EngineRequestRejected (ERRORED, not
         # retried). Transient errors (RateLimitError/InternalServerError/

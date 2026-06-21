@@ -15,7 +15,24 @@ too.
 ## The pieces
 
 **Feed** (`feed.yaml`): the set of sources OpenMagpie polls for new posts. A feed
-only gathers posts; it does not decide what matters.
+only gathers posts; it does not decide what matters. A feed can mix source kinds;
+each source is one `spec` entry under `sources`. Supported kinds:
+
+- `reddit_subreddit`: a subreddit's new posts. `{kind: reddit_subreddit, subreddit: selfhosted}`
+- `hn_feed`: Hacker News posts; `feed` picks the stream (`new`, `show` for Show HN,
+  or `ask` for Ask HN). `{kind: hn_feed, feed: new}`
+- `hn_comment`: Hacker News comments matching a keyword `query` (required, the comment
+  stream is huge, so it is always keyword-filtered server-side). `{kind: hn_comment, query: "your product"}`
+- `rss`: any RSS/Atom feed by URL. `{kind: rss, url: "https://example.com/feed.xml", name: "Example blog"}`
+
+Both HN kinds accept a `query` keyword filter (optional for `hn_feed`, required for
+`hn_comment`), matched server-side before anything reaches your watch:
+
+- space-separated words must **all** match (AND): `query: "open source"`.
+- `match: any` matches **any** of the words (OR): `{kind: hn_comment, query: "nomad k8s", match: any}`.
+- prefix a word with `-` to **exclude** it: `query: "database -mysql"`.
+
+See `templates/quickstart/feed.yaml` for these in context.
 
 **Watch** (`watch.yaml`): subscribes to one or more feeds and runs an ordered
 chain of actions over each new post. Its `feed_ids` is what links it to a feed.
@@ -25,7 +42,9 @@ chain of actions over each new post. Its `feed_ids` is what links it to a feed.
 - `semantic_filter`: your LLM rates how well each post matches your plain-language
   `instructions`, from 0 to 1, and the post passes when that relevance score is at
   least `threshold` (0 keeps everything, 1 only exact matches; higher is stricter).
-  This is what makes a watch a listener instead of a firehose.
+  This is what makes a watch a listener instead of a firehose. When a post links
+  off-site (e.g. a Hacker News link post), the linked article is fetched and judged
+  alongside the title; set `fetch_external_content: false` on the action to skip it.
 - `log`: prints the posts that clear the filter (the prefixed lines you see when
   the pipeline runs).
 - `webhook` (optional): POSTs each match to a URL. See [examples/README.md](../examples/README.md).

@@ -54,7 +54,67 @@ class RssSourceSpec(BaseModel):
         return self.name or self.url
 
 
+class _HackerNewsSpec(BaseModel):
+    """Shared fields for the Algolia-backed Hacker News specs.
+
+    `query` is the server-side keyword pre-filter (Algolia full-text search);
+    `match` picks AND (default, every word must appear) vs ANY (OR, via
+    Algolia `optionalWords`). Empty `query` means no pre-filter (fine for the
+    low-volume story feeds; the comment spec makes it required)."""
+
+    query: str = ""
+    match: Literal["all", "any"] = "all"
+
+
+class HackerNewsFeedSourceSpec(_HackerNewsSpec):
+    """Identity of one Hacker News story feed. Bound to HackerNewsFeedConnector.
+
+    `feed` selects which posts the connector pulls; it maps to an Algolia
+    HN Search `tags` value (new -> story, show -> show_hn, ask -> ask_hn).
+    The set is closed to the feeds that map to a single Algolia tag and a
+    newest-first date order; the ranked Firebase feeds (top / best) have no
+    Algolia equivalent and are intentionally out of scope here."""
+
+    SOURCE_KIND: ClassVar[str] = "hn_feed"
+
+    kind: Literal["hn_feed"] = "hn_feed"
+    feed: Literal["new", "show", "ask"] = "new"
+
+    def display(self) -> str:
+        return {"new": "Hacker News (new)", "show": "Show HN", "ask": "Ask HN"}.get(self.feed, self.feed)
+
+
+class HackerNewsCommentSourceSpec(_HackerNewsSpec):
+    """Identity of one Hacker News COMMENT stream. Bound to HackerNewsCommentConnector.
+
+    `tags=comment` unfiltered is the site-wide comment firehose (~20k/day on
+    average, bursty), so `query` is REQUIRED and NON-BLANK here (it overrides the
+    base default away). That is the structural guard that keeps an unfiltered
+    firehose from ever reaching the per-item relevance engine -- a blank or
+    whitespace-only query would strip to no pre-filter, so it is rejected at the
+    spec layer, not merely required-to-be-present. Volume past the keyword filter
+    is further bounded by the connector's page cap."""
+
+    SOURCE_KIND: ClassVar[str] = "hn_comment"
+
+    kind: Literal["hn_comment"] = "hn_comment"
+    query: str = Field(min_length=1)  # required + non-blank: the firehose guard (see _query_not_blank)
+
+    @field_validator("query")
+    @classmethod
+    def _query_not_blank(cls, v: str) -> str:
+        # min_length=1 rejects "" ; this also rejects a whitespace-only query and
+        # stores it stripped. A blank query = no pre-filter = the whole firehose.
+        v = v.strip()
+        if not v:
+            raise ValueError("hn_comment requires a non-blank query (the firehose guard)")
+        return v
+
+    def display(self) -> str:
+        return f'HN comments: "{self.query}"'
+
+
 SourceSpec = Annotated[
-    RedditSubredditSourceSpec | RssSourceSpec,
+    RedditSubredditSourceSpec | RssSourceSpec | HackerNewsFeedSourceSpec | HackerNewsCommentSourceSpec,
     Field(discriminator="kind"),
 ]
