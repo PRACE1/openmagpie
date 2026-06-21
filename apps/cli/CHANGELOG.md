@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.0](https://github.com/obris-dev/openmagpie/compare/cli-v0.1.0...cli-v0.2.0) (2026-06-21)
+
+
+### Features
+
+* `activity get` now surfaces linked-article enrichment status for semantic-filter runs, so you can see whether a match was judged with the fetched article. ([#112](https://github.com/obris-dev/openmagpie/issues/112))
+
 ## 0.1.0 (2026-06-16)
 
 
