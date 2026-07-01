@@ -25,12 +25,14 @@ from common.pydantic_errors import pydantic_errors_to_drf
 from openmagpie_schema.watch import (
     WatchActionInput,
     WatchListResponse,
+    build_watch_action_input,
 )
 from telemetry import events as telemetry_events
 from telemetry.constants import Surface
 
 from .api import (
     ActionScopedAPIView,
+    WatchActionNotFound,
     WatchScopedAPIView,
     WatchSvcMixin,
 )
@@ -199,7 +201,9 @@ class WatchActionsView(WatchScopedAPIView):
         return Response(
             {
                 "items": [
-                    watch_action_wire(a).model_dump(mode="json") for a in self.watch_svc.initial_actions(self.watch)
+                    w.model_dump(mode="json")
+                    for a in self.watch_svc.initial_actions(self.watch)
+                    if (w := watch_action_wire(a)) is not None
                 ]
             },
             status=status.HTTP_200_OK,
@@ -229,7 +233,7 @@ class WatchActionsView(WatchScopedAPIView):
         try:
             created = self.action_svc.add(
                 path_id=self.watch.initial_path_id,
-                action=WatchActionInput(kind=str(body["kind"]), config=config),
+                action=build_watch_action_input(kind=str(body["kind"]), config=config),
                 rank=rank,
                 dry_run=dry_run,
             )
@@ -257,7 +261,13 @@ class ActionDetailView(ActionScopedAPIView):
         # `self.action` is the account-scoped row (404 via WatchActionNotFound).
         # Review path for `magpie watch action get`: the definition only, not
         # its runs/deliveries (those are the audit routes that hang off it).
-        return Response(watch_action_wire(self.action).model_dump(mode="json"))
+        # A persisted action CAN carry an unrenderable kind (a removed kind / manual
+        # corruption), the case watch_view's list guard skips. 404 like the sibling
+        # run-detail view (WatchActionRunNotFound) rather than 500 on the None.
+        wire = watch_action_wire(self.action)
+        if wire is None:
+            raise WatchActionNotFound(action_id)
+        return Response(wire.model_dump(mode="json"))
 
     def put(self, request, action_id: str):
         body = request.data
@@ -277,7 +287,7 @@ class ActionDetailView(ActionScopedAPIView):
         dry_run = wants_dry_run(request)
         try:
             updated = self.action_svc.set_config(
-                self.action, spec=WatchActionInput(kind=str(body["kind"]), config=config), dry_run=dry_run
+                self.action, spec=build_watch_action_input(kind=str(body["kind"]), config=config), dry_run=dry_run
             )
         except PydanticValidationError as exc:
             return Response({"config": pydantic_errors_to_drf(exc)}, status=status.HTTP_400_BAD_REQUEST)

@@ -21,8 +21,9 @@ from typing import Any
 
 import typer
 import yaml
+from pydantic import ValidationError
 
-from openmagpie_schema.watch import WatchActionMutationResponse, WatchActionWire
+from openmagpie_schema.watch import WatchActionMutationResponse, WatchActionWire, build_watch_action_input
 
 from ... import console
 from ...context import app_ctx
@@ -87,7 +88,7 @@ def action_get(
     )
 
 
-def _print_action_detail(a: WatchActionWire | WatchActionMutationResponse, *, title: str | None = None) -> None:
+def _print_action_detail(a: WatchActionWire, *, title: str | None = None) -> None:
     fields: list[tuple[str, str]] = [
         ("kind", a.kind),
         ("rank", str(a.rank)),
@@ -95,7 +96,16 @@ def _print_action_detail(a: WatchActionWire | WatchActionMutationResponse, *, ti
     ]
     _print_detail(title or f"action {a.id}", fields)
     console.log("\nconfig:")  # the server-redacted config blob, in full
-    console.log(json.dumps(a.config, indent=2, sort_keys=True))
+    # `config` is the typed union member's config model; dump to its plain dict
+    # for display (the on-wire shape is JSON, secrets already redacted). A
+    # corrupt-at-rest config degrades to null on the wire (config=None), so render
+    # it as `null` rather than crashing on the missing model.
+    config_json = a.config.model_dump(mode="json") if a.config is not None else None
+    console.log(json.dumps(config_json, indent=2, sort_keys=True))
+    if a.config is None:
+        # Consistent with the edit paths, which flag a corrupt config rather than
+        # show a bare null: say why it's null so a reader doesn't read it as "unset".
+        console.warn("This action's stored config is unreadable (corrupt at rest); shown as null above.")
 
 
 @action_app.command("template")
@@ -165,7 +175,17 @@ def action_edit(
     api = app_ctx().api.watch
     if file is None:
         current = api.get_action(action_id)
-        seed = yaml.safe_dump({"kind": current.kind, "config": current.config}, sort_keys=False)
+        # A corrupt-at-rest config degrades to null on the wire (config=None); seed
+        # an empty placeholder for the operator to fill instead of crashing on the
+        # None, flagging in the seed why the config came back blank.
+        if current.config is None:
+            config: dict[str, Any] = {}
+            seed = "# NOTE: the stored config was unreadable (corrupt) and replaced with an\n"
+            seed += "# empty placeholder; fill it in before applying.\n"
+        else:
+            config = current.config.model_dump(mode="json")
+            seed = ""
+        seed += yaml.safe_dump({"kind": current.kind, "config": config}, sort_keys=False)
         text = _open_editor_or_abort(seed)
     elif file == "-":
         text = sys.stdin.read()
@@ -226,29 +246,44 @@ def _parse_action_or_abort(text: str) -> tuple[str, dict[str, Any]]:
     if not isinstance(config, dict):
         console.error("Action `config` must be a mapping.")
         raise typer.Exit(code=1)
+    # Validate the config against the kind's typed shape HERE, at parse time, so a
+    # config typo (a missing/out-of-range field) or an unknown kind renders per-field
+    # errors like it did on main. Left unvalidated it would surface later as a
+    # ValidationError the command-boundary handler mislabels as a version mismatch.
+    try:
+        build_watch_action_input(kind=kind, config=config)
+    except ValidationError as e:
+        console.error("Action config error:")
+        for err in e.errors():
+            path = ".".join(str(p) for p in err["loc"]) or "_"
+            console.error(f"  {path}: {err['msg']}")
+        raise typer.Exit(code=1) from None
     return kind, config
 
 
 def _run_action_mutation(
     mutate: Callable[[bool], WatchActionMutationResponse], *, is_edit: bool, dry_run: bool, yes: bool
-) -> WatchActionMutationResponse | None:
+) -> WatchActionWire | None:
     """Shared dry-run preview -> confirm -> apply for `watch action add`/`edit`,
     mirroring `_run_mutation` for whole-watch (`is_edit` plays the role its
     `watch_id is not None` does). `mutate(dry_run)` calls the api (True for the
-    validate-only preview, False to apply). Returns the applied action, or None on
-    `--dry-run` (nothing applied). The interactive `[y/N]` confirm still gates a
-    real apply; `--yes` skips it (required when piped)."""
+    validate-only preview, False to apply). Returns the applied action node, or
+    None on `--dry-run` (nothing applied). The interactive `[y/N]` confirm still
+    gates a real apply; `--yes` skips it (required when piped). The response
+    NESTS the action node under `.action` (dry-run add leaves `action.id` empty
+    since nothing persisted)."""
     noun = "edit" if is_edit else "add"
     preview = mutate(True)
     # Server must honor dry_run (mirrors _run_mutation's guard): the preview must
     # be flagged dry_run, and an ADD preview must not carry an id - an id there
     # means a row persisted (an edit preview keeps the existing action's id).
-    if not preview.dry_run or (preview.id and not is_edit):
+    if not preview.dry_run or (preview.action.id and not is_edit):
         raise _abort_unexpected(
-            "asked for a dry run but the server reported a persisted action", preview.id, noun="action"
+            "asked for a dry run but the server reported a persisted action", preview.action.id, noun="action"
         )
-    title = f"Would {noun} action {preview.id}:" if preview.id else f"Would {noun} this action:"
-    _print_action_detail(preview, title=title)
+    label = preview.action.id
+    title = f"Would {noun} action {label}:" if label else f"Would {noun} this action:"
+    _print_action_detail(preview.action, title=title)
     if dry_run:
         console.warn("Dry run only. Nothing was changed.")
         return None
@@ -263,6 +298,6 @@ def _run_action_mutation(
             console.warn("Aborted.")
             raise typer.Exit(code=1)
     result = mutate(False)
-    if result.dry_run or not result.id:  # the apply must have actually persisted
-        raise _abort_unexpected(f"{noun} did not confirm persistence", result.id, noun="action")
-    return result
+    if result.dry_run or not result.action.id:  # the apply must have actually persisted
+        raise _abort_unexpected(f"{noun} did not confirm persistence", result.action.id, noun="action")
+    return result.action

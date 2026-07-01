@@ -7,7 +7,7 @@ from django.test import TestCase
 from django.utils import timezone
 
 from feeds.models import FeedItem
-from openmagpie_schema.watch import WatchActionInput
+from openmagpie_schema.watch import build_watch_action_input
 from openmagpie_schema.watch_enums import WatchActionDeliveryState
 from watches.models import WatchAction, WatchActionDelivery, WatchActionDigestWindow, WatchActionRun
 from watches.operations.digest_flush import WatchDigestFlushOperation
@@ -66,8 +66,8 @@ class WebhookDeliveryRecordTests(TestCase):
             name="ai-webhook",
             feed_ids=[],
             actions=[
-                WatchActionInput(kind="log", config={"prefix": "[f]"}),
-                WatchActionInput(
+                build_watch_action_input(kind="log", config={"prefix": "[f]"}),
+                build_watch_action_input(
                     kind="webhook",
                     config={"url": _URL, "delivery": "digest", "digest_interval_seconds": 3600},
                 ),
@@ -77,7 +77,11 @@ class WebhookDeliveryRecordTests(TestCase):
         for i in range(n):
             fi = self._item(f"e{i}", now, title=f"t{i}")
             self.run_svc.enqueue(
-                watch_id=str(watch.id), action_id=str(a0.id), feed_item_id=str(fi.id), scheduled_at=now
+                watch_id=str(watch.id),
+                action_id=str(a0.id),
+                kind=str(a0.kind),
+                feed_item_id=str(fi.id),
+                scheduled_at=now,
             )
         self._drain(now)  # log head succeeds -> each advances into the digest window
         window = WatchActionDigestWindow.objects.get(account_id=self.account_id, action_id=str(a1.id))
@@ -89,12 +93,16 @@ class WebhookDeliveryRecordTests(TestCase):
             user_id=ulid.ulid(),
             name="ai-webhook",
             feed_ids=[],
-            actions=[WatchActionInput(kind="webhook", config={"url": _URL})],
+            actions=[build_watch_action_input(kind="webhook", config={"url": _URL})],
         )
         action = WatchAction.objects.get(path_id=watch.initial_path_id)
         fi = self._item("e1", now, title="T")
         self.run_svc.enqueue(
-            watch_id=str(watch.id), action_id=str(action.id), feed_item_id=str(fi.id), scheduled_at=now
+            watch_id=str(watch.id),
+            action_id=str(action.id),
+            kind=str(action.kind),
+            feed_item_id=str(fi.id),
+            scheduled_at=now,
         )
 
         block, request = _http(200)
@@ -183,12 +191,16 @@ class WebhookDeliveryRecordTests(TestCase):
             user_id=ulid.ulid(),
             name="logger",
             feed_ids=[],
-            actions=[WatchActionInput(kind="log", config={"prefix": "[f]"})],
+            actions=[build_watch_action_input(kind="log", config={"prefix": "[f]"})],
         )
         action = WatchAction.objects.get(path_id=watch.initial_path_id)
         fi = self._item("e1", now, title="T")
         self.run_svc.enqueue(
-            watch_id=str(watch.id), action_id=str(action.id), feed_item_id=str(fi.id), scheduled_at=now
+            watch_id=str(watch.id),
+            action_id=str(action.id),
+            kind=str(action.kind),
+            feed_item_id=str(fi.id),
+            scheduled_at=now,
         )
         self._drain(now)
         self.assertEqual(WatchActionRun.objects.get(action_id=str(action.id)).state, "succeeded")

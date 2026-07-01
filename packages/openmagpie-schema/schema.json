@@ -1,5 +1,35 @@
 {
   "$defs": {
+    "AuthUser": {
+      "description": "The authenticated user returned by `/v1/auth` (me / signup / login, and\nthe CLI device-session completed bag).\n\n`account_id` is REQUIRED: a user belongs to an account (signup creates one\nand binds the user), so a user response without an account is an invariant\nviolation, not a valid state. `created_at` is the user's join time.",
+      "properties": {
+        "account_id": {
+          "title": "Account Id",
+          "type": "string"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "email": {
+          "title": "Email",
+          "type": "string"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "email",
+        "account_id",
+        "created_at"
+      ],
+      "title": "AuthUser",
+      "type": "object"
+    },
     "CuratedFeedConfig": {
       "description": "Schema for Feed.data when Feed.kind == 'curated'.\n\nSources are user-maintained ; one Source row per place data comes\nfrom, regardless of whether they were typed in by hand or generated\nby an external script. Watermarks + per-source metadata live on the\nSource rows; this config only carries feed-level knobs.\n\n`default_field_map` is a connector-readable hint dictionary that\napplies to every source in the feed; per-source overrides on a\nSource row's `field_map` take precedence. Keys a connector doesn't\nrecognise are ignored.",
       "properties": {
@@ -128,6 +158,92 @@
       "title": "ExternalContentStatus",
       "type": "string"
     },
+    "ExtractActionInput": {
+      "properties": {
+        "config": {
+          "$ref": "#/$defs/ExtractConfig"
+        },
+        "id": {
+          "default": "",
+          "title": "Id",
+          "type": "string"
+        },
+        "kind": {
+          "const": "extract",
+          "default": "extract",
+          "title": "Kind",
+          "type": "string"
+        },
+        "rank": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rank"
+        }
+      },
+      "required": [
+        "config"
+      ],
+      "title": "ExtractActionInput",
+      "type": "object"
+    },
+    "ExtractActionWire": {
+      "properties": {
+        "config": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ExtractConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "created_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Created At"
+        },
+        "id": {
+          "default": "",
+          "title": "Id",
+          "type": "string"
+        },
+        "kind": {
+          "const": "extract",
+          "default": "extract",
+          "title": "Kind",
+          "type": "string"
+        },
+        "rank": {
+          "title": "Rank",
+          "type": "integer"
+        },
+        "summary": {
+          "$ref": "#/$defs/WatchActionConfigSummary"
+        }
+      },
+      "required": [
+        "rank"
+      ],
+      "title": "ExtractActionWire",
+      "type": "object"
+    },
     "ExtractConfig": {
       "description": "Config for a WatchAction with kind == 'extract'.\n\nHydration only: the engine reads each item (optionally with its fetched\nlinked-article text) and returns a value for every declared `field`,\npersisted under `result.extracted`. No threshold, no gate ; the run\nalways SUCCEEDS so the chain advances. Domain-agnostic ; the field set\nand `instructions` are entirely operator-supplied.",
       "properties": {
@@ -204,6 +320,112 @@
       "title": "ExtractResult",
       "type": "object"
     },
+    "ExtractRunWire": {
+      "properties": {
+        "action_id": {
+          "title": "Action Id",
+          "type": "string"
+        },
+        "completed_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Completed At"
+        },
+        "created_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Created At"
+        },
+        "error": {
+          "default": "",
+          "title": "Error",
+          "type": "string"
+        },
+        "feed_item_id": {
+          "title": "Feed Item Id",
+          "type": "string"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "kind": {
+          "const": "extract",
+          "default": "extract",
+          "title": "Kind",
+          "type": "string"
+        },
+        "result": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ExtractResult"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "scheduled_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scheduled At"
+        },
+        "started_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Started At"
+        },
+        "state": {
+          "$ref": "#/$defs/WatchActionRunState"
+        },
+        "watch_id": {
+          "title": "Watch Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "watch_id",
+        "action_id",
+        "feed_item_id",
+        "state"
+      ],
+      "title": "ExtractRunWire",
+      "type": "object"
+    },
     "ExtractStatus": {
       "description": "Outcome of one hydration, recorded on the result so a SUCCEEDED run\ncarries how complete its extraction was.",
       "enum": [
@@ -224,9 +446,7 @@
       "description": "The envelope the CLI constructs for a feed write (request side). CLI-owned,\ndistinct from the server-emitted models (mirrors WatchInput). `data` carries\nthe kind-specific config (retention + default_field_map), opaque here; the\nserver validates it. `sources` is the optional starter source list for curated\nfeeds (the server creates Source rows atomically with the Feed). Extra keys\nignored so an edit seed's read-only fields drop on round-trip.",
       "properties": {
         "data": {
-          "additionalProperties": true,
-          "title": "Data",
-          "type": "object"
+          "$ref": "#/$defs/CuratedFeedConfig"
         },
         "is_active": {
           "default": true,
@@ -453,9 +673,7 @@
           "title": "Created At"
         },
         "data": {
-          "additionalProperties": true,
-          "title": "Data",
-          "type": "object"
+          "$ref": "#/$defs/CuratedFeedConfig"
         },
         "dry_run": {
           "title": "Dry Run",
@@ -563,9 +781,7 @@
           "title": "Created At"
         },
         "data": {
-          "additionalProperties": true,
-          "title": "Data",
-          "type": "object"
+          "$ref": "#/$defs/CuratedFeedConfig"
         },
         "id": {
           "title": "Id",
@@ -661,9 +877,7 @@
           "title": "Created At"
         },
         "data": {
-          "additionalProperties": true,
-          "title": "Data",
-          "type": "object"
+          "$ref": "#/$defs/CuratedFeedConfig"
         },
         "id": {
           "title": "Id",
@@ -957,6 +1171,92 @@
       "title": "HackerNewsFeedSourceSpec",
       "type": "object"
     },
+    "LogActionInput": {
+      "properties": {
+        "config": {
+          "$ref": "#/$defs/LogConfig"
+        },
+        "id": {
+          "default": "",
+          "title": "Id",
+          "type": "string"
+        },
+        "kind": {
+          "const": "log",
+          "default": "log",
+          "title": "Kind",
+          "type": "string"
+        },
+        "rank": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rank"
+        }
+      },
+      "required": [
+        "config"
+      ],
+      "title": "LogActionInput",
+      "type": "object"
+    },
+    "LogActionWire": {
+      "properties": {
+        "config": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LogConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "created_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Created At"
+        },
+        "id": {
+          "default": "",
+          "title": "Id",
+          "type": "string"
+        },
+        "kind": {
+          "const": "log",
+          "default": "log",
+          "title": "Kind",
+          "type": "string"
+        },
+        "rank": {
+          "title": "Rank",
+          "type": "integer"
+        },
+        "summary": {
+          "$ref": "#/$defs/WatchActionConfigSummary"
+        }
+      },
+      "required": [
+        "rank"
+      ],
+      "title": "LogActionWire",
+      "type": "object"
+    },
     "LogConfig": {
       "description": "Config for a WatchAction with kind == 'log'.\n\nWrites the item to the server log under `prefix`. `include_fields`\nwhitelists item fields (empty = all). `delivery` /\n`digest_interval_seconds` (from the base) pick instant vs batched. No\nsecrets, so the dump is plain and an edit replaces wholesale.\n\nDigest log delivery is best-effort AT-LEAST-ONCE: a crash after the batch\nis logged but before it's marked done re-logs the line on the next flush\n(a log line carries no idempotency key to dedup on, unlike webhook). A\nduplicate log line is harmless ; don't treat the log as an exactly-once\nrecord.",
       "properties": {
@@ -996,6 +1296,112 @@
         }
       },
       "title": "LogResult",
+      "type": "object"
+    },
+    "LogRunWire": {
+      "properties": {
+        "action_id": {
+          "title": "Action Id",
+          "type": "string"
+        },
+        "completed_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Completed At"
+        },
+        "created_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Created At"
+        },
+        "error": {
+          "default": "",
+          "title": "Error",
+          "type": "string"
+        },
+        "feed_item_id": {
+          "title": "Feed Item Id",
+          "type": "string"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "kind": {
+          "const": "log",
+          "default": "log",
+          "title": "Kind",
+          "type": "string"
+        },
+        "result": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LogResult"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "scheduled_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scheduled At"
+        },
+        "started_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Started At"
+        },
+        "state": {
+          "$ref": "#/$defs/WatchActionRunState"
+        },
+        "watch_id": {
+          "title": "Watch Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "watch_id",
+        "action_id",
+        "feed_item_id",
+        "state"
+      ],
+      "title": "LogRunWire",
       "type": "object"
     },
     "NewRedditPostPayload": {
@@ -1269,6 +1675,92 @@
       "title": "RunFeedItem",
       "type": "object"
     },
+    "SemanticFilterActionInput": {
+      "properties": {
+        "config": {
+          "$ref": "#/$defs/SemanticFilterConfig"
+        },
+        "id": {
+          "default": "",
+          "title": "Id",
+          "type": "string"
+        },
+        "kind": {
+          "const": "semantic_filter",
+          "default": "semantic_filter",
+          "title": "Kind",
+          "type": "string"
+        },
+        "rank": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rank"
+        }
+      },
+      "required": [
+        "config"
+      ],
+      "title": "SemanticFilterActionInput",
+      "type": "object"
+    },
+    "SemanticFilterActionWire": {
+      "properties": {
+        "config": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SemanticFilterConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "created_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Created At"
+        },
+        "id": {
+          "default": "",
+          "title": "Id",
+          "type": "string"
+        },
+        "kind": {
+          "const": "semantic_filter",
+          "default": "semantic_filter",
+          "title": "Kind",
+          "type": "string"
+        },
+        "rank": {
+          "title": "Rank",
+          "type": "integer"
+        },
+        "summary": {
+          "$ref": "#/$defs/WatchActionConfigSummary"
+        }
+      },
+      "required": [
+        "rank"
+      ],
+      "title": "SemanticFilterActionWire",
+      "type": "object"
+    },
     "SemanticFilterConfig": {
       "description": "Config for a WatchAction with kind == 'semantic_filter'.\n\nThe LLM relevance gate: scores each item against `instructions` with\n`engine`, and the run GATES the chain when the score is below\n`threshold` (a pass=false). It is the v2 home for what the old\nListener carried as instructions + engine + hit_threshold ; it owns\nno feed (the Watch subscribes to feeds) and no delivery (that's the\ndelivery actions).",
       "properties": {
@@ -1326,6 +1818,112 @@
         "score"
       ],
       "title": "SemanticFilterResult",
+      "type": "object"
+    },
+    "SemanticFilterRunWire": {
+      "properties": {
+        "action_id": {
+          "title": "Action Id",
+          "type": "string"
+        },
+        "completed_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Completed At"
+        },
+        "created_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Created At"
+        },
+        "error": {
+          "default": "",
+          "title": "Error",
+          "type": "string"
+        },
+        "feed_item_id": {
+          "title": "Feed Item Id",
+          "type": "string"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "kind": {
+          "const": "semantic_filter",
+          "default": "semantic_filter",
+          "title": "Kind",
+          "type": "string"
+        },
+        "result": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SemanticFilterResult"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "scheduled_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scheduled At"
+        },
+        "started_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Started At"
+        },
+        "state": {
+          "$ref": "#/$defs/WatchActionRunState"
+        },
+        "watch_id": {
+          "title": "Watch Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "watch_id",
+        "action_id",
+        "feed_item_id",
+        "state"
+      ],
+      "title": "SemanticFilterRunWire",
       "type": "object"
     },
     "SourceInput": {
@@ -1827,95 +2425,43 @@
       "title": "WatchActionDeliveryWire",
       "type": "object"
     },
-    "WatchActionInput": {
-      "description": "One action on a create / edit / add-action request: `{id?, kind,\nconfig}` with `kind` adjacent to its blob (k8s-style). `kind` selects\nthe action type ; the server validates `config` against it via the\nregistry, so the persisted blob is the pure kind-specific shape (no\n`kind` nested inside). `rank` is optional on input (append when\nomitted); the server owns the dense renumber. Extra keys ignored so an\nedit seed's read-only fields drop on round-trip.\n\n`id` is the STABLE identity of an existing action, carried back on a\nwhole-chain edit so the server matches by id (NOT list position):\nmatched actions are updated in place ; their id + run history survive,\nand a masked secret restores from that same row. Omit `id` (or leave it\nempty) for a brand-new action ; the server mints its id. A non-empty id\nthat isn't on the watch is rejected.",
-      "properties": {
-        "config": {
-          "additionalProperties": true,
-          "title": "Config",
-          "type": "object"
-        },
-        "id": {
-          "default": "",
-          "title": "Id",
-          "type": "string"
-        },
-        "kind": {
-          "title": "Kind",
-          "type": "string"
-        },
-        "rank": {
-          "anyOf": [
-            {
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Rank"
-        }
-      },
-      "required": [
-        "kind"
-      ],
-      "title": "WatchActionInput",
-      "type": "object"
-    },
     "WatchActionMutationResponse": {
-      "description": "Single-action add/edit response (POST `/actions` + PUT `/actions/<id>`,\nreal and `?dry_run=true`). Mirrors WatchMutationResponse: `id` is absent on a\ndry-run preview (the row isn't persisted) and `dry_run` is True for a\nvalidation-only preview, so the CLI's confirm-preview can show the would-be\naction without applying it.",
+      "description": "Single-action add/edit response (POST `/actions` + PUT `/actions/<id>`,\nreal and `?dry_run=true`). `dry_run` is True for a validation-only preview;\n`action` is the typed action node (a discriminated union). On a dry-run the\naction isn't persisted, so `action.id` is \"\" (WatchActionWire can't be\nsubclassed to null the id, so the response nests the action rather than\nflattening it as the pre-union shape did).",
       "properties": {
-        "config": {
-          "additionalProperties": true,
-          "title": "Config",
-          "type": "object"
-        },
-        "created_at": {
-          "anyOf": [
+        "action": {
+          "discriminator": {
+            "mapping": {
+              "extract": "#/$defs/ExtractActionWire",
+              "log": "#/$defs/LogActionWire",
+              "semantic_filter": "#/$defs/SemanticFilterActionWire",
+              "webhook": "#/$defs/WebhookActionWire"
+            },
+            "propertyName": "kind"
+          },
+          "oneOf": [
             {
-              "format": "date-time",
-              "type": "string"
+              "$ref": "#/$defs/SemanticFilterActionWire"
             },
             {
-              "type": "null"
+              "$ref": "#/$defs/ExtractActionWire"
+            },
+            {
+              "$ref": "#/$defs/LogActionWire"
+            },
+            {
+              "$ref": "#/$defs/WebhookActionWire"
             }
           ],
-          "default": null,
-          "title": "Created At"
+          "title": "Action"
         },
         "dry_run": {
           "title": "Dry Run",
           "type": "boolean"
-        },
-        "id": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Id"
-        },
-        "kind": {
-          "title": "Kind",
-          "type": "string"
-        },
-        "rank": {
-          "title": "Rank",
-          "type": "integer"
-        },
-        "summary": {
-          "$ref": "#/$defs/WatchActionConfigSummary"
         }
       },
       "required": [
-        "kind",
-        "rank",
-        "dry_run"
+        "dry_run",
+        "action"
       ],
       "title": "WatchActionMutationResponse",
       "type": "object"
@@ -1926,13 +2472,36 @@
         "action": {
           "anyOf": [
             {
-              "$ref": "#/$defs/WatchActionWire"
+              "discriminator": {
+                "mapping": {
+                  "extract": "#/$defs/ExtractActionWire",
+                  "log": "#/$defs/LogActionWire",
+                  "semantic_filter": "#/$defs/SemanticFilterActionWire",
+                  "webhook": "#/$defs/WebhookActionWire"
+                },
+                "propertyName": "kind"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/SemanticFilterActionWire"
+                },
+                {
+                  "$ref": "#/$defs/ExtractActionWire"
+                },
+                {
+                  "$ref": "#/$defs/LogActionWire"
+                },
+                {
+                  "$ref": "#/$defs/WebhookActionWire"
+                }
+              ]
             },
             {
               "type": "null"
             }
           ],
-          "default": null
+          "default": null,
+          "title": "Action"
         },
         "feed_items": {
           "additionalProperties": {
@@ -1950,7 +2519,29 @@
         },
         "items": {
           "items": {
-            "$ref": "#/$defs/WatchActionRunWire"
+            "discriminator": {
+              "mapping": {
+                "extract": "#/$defs/ExtractRunWire",
+                "log": "#/$defs/LogRunWire",
+                "semantic_filter": "#/$defs/SemanticFilterRunWire",
+                "webhook": "#/$defs/WebhookRunWire"
+              },
+              "propertyName": "kind"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/$defs/SemanticFilterRunWire"
+              },
+              {
+                "$ref": "#/$defs/ExtractRunWire"
+              },
+              {
+                "$ref": "#/$defs/LogRunWire"
+              },
+              {
+                "$ref": "#/$defs/WebhookRunWire"
+              }
+            ]
           },
           "title": "Items",
           "type": "array"
@@ -1997,7 +2588,7 @@
       "type": "string"
     },
     "WatchActionRunSummary": {
-      "description": "Activity over an action's runs, so an operator sees \"what is this\naction doing?\" without scrolling the log.\n\n`evaluated` is the per-terminal-state breakdown of runs JUDGED within\n[since, until) -- windowed on completion (evaluation) time, not enqueue\ntime. `pending` / `running` / `retrying` are the CURRENT live backlog,\nNOT time-bound (those runs have no completion time yet), surfaced so the\nqueue stays visible. `window` is the requested preset ; `since` / `until`\nare the concrete bounds the server resolved it to.\n\nDISJOINT by `completed_at`: a FAILED run is counted in `evaluated[failed]`\niff it's terminal (attempts exhausted -> has a completion time) and in\n`retrying` iff it's not (still under the cap -> no completion time). So a\nconsumer can sum across buckets without double-counting.",
+      "description": "Activity over an action's runs, so an operator sees \"what is this\naction doing?\" without scrolling the log.\n\n`evaluated` is the per-terminal-state breakdown of runs JUDGED within\n[since, until), windowed on completion (evaluation) time, not enqueue\ntime. `pending` / `running` / `retrying` are the CURRENT live backlog,\nNOT time-bound (those runs have no completion time yet), surfaced so the\nqueue stays visible. `window` is the requested preset ; `since` / `until`\nare the concrete bounds the server resolved it to.\n\nDISJOINT by `completed_at`: a FAILED run is counted in `evaluated[failed]`\niff it's terminal (attempts exhausted -> has a completion time) and in\n`retrying` iff it's not (still under the cap -> no completion time). So a\nconsumer can sum across buckets without double-counting.",
       "properties": {
         "evaluated": {
           "additionalProperties": {
@@ -2059,13 +2650,36 @@
         "action": {
           "anyOf": [
             {
-              "$ref": "#/$defs/WatchActionWire"
+              "discriminator": {
+                "mapping": {
+                  "extract": "#/$defs/ExtractActionWire",
+                  "log": "#/$defs/LogActionWire",
+                  "semantic_filter": "#/$defs/SemanticFilterActionWire",
+                  "webhook": "#/$defs/WebhookActionWire"
+                },
+                "propertyName": "kind"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/SemanticFilterActionWire"
+                },
+                {
+                  "$ref": "#/$defs/ExtractActionWire"
+                },
+                {
+                  "$ref": "#/$defs/LogActionWire"
+                },
+                {
+                  "$ref": "#/$defs/WebhookActionWire"
+                }
+              ]
             },
             {
               "type": "null"
             }
           ],
-          "default": null
+          "default": null,
+          "title": "Action"
         },
         "feed": {
           "anyOf": [
@@ -2090,153 +2704,36 @@
           "default": null
         },
         "run": {
-          "$ref": "#/$defs/WatchActionRunWire"
+          "discriminator": {
+            "mapping": {
+              "extract": "#/$defs/ExtractRunWire",
+              "log": "#/$defs/LogRunWire",
+              "semantic_filter": "#/$defs/SemanticFilterRunWire",
+              "webhook": "#/$defs/WebhookRunWire"
+            },
+            "propertyName": "kind"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/SemanticFilterRunWire"
+            },
+            {
+              "$ref": "#/$defs/ExtractRunWire"
+            },
+            {
+              "$ref": "#/$defs/LogRunWire"
+            },
+            {
+              "$ref": "#/$defs/WebhookRunWire"
+            }
+          ],
+          "title": "Run"
         }
       },
       "required": [
         "run"
       ],
       "title": "WatchActionRunView",
-      "type": "object"
-    },
-    "WatchActionRunWire": {
-      "description": "One WatchActionRun on the wire (`GET /v1/actions/<action_id>/activity`).\n\nThe stateful audit row of one action executing against one item. Pure ids +\nrun state: the judged item is in the response's `feed_items` map (key\n`feed_item_id`), the feed in `feeds` (key `feed_items[feed_item_id].feed_id`).\n`result` is the kind-specific output blob (opaque; render common keys\nbest-effort). `state` is the `WatchActionRunState` value. Datetimes real;\nrenderer encodes.",
-      "properties": {
-        "action_id": {
-          "title": "Action Id",
-          "type": "string"
-        },
-        "completed_at": {
-          "anyOf": [
-            {
-              "format": "date-time",
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Completed At"
-        },
-        "created_at": {
-          "anyOf": [
-            {
-              "format": "date-time",
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Created At"
-        },
-        "error": {
-          "default": "",
-          "title": "Error",
-          "type": "string"
-        },
-        "feed_item_id": {
-          "title": "Feed Item Id",
-          "type": "string"
-        },
-        "id": {
-          "title": "Id",
-          "type": "string"
-        },
-        "result": {
-          "additionalProperties": true,
-          "title": "Result",
-          "type": "object"
-        },
-        "scheduled_at": {
-          "anyOf": [
-            {
-              "format": "date-time",
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Scheduled At"
-        },
-        "started_at": {
-          "anyOf": [
-            {
-              "format": "date-time",
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Started At"
-        },
-        "state": {
-          "$ref": "#/$defs/WatchActionRunState"
-        },
-        "watch_id": {
-          "title": "Watch Id",
-          "type": "string"
-        }
-      },
-      "required": [
-        "id",
-        "watch_id",
-        "action_id",
-        "feed_item_id",
-        "state"
-      ],
-      "title": "WatchActionRunWire",
-      "type": "object"
-    },
-    "WatchActionWire": {
-      "description": "One action node on the wire. `config` is the kind-specific blob\n(opaque here; the server validated it via the registry on write).\n`summary` is the server-built display projection so the CLI never\nparses `config`.",
-      "properties": {
-        "config": {
-          "additionalProperties": true,
-          "title": "Config",
-          "type": "object"
-        },
-        "created_at": {
-          "anyOf": [
-            {
-              "format": "date-time",
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Created At"
-        },
-        "id": {
-          "title": "Id",
-          "type": "string"
-        },
-        "kind": {
-          "title": "Kind",
-          "type": "string"
-        },
-        "rank": {
-          "title": "Rank",
-          "type": "integer"
-        },
-        "summary": {
-          "$ref": "#/$defs/WatchActionConfigSummary"
-        }
-      },
-      "required": [
-        "id",
-        "kind",
-        "rank"
-      ],
-      "title": "WatchActionWire",
       "type": "object"
     },
     "WatchActivityWindow": {
@@ -2255,7 +2752,29 @@
       "properties": {
         "actions": {
           "items": {
-            "$ref": "#/$defs/WatchActionInput"
+            "discriminator": {
+              "mapping": {
+                "extract": "#/$defs/ExtractActionInput",
+                "log": "#/$defs/LogActionInput",
+                "semantic_filter": "#/$defs/SemanticFilterActionInput",
+                "webhook": "#/$defs/WebhookActionInput"
+              },
+              "propertyName": "kind"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/$defs/SemanticFilterActionInput"
+              },
+              {
+                "$ref": "#/$defs/ExtractActionInput"
+              },
+              {
+                "$ref": "#/$defs/LogActionInput"
+              },
+              {
+                "$ref": "#/$defs/WebhookActionInput"
+              }
+            ]
           },
           "title": "Actions",
           "type": "array"
@@ -2314,7 +2833,29 @@
       "properties": {
         "actions": {
           "items": {
-            "$ref": "#/$defs/WatchActionWire"
+            "discriminator": {
+              "mapping": {
+                "extract": "#/$defs/ExtractActionWire",
+                "log": "#/$defs/LogActionWire",
+                "semantic_filter": "#/$defs/SemanticFilterActionWire",
+                "webhook": "#/$defs/WebhookActionWire"
+              },
+              "propertyName": "kind"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/$defs/SemanticFilterActionWire"
+              },
+              {
+                "$ref": "#/$defs/ExtractActionWire"
+              },
+              {
+                "$ref": "#/$defs/LogActionWire"
+              },
+              {
+                "$ref": "#/$defs/WebhookActionWire"
+              }
+            ]
           },
           "title": "Actions",
           "type": "array"
@@ -2382,7 +2923,29 @@
       "properties": {
         "actions": {
           "items": {
-            "$ref": "#/$defs/WatchActionWire"
+            "discriminator": {
+              "mapping": {
+                "extract": "#/$defs/ExtractActionWire",
+                "log": "#/$defs/LogActionWire",
+                "semantic_filter": "#/$defs/SemanticFilterActionWire",
+                "webhook": "#/$defs/WebhookActionWire"
+              },
+              "propertyName": "kind"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/$defs/SemanticFilterActionWire"
+              },
+              {
+                "$ref": "#/$defs/ExtractActionWire"
+              },
+              {
+                "$ref": "#/$defs/LogActionWire"
+              },
+              {
+                "$ref": "#/$defs/WebhookActionWire"
+              }
+            ]
           },
           "title": "Actions",
           "type": "array"
@@ -2482,6 +3045,92 @@
       "title": "WatchWire",
       "type": "object"
     },
+    "WebhookActionInput": {
+      "properties": {
+        "config": {
+          "$ref": "#/$defs/WebhookConfig"
+        },
+        "id": {
+          "default": "",
+          "title": "Id",
+          "type": "string"
+        },
+        "kind": {
+          "const": "webhook",
+          "default": "webhook",
+          "title": "Kind",
+          "type": "string"
+        },
+        "rank": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rank"
+        }
+      },
+      "required": [
+        "config"
+      ],
+      "title": "WebhookActionInput",
+      "type": "object"
+    },
+    "WebhookActionWire": {
+      "properties": {
+        "config": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WebhookConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "created_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Created At"
+        },
+        "id": {
+          "default": "",
+          "title": "Id",
+          "type": "string"
+        },
+        "kind": {
+          "const": "webhook",
+          "default": "webhook",
+          "title": "Kind",
+          "type": "string"
+        },
+        "rank": {
+          "title": "Rank",
+          "type": "integer"
+        },
+        "summary": {
+          "$ref": "#/$defs/WatchActionConfigSummary"
+        }
+      },
+      "required": [
+        "rank"
+      ],
+      "title": "WebhookActionWire",
+      "type": "object"
+    },
     "WebhookConfig": {
       "description": "Config for a WatchAction with kind == 'webhook'.\n\nSends the item to `url` via `method` (POST | PUT | PATCH) with `headers`\n(sent verbatim, so they carry any auth token). `include_fields` whitelists\nwhich item fields are sent (empty = all). `delivery` /\n`digest_interval_seconds` (from the base) pick instant vs batched delivery.\n\nSecret-bearing: `url` path/query and every header VALUE are masked by\n`redacted_dump` and carried forward by `merge_preserving` when the\noperator leaves them masked on an edit.",
       "properties": {
@@ -2547,6 +3196,112 @@
       ],
       "title": "WebhookResult",
       "type": "object"
+    },
+    "WebhookRunWire": {
+      "properties": {
+        "action_id": {
+          "title": "Action Id",
+          "type": "string"
+        },
+        "completed_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Completed At"
+        },
+        "created_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Created At"
+        },
+        "error": {
+          "default": "",
+          "title": "Error",
+          "type": "string"
+        },
+        "feed_item_id": {
+          "title": "Feed Item Id",
+          "type": "string"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "kind": {
+          "const": "webhook",
+          "default": "webhook",
+          "title": "Kind",
+          "type": "string"
+        },
+        "result": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WebhookResult"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "scheduled_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scheduled At"
+        },
+        "started_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Started At"
+        },
+        "state": {
+          "$ref": "#/$defs/WatchActionRunState"
+        },
+        "watch_id": {
+          "title": "Watch Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "watch_id",
+        "action_id",
+        "feed_item_id",
+        "state"
+      ],
+      "title": "WebhookRunWire",
+      "type": "object"
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -2596,9 +3351,6 @@
     },
     {
       "$ref": "#/$defs/WatchInput"
-    },
-    {
-      "$ref": "#/$defs/WatchActionInput"
     },
     {
       "$ref": "#/$defs/WatchActionMutationResponse"
@@ -2659,6 +3411,9 @@
     },
     {
       "$ref": "#/$defs/TelemetryState"
+    },
+    {
+      "$ref": "#/$defs/AuthUser"
     }
   ]
 }

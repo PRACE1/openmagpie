@@ -41,7 +41,7 @@ class LeafActionRouteTests(TestCase):
         # set: replace the config in place.
         put = self.client.put(f"/v1/actions/{action_id}", {"kind": "log", "config": {"prefix": "[B]"}}, format="json")
         self.assertEqual(put.status_code, 200, put.content)
-        self.assertEqual(put.json()["id"], action_id)
+        self.assertEqual(put.json()["action"]["id"], action_id)
 
         # remove: 204, and it's gone.
         self.assertEqual(self.client.delete(f"/v1/actions/{action_id}").status_code, 204)
@@ -60,6 +60,14 @@ class LeafActionRouteTests(TestCase):
     def test_unknown_action_id_is_404(self) -> None:
         self.assertEqual(self.client.get(f"/v1/actions/{ulid.ulid()}/activity").status_code, 404)
         self.assertEqual(self.client.get(f"/v1/actions/{ulid.ulid()}").status_code, 404)
+
+    def test_unrenderable_kind_action_get_is_404_not_500(self) -> None:
+        # A persisted action whose stored kind is no longer known (a removed kind /
+        # manual corruption) can't be rendered (no union member); the detail GET
+        # 404s like the run-detail view rather than 500-ing on the None wire.
+        _watch_id, action_id = self._make_watch_with_action()
+        WatchAction.objects.filter(id=action_id).update(kind="removed_kind")
+        self.assertEqual(self.client.get(f"/v1/actions/{action_id}").status_code, 404)
 
     def test_another_account_cannot_reach_the_action(self) -> None:
         _watch_id, action_id = self._make_watch_with_action()
@@ -99,6 +107,7 @@ class ActionActivitySummaryTests(TestCase):
             account_id=self.account_id,
             watch_id=ulid.ulid(),
             action_id=self.action_id,
+            kind="log",  # the run self-describes its kind so the wire can type its result
             feed_item_id=ulid.ulid(),
             state=state,
             scheduled_at=timezone.now(),
@@ -181,6 +190,7 @@ class ActionRunFeedItemTests(TestCase):
             account_id=self.account_id,
             watch_id=ulid.ulid(),
             action_id=self.action_id,
+            kind="log",  # the run self-describes its kind so the wire can type its result
             feed_item_id=feed_item_id,
             state="succeeded",
             scheduled_at=timezone.now(),
@@ -268,7 +278,11 @@ class ActionActivityDetailTests(TestCase):
         self.client.force_authenticate(user=self.user)
         resp = self.client.post(
             "/v1/watches",
-            {"name": "w", "feed_ids": [], "actions": [{"kind": "log", "config": {"prefix": "[A]"}}]},
+            {
+                "name": "w",
+                "feed_ids": [],
+                "actions": [{"kind": "semantic_filter", "config": {"instructions": "coach hires", "threshold": 0.8}}],
+            },
             format="json",
         )
         self.action_id = resp.json()["actions"][0]["id"]
@@ -279,11 +293,12 @@ class ActionActivityDetailTests(TestCase):
             account_id=self.account_id,
             watch_id=ulid.ulid(),
             action_id=self.action_id,
+            kind="semantic_filter",  # the run self-describes its kind so the wire types its result
             feed_item_id=feed_item_id,
             state="succeeded",
             scheduled_at=timezone.now(),
             completed_at=timezone.now(),
-            result={"score": 0.9, "reason": "matched"},
+            result={"passed": True, "score": 0.9, "reason": "matched"},
         )
 
     def test_detail_joins_run_item_feed_action(self) -> None:
@@ -305,7 +320,7 @@ class ActionActivityDetailTests(TestCase):
         self.assertEqual(body["feed_item"]["title"], "Coach hired")
         self.assertEqual(body["feed_item"]["feed_id"], str(feed.id))
         self.assertEqual(body["feed"]["name"], "Athletics")
-        self.assertEqual(body["action"]["kind"], "log")
+        self.assertEqual(body["action"]["kind"], "semantic_filter")
 
     def test_pruned_item_leaves_joins_null(self) -> None:
         pruned_id = ulid.ulid()

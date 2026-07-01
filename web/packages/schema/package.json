@@ -1,25 +1,26 @@
 {
-  "name": "@magpie/api-utils",
+  "name": "@magpie/schema",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "main": "./src/index.ts",
   "types": "./src/index.ts",
   "exports": {
-    ".": "./src/index.ts",
-    "./site": "./src/site.ts",
-    "./waitlist": "./src/actions/waitlist.ts"
+    ".": "./src/index.ts"
   },
   "dependencies": {
-    "@magpie/schema": "workspace:*",
     "zod": "^4.0.0"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
-    "next": "^16.1.6",
+    "json-schema-to-zod": "^2.6.1",
+    "tsx": "^4.19.2",
     "typescript": "^5.6.3"
   },
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "generate": "node scripts/generate.mjs",
+    "check": "node scripts/generate.mjs --check",
+    "typecheck": "tsc --noEmit",
+    "smoke": "tsx scripts/smoke.ts"
   }
 }

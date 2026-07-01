@@ -1,158 +1,37 @@
-"""Watch API wire shapes (the server-emitted response envelopes) + the
-write-side input envelopes the CLI constructs.
+"""Audit read-path shapes: WatchActionRun (activity) + WatchActionDelivery.
 
-SHARED, zero-Django source of truth. The server builds every `/v1/watches`
-response THROUGH these (server is the authority) ; the magpie CLI imports
-the SAME classes and validates responses against them, so there's no
-hand-mirrored copy to drift. The per-kind action `config` / `result` blobs
-stay opaque here (`ConfigBlob` / `ResultBlob`) ; their strict shapes live
-in `watch_actions.py`, validated server-side by a kind-keyed registry.
-
-Mirrors `feed.py` (envelope quartet: Wire / ListResponse / View /
-MutationResponse) deliberately, so the two primitives read the same.
-"""
+Split from the watch package's envelopes so each module holds one concern and
+stays under the line cap. These are the narrowed projections the activity /
+deliveries endpoints return; the judged item / feed live in the response's side
+tables (see the per-model docstrings)."""
 
 from datetime import datetime
-from typing import Any
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, TypeAdapter
 
-from .watch_actions import WatchActionConfigSummary
-from .watch_enums import (
+from ..watch_actions import (
+    ExtractResult,
+    LogResult,
+    SemanticFilterResult,
+    WebhookResult,
+)
+from ..watch_enums import (
     DeliveryCadence,
     WatchActionDeliveryState,
+    WatchActionKind,
     WatchActionRunState,
     WatchActivityWindow,
     WebhookMethod,
 )
-from .wire import ConfigBlob
+from ._nodes import WatchActionWire
 
 ResultBlob = dict[str, Any]
-"""A WatchActionRun's kind-specific `result`, opaque on the wire.
+"""The raw kind-specific `result` dict as persisted on WatchActionRun.result.
 
-The runner writes a kind-strict result (see `watch_actions`); readers
-carry it verbatim and render common keys best-effort."""
-
-
-# ── Action chain (nested under a watch's path) ────────────────────────────
-
-
-class WatchActionWire(BaseModel):
-    """One action node on the wire. `config` is the kind-specific blob
-    (opaque here; the server validated it via the registry on write).
-    `summary` is the server-built display projection so the CLI never
-    parses `config`."""
-
-    id: str
-    kind: str
-    rank: int
-    config: ConfigBlob = Field(default_factory=dict)
-    summary: WatchActionConfigSummary = Field(default_factory=WatchActionConfigSummary)
-    created_at: datetime | None = None
-
-
-class WatchActionInput(BaseModel):
-    """One action on a create / edit / add-action request: `{id?, kind,
-    config}` with `kind` adjacent to its blob (k8s-style). `kind` selects
-    the action type ; the server validates `config` against it via the
-    registry, so the persisted blob is the pure kind-specific shape (no
-    `kind` nested inside). `rank` is optional on input (append when
-    omitted); the server owns the dense renumber. Extra keys ignored so an
-    edit seed's read-only fields drop on round-trip.
-
-    `id` is the STABLE identity of an existing action, carried back on a
-    whole-chain edit so the server matches by id (NOT list position):
-    matched actions are updated in place ; their id + run history survive,
-    and a masked secret restores from that same row. Omit `id` (or leave it
-    empty) for a brand-new action ; the server mints its id. A non-empty id
-    that isn't on the watch is rejected."""
-
-    id: str = ""
-    kind: str
-    config: ConfigBlob = Field(default_factory=dict)
-    rank: int | None = None
-
-    model_config = {"extra": "ignore"}
-
-
-# ── Watch envelope (read path) ────────────────────────────────────────────
-
-
-class WatchWire(BaseModel):
-    """The envelope every `/v1/watches` response item carries. List-item
-    shape and base for the detail / mutation responses.
-
-    `feed_ids` is the watch's subscription set (the WatchFeed rows,
-    minus the internal per-feed watermark which never crosses the wire).
-    Datetimes are real `datetime` (None pre-save); JSON encoding is the
-    renderer's job. `user_id` is creator/audit only (account-scoped
-    reads, not an ownership filter)."""
-
-    id: str
-    name: str
-    is_active: bool
-    feed_ids: list[str] = Field(default_factory=list)
-    user_id: str
-    created_at: datetime | None = None
-
-
-class WatchListResponse(BaseModel):
-    """`GET /v1/watches` -> `{"items": [...], "next_cursor": <id>|None}`.
-
-    Cursor-paginated by ULID pk, newest-first. Pass `?after=<id>` for the
-    next page; `next_cursor` is the id to send back, or null when the
-    page wasn't full (no more rows)."""
-
-    items: list[WatchWire] = Field(default_factory=list)
-    next_cursor: str | None = None
-
-
-class WatchView(WatchWire):
-    """`GET /v1/watches/<id>`, the read view: the envelope plus the
-    ordered action chain of the watch's initial path. v1 has exactly one
-    path, so `actions` is that path's actions by `rank` ; the path layer
-    stays hidden on the wire until multi-path ships."""
-
-    actions: list[WatchActionWire] = Field(default_factory=list)
-
-
-class WatchMutationResponse(WatchWire):
-    """Create / edit response (POST + PUT, real and `?dry_run=true`).
-    `id` is absent on a create dry-run preview (server omits the pre-save
-    placeholder), hence `str | None`. `dry_run` is True for a
-    validation-only preview. Carries the same `actions` enrichment as
-    WatchView so the CLI's confirm-preview shows the resulting chain."""
-
-    id: str | None = None
-    actions: list[WatchActionWire] = Field(default_factory=list)
-    dry_run: bool
-
-
-class WatchActionMutationResponse(WatchActionWire):
-    """Single-action add/edit response (POST `/actions` + PUT `/actions/<id>`,
-    real and `?dry_run=true`). Mirrors WatchMutationResponse: `id` is absent on a
-    dry-run preview (the row isn't persisted) and `dry_run` is True for a
-    validation-only preview, so the CLI's confirm-preview can show the would-be
-    action without applying it."""
-
-    id: str | None = None
-    dry_run: bool
-
-
-class WatchInput(BaseModel):
-    """The envelope the CLI constructs for a watch write (request side).
-    CLI-owned, distinct from the server-emitted models. `feed_ids` is the
-    subscription set; `actions` is the initial path's ordered chain. The
-    server creates the Watch + its single WatchPath + WatchFeed rows
-    atomically. Extra keys ignored so an edit seed's read-only fields
-    drop on round-trip."""
-
-    name: str
-    is_active: bool = True
-    feed_ids: list[str] = Field(default_factory=list)
-    actions: list[WatchActionInput] = Field(default_factory=list)
-
-    model_config = {"extra": "ignore"}
+The typed per-kind projection is `SemanticFilterResult` / `ExtractResult` /
+`LogResult` / `WebhookResult`, carried on the wire by the run union below; this
+alias is the pre-validation input the server hands the builder."""
 
 
 # ── ActionRun (audit log read path) ───────────────────────────────────────
@@ -195,22 +74,27 @@ class RunFeed(BaseModel):
     name: str = ""
 
 
-class WatchActionRunWire(BaseModel):
-    """One WatchActionRun on the wire (`GET /v1/actions/<action_id>/activity`).
+# A run row is a discriminated union keyed by `kind` (the run's action kind,
+# denormalized onto the row so a reader knows WHAT ran and the union narrows
+# `result` to its exact type). `result` is the PURE typed per-kind output,
+# optional for two distinct reasons: a pending / running / errored run has
+# produced no result yet, AND the result shapes can't fall back on an empty
+# default instance (some carry required fields, e.g. score / http_status). Hence
+# `| None`, not a default instance.
+class _WatchActionRunFields(BaseModel):
+    """Kind-independent fields on a WatchActionRun audit row.
 
     The stateful audit row of one action executing against one item. Pure ids +
     run state: the judged item is in the response's `feed_items` map (key
     `feed_item_id`), the feed in `feeds` (key `feed_items[feed_item_id].feed_id`).
-    `result` is the kind-specific output blob (opaque; render common keys
-    best-effort). `state` is the `WatchActionRunState` value. Datetimes real;
-    renderer encodes."""
+    `state` is the `WatchActionRunState` value. Datetimes real; renderer
+    encodes."""
 
     id: str
     watch_id: str
     action_id: str
     feed_item_id: str
     state: WatchActionRunState
-    result: ResultBlob = Field(default_factory=dict)
     error: str = ""
     scheduled_at: datetime | None = None
     started_at: datetime | None = None
@@ -218,12 +102,99 @@ class WatchActionRunWire(BaseModel):
     created_at: datetime | None = None
 
 
+class SemanticFilterRunWire(_WatchActionRunFields):
+    kind: Literal[WatchActionKind.SEMANTIC_FILTER] = WatchActionKind.SEMANTIC_FILTER
+    result: SemanticFilterResult | None = None
+
+
+class ExtractRunWire(_WatchActionRunFields):
+    kind: Literal[WatchActionKind.EXTRACT] = WatchActionKind.EXTRACT
+    result: ExtractResult | None = None
+
+
+class LogRunWire(_WatchActionRunFields):
+    kind: Literal[WatchActionKind.LOG] = WatchActionKind.LOG
+    result: LogResult | None = None
+
+
+class WebhookRunWire(_WatchActionRunFields):
+    kind: Literal[WatchActionKind.WEBHOOK] = WatchActionKind.WEBHOOK
+    result: WebhookResult | None = None
+
+
+# One WatchActionRun on the wire (`GET /v1/actions/<action_id>/activity`), keyed
+# by `kind`. A plain type alias (like WatchActionWire) so field access needs no
+# wrapper.
+WatchActionRunWire = Annotated[
+    SemanticFilterRunWire | ExtractRunWire | LogRunWire | WebhookRunWire,
+    Field(discriminator="kind"),
+]
+
+# The union is a type alias, not a class, so it has no `.model_validate`; this
+# adapter is the single validation entry (the server builder + the CLI response
+# parsing go through it). Keys on the sibling `kind`.
+watch_action_run_wire_adapter: TypeAdapter[WatchActionRunWire] = TypeAdapter(WatchActionRunWire)
+
+
+def build_watch_action_run_wire(
+    *,
+    kind: WatchActionKind | str,
+    id: str,
+    watch_id: str,
+    action_id: str,
+    feed_item_id: str,
+    state: WatchActionRunState | str,
+    result: ResultBlob | None = None,
+    error: str = "",
+    scheduled_at: datetime | None = None,
+    started_at: datetime | None = None,
+    completed_at: datetime | None = None,
+    created_at: datetime | None = None,
+) -> WatchActionRunWire:
+    """Build a WatchActionRunWire union member from its parts. `kind` selects the
+    member ; `result` is the raw persisted result dict (pure, no kind), validated
+    into that member's typed result.
+
+    An empty result ({}) becomes None (a run with no terminal result yet). That
+    coalesce relies on a REAL result dump never being {}, true because every
+    result model has at least one field, so its dump always has at least one key.
+
+    A result whose shape doesn't match `kind` raises ONLY for members with a
+    required field (semantic_filter's score, webhook's http_status); the server's
+    per-row fail-safe then degrades to null. The all-defaulted members (extract,
+    log ; extra='ignore') instead ABSORB a mismatched blob into a defaulted
+    instance (silent, no raise), so `kind` MUST be the kind that actually produced
+    the result (stamped at enqueue, re-stamped at completion) or a cross-kind
+    mismatch would render as wrong data rather than degrade."""
+    payload: dict[str, Any] = {
+        "kind": kind,
+        "id": id,
+        "watch_id": watch_id,
+        "action_id": action_id,
+        "feed_item_id": feed_item_id,
+        "state": state,
+        "result": result or None,
+        "error": error,
+    }
+    # Omit unset timestamps so each member's own default applies (mirrors
+    # build_watch_action_wire's conditional handling of its optional fields).
+    for name, value in (
+        ("scheduled_at", scheduled_at),
+        ("started_at", started_at),
+        ("completed_at", completed_at),
+        ("created_at", created_at),
+    ):
+        if value is not None:
+            payload[name] = value
+    return watch_action_run_wire_adapter.validate_python(payload)
+
+
 class WatchActionRunSummary(BaseModel):
     """Activity over an action's runs, so an operator sees "what is this
     action doing?" without scrolling the log.
 
     `evaluated` is the per-terminal-state breakdown of runs JUDGED within
-    [since, until) -- windowed on completion (evaluation) time, not enqueue
+    [since, until), windowed on completion (evaluation) time, not enqueue
     time. `pending` / `running` / `retrying` are the CURRENT live backlog,
     NOT time-bound (those runs have no completion time yet), surfaced so the
     queue stays visible. `window` is the requested preset ; `since` / `until`
@@ -237,8 +208,8 @@ class WatchActionRunSummary(BaseModel):
     window: WatchActivityWindow
     since: datetime
     until: datetime | None = None
-    # Keyed by the run-state enum (identical on the wire -- StrEnum serializes
-    # to its value -- but typed for the CLI, closing the "state magic strings"
+    # Keyed by the run-state enum (identical on the wire, StrEnum serializes to
+    # its value, but typed for the CLI, closing the "state magic strings"
     # door). Backlog states never appear here (they have no completion time).
     # An `evaluated[failed]` count is the EXHAUSTED (terminal) failures only.
     evaluated: dict[WatchActionRunState, int] = Field(default_factory=dict)
@@ -269,7 +240,7 @@ class WatchActionRunListResponse(BaseModel):
     # many runs -> few feeds; a missing key renders by id.
     feed_items: dict[str, RunFeedItem] = Field(default_factory=dict)
     feeds: dict[str, RunFeed] = Field(default_factory=dict)
-    # None means "this is a paged response" (no summary computed) -- NOT "no
+    # None means "this is a paged response" (no summary computed), NOT "no
     # activity". The first page always carries a summary, all-zero if idle.
     summary: WatchActionRunSummary | None = None
 

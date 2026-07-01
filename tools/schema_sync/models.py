@@ -12,6 +12,7 @@ Three lists, kept separate from the build/guard logic in generate.py so the
   server validates.
 """
 
+from openmagpie_schema.auth import AuthUser
 from openmagpie_schema.configs import (
     HackerNewsCommentSourceSpec,
     HackerNewsFeedSourceSpec,
@@ -34,9 +35,11 @@ from openmagpie_schema.feed import (
 )
 from openmagpie_schema.telemetry import TelemetryState
 from openmagpie_schema.watch import (
+    ExtractActionInput,
+    LogActionInput,
+    SemanticFilterActionInput,
     WatchActionDeliveryListResponse,
     WatchActionDeliveryView,
-    WatchActionInput,
     WatchActionMutationResponse,
     WatchActionRunListResponse,
     WatchActionRunView,
@@ -44,6 +47,7 @@ from openmagpie_schema.watch import (
     WatchListResponse,
     WatchMutationResponse,
     WatchView,
+    WebhookActionInput,
 )
 from openmagpie_schema.watch_actions import (
     ExtractConfig,
@@ -77,7 +81,6 @@ CONTRACT_MODELS = [
     WatchMutationResponse,
     WatchListResponse,
     WatchInput,
-    WatchActionInput,
     WatchActionMutationResponse,
     WatchActionRunView,
     WatchActionRunListResponse,
@@ -102,6 +105,8 @@ CONTRACT_MODELS = [
     EngineStatus,
     EngineListResponse,
     TelemetryState,
+    # Auth identity (the shared user shape; token/device shapes stay client-specific)
+    AuthUser,
 ]
 
 # Models DELIBERATELY left out of the schema. The completeness guard fails on
@@ -120,6 +125,11 @@ EXCLUDED_MODELS = frozenset(
         "DeliveryConfigBase",
         "SourceFields",
         "_HackerNewsSpec",
+        # Kind-independent field bases for the action-node + run unions; their
+        # fields inline into the per-kind members (which ARE in the contract).
+        "_WatchActionWireFields",
+        "_WatchActionInputFields",
+        "_WatchActionRunFields",
         # Outbound webhook body: what magpie POSTs to a third-party webhook.
         # It reaches the API only as WatchActionDeliveryView.request_payload, an
         # opaque dict, so it crosses the wire untyped and needs no schema def.
@@ -142,7 +152,10 @@ EXCLUDED_MODELS = frozenset(
 INPUT_MODELS = [
     FeedInput,
     WatchInput,
-    WatchActionInput,
+    SemanticFilterActionInput,
+    ExtractActionInput,
+    LogActionInput,
+    WebhookActionInput,
     SourceInput,
     SourceSetPayload,
     CuratedFeedConfig,

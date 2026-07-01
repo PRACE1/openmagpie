@@ -25,7 +25,7 @@ from openmagpie_schema.watch import WatchActionInput
 from openmagpie_schema.watch_actions import DeliveryConfigBase
 from watches.models import WatchAction, WatchActionDigestWindow
 from watches.policy import PolicyError
-from watches.registry import load_config, merge_config, parse_config, validate_config
+from watches.registry import KNOWN_KINDS, load_config, merge_config, parse_config, validate_config
 
 
 class ConcurrentChainError(RuntimeError):
@@ -136,7 +136,11 @@ class WatchActionService:
                         f"{spec.kind!r} action has a masked secret (***) but no matching prior to restore it "
                         f"from (a new action, or a changed kind); provide the real value"
                     )
-                merged = merge_config(spec.kind, spec.config, load_config(same_kind_prior) if same_kind_prior else None)
+                merged = merge_config(
+                    spec.kind,
+                    spec.config.model_dump(mode="json"),
+                    load_config(same_kind_prior) if same_kind_prior else None,
+                )
                 blob = merged.model_dump(mode="json")
                 is_digest = isinstance(merged, DeliveryConfigBase) and merged.is_digest()
                 if prior_row is not None:
@@ -158,6 +162,18 @@ class WatchActionService:
                     created.append(row)
                     ordered.append(row)
             removed_ids = [sid for sid in existing if sid not in kept_ids]
+            # Refuse a full-replace that would delete an action the client was never
+            # shown. watch_view omits a row whose stored kind isn't a known kind
+            # (unrenderable: a removed kind / manual corruption), so an edit seeded
+            # from that censored detail lacks its id, and this delete would silently
+            # drop it AND its run history. The client can't intend to remove what it
+            # can't see, so reject rather than lose it (the server has the true set).
+            hidden = [sid for sid in removed_ids if str(existing[sid].kind) not in KNOWN_KINDS]
+            if hidden:
+                raise PolicyError(
+                    f"actions {hidden} have an unreadable kind and aren't shown to the client; "
+                    "resolve them (migrate or remove) before replacing this watch's action chain"
+                )
             with transaction.atomic():
                 if removed_ids:
                     WatchAction.objects.filter(account_id=self.account_id, id__in=removed_ids).delete()
@@ -202,7 +218,7 @@ class WatchActionService:
         `merge_config` right after, not as a confusing guard failure ; any
         other exception is a genuine bug and propagates."""
         try:
-            return parse_config(spec.kind, spec.config).has_masked_secret()
+            return parse_config(spec.kind, spec.config.model_dump(mode="json")).has_masked_secret()
         except (KeyError, ValidationError):
             return False
 
@@ -216,7 +232,7 @@ class WatchActionService:
         When `dry_run`, validate + build the would-be row in memory (at its
         would-be rank) and return it WITHOUT a lock, save, or renumber -
         nothing is persisted."""
-        config = validate_config(action.kind, action.config)
+        config = validate_config(action.kind, action.config.model_dump(mode="json"))
         if dry_run:
             # Build the would-be row in the service (no lock/save) so a
             # single-action preview reuses the watch_action_mutation serializer
@@ -277,7 +293,7 @@ class WatchActionService:
         if str(action.account_id) != self.account_id:
             raise ValueError(f"action account_id mismatch: {action.account_id!r} not in scope {self.account_id!r}")
         prior = load_config(action) if str(action.kind) == spec.kind else None
-        merged = merge_config(spec.kind, spec.config, prior)
+        merged = merge_config(spec.kind, spec.config.model_dump(mode="json"), prior)
         action.kind = spec.kind
         action.config = merged.model_dump(mode="json")
         if dry_run:  # validated + merged in memory; persist nothing, touch no window

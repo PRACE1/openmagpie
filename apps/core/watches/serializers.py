@@ -17,25 +17,19 @@ from pydantic import ValidationError as PydanticValidationError
 from rest_framework import serializers
 
 from common.pydantic_errors import pydantic_errors_to_drf
-from feeds.models import Feed, FeedItem
 from feeds.services import FeedService
 from openmagpie_schema.watch import (
-    RunFeed,
-    RunFeedItem,
-    WatchActionDeliveryView,
-    WatchActionDeliveryWire,
     WatchActionInput,
     WatchActionMutationResponse,
-    WatchActionRunView,
-    WatchActionRunWire,
     WatchActionWire,
     WatchMutationResponse,
     WatchView,
     WatchWire,
+    build_watch_action_input,
+    build_watch_action_wire,
 )
 from openmagpie_schema.watch_actions import WatchActionConfigSummary
-from openmagpie_schema.watch_enums import WatchActionRunState
-from watches.models import Watch, WatchAction, WatchActionDelivery, WatchActionRun
+from watches.models import Watch, WatchAction
 from watches.policy import PolicyError
 from watches.registry import KNOWN_KINDS, load_config, validate_config
 
@@ -85,7 +79,9 @@ class WatchCreateSerializer(serializers.Serializer):
                 errors[str(i)] = {"config": [str(exc)]}
                 continue
             action_id = raw.get("id") if isinstance(raw.get("id"), str) else ""
-            validated_actions.append(WatchActionInput(id=action_id, kind=kind, config=typed.model_dump(mode="json")))
+            validated_actions.append(
+                build_watch_action_input(id=action_id, kind=kind, config=typed.model_dump(mode="json"))
+            )
         if errors:
             raise serializers.ValidationError({"actions": errors})
         attrs["actions"] = validated_actions
@@ -131,16 +127,19 @@ def _action_summary(action: WatchAction) -> WatchActionConfigSummary:
         return _EMPTY_SUMMARY
 
 
-def _action_redacted(action: WatchAction) -> dict[str, Any]:
-    """`action.config` through the typed config's redacted_dump; fail-safe
-    to a sentinel rather than 500 a `many` list. Same set as
-    `_action_summary`."""
+def _action_redacted(action: WatchAction) -> dict[str, Any] | None:
+    """`action.config` through the typed config's redacted_dump; fail-safe to None
+    (a corrupt at-rest config the wire renders as `config: null`) rather than 500
+    a `many` list. None (not a sentinel dict) because the wire config is now a
+    typed union: a `{"error": ...}` dict can't validate as 3 of the 4 kinds
+    (required fields), so it would re-raise; None is the member's degrade. Same
+    catch set as `_action_summary`."""
     try:
         return load_config(action).redacted_dump()
     except (KeyError, PydanticValidationError, NotImplementedError, ValueError):
         ref = "preview" if _is_unsaved(action) else action.id  # unsaved preview row has no real id to log
         logger.exception("action %s config failed redaction (kind=%s)", ref, action.kind)
-        return {"error": "config_unreadable"}
+        return None
 
 
 def _is_unsaved(action: WatchAction) -> bool:
@@ -150,18 +149,37 @@ def _is_unsaved(action: WatchAction) -> bool:
     return action._state.adding
 
 
-def watch_action_wire(action: WatchAction) -> WatchActionWire:
-    """One action's wire shape (opaque redacted config + display summary). `id` is
+def watch_action_wire(action: WatchAction) -> WatchActionWire | None:
+    """One action's wire shape (redacted typed config + display summary). `id` is
     empty for an UNSAVED row (a dry-run preview built in memory), real for a
-    persisted one - so previews and reads share this one serializer."""
-    return WatchActionWire(
-        id="" if _is_unsaved(action) else str(action.id),
-        kind=str(action.kind),
-        rank=action.rank,
-        config=_action_redacted(action),
-        summary=_action_summary(action),
-        created_at=action.created_at,
-    )
+    persisted one - so previews and reads share this one serializer.
+
+    Two at-rest degrades keep a `many` read from 500-ing on one bad row:
+    - a config that no longer types renders with `config=None` (`_action_redacted`
+      returns None; the build re-degrades to None if a loadable config still fails
+      to validate into its member, belt-and-suspenders; the summary already fell
+      back to empty independently).
+    - a `kind` that isn't a known action kind can't select ANY union member, so
+      the row is SKIPPED (returns None) and the caller drops it. The KNOWN_KINDS
+      invariant test rules this out for live data; this is the corrupt-kind-column
+      backstop, mirroring the run wire's kind guard."""
+    kind = str(action.kind)
+    ref = "preview" if _is_unsaved(action) else action.id
+    if kind not in KNOWN_KINDS:
+        logger.error("action %s has an unrenderable kind=%s; skipping the row", ref, kind)
+        return None
+    common = {
+        "id": "" if _is_unsaved(action) else str(action.id),
+        "kind": kind,
+        "rank": action.rank,
+        "summary": _action_summary(action),
+        "created_at": action.created_at,
+    }
+    try:
+        return build_watch_action_wire(config=_action_redacted(action), **common)
+    except (PydanticValidationError, ValueError):
+        logger.exception("action %s config failed to type (kind=%s); rendering config=null", ref, kind)
+        return build_watch_action_wire(config=None, **common)
 
 
 def watch_action_input_wire(action: WatchActionInput, rank: int) -> WatchActionWire:
@@ -177,117 +195,28 @@ def watch_action_input_wire(action: WatchActionInput, rank: int) -> WatchActionW
     merge_config. Display is identical (both redact to ***) and the persisted
     result is correct; only the preview's literal value is the placeholder. The
     single-action edit path (set_config) DOES merge, so it's exact there."""
-    config = validate_config(action.kind, action.config).model_dump(mode="json")
-    return watch_action_wire(WatchAction(kind=action.kind, config=config, rank=rank))
+    # `action.config` is the typed union member's config model; the registry
+    # re-runs shape + policy from its dict form (the persisted blob is kind-less).
+    config = validate_config(action.kind, action.config.model_dump(mode="json")).model_dump(mode="json")
+    # validate_config above rejects an unknown kind, so watch_action_wire always
+    # builds here (never the corrupt-kind None); assert narrows for the type.
+    wire = watch_action_wire(WatchAction(kind=action.kind, config=config, rank=rank))
+    assert wire is not None
+    return wire
 
 
 def watch_action_mutation(action: WatchAction, *, dry_run: bool) -> WatchActionMutationResponse:
-    """One action's add/edit response (real or `?dry_run=true`). `id` reflects
-    PERSISTENCE, not the dry_run flag (mirrors `watch_mutation`, which keeps the
-    watch id on an update dry-run): a dry-run ADD builds an unsaved row, so there
-    is no id yet (None); a dry-run EDIT targets the existing row, whose id is
-    unchanged, so it's shown. Spreads `watch_action_wire` (so a new WatchActionWire
-    field can't drift out of this response), overriding only id + dry_run."""
-    return WatchActionMutationResponse(
-        **watch_action_wire(action).model_dump(exclude={"id"}),
-        id=None if _is_unsaved(action) else str(action.id),
-        dry_run=dry_run,
-    )
-
-
-def run_feed_item_wire(item: FeedItem) -> RunFeedItem:
-    """Narrow a FeedItem to the audit log's display fields, for the runs
-    response's `feed_items` map (keyed by item id). `feed_id` keys into that
-    response's `feeds` map. The view only builds this for items that still
-    exist, so a pruned item is simply absent from the map (the run row carries
-    `feed_item_id` and renders by it)."""
-    data = item.data or {}
-    return RunFeedItem(
-        title=str(data.get("title", "")),
-        url=str(data.get("url", "")),
-        external_url=str(data.get("external_url", "")),
-        source_label=str(item.source_label),
-        feed_id=str(item.feed_id),
-        occurred_at=item.occurred_at,  # a FeedItem column (the occurred_* filter axis), not from data
-    )
-
-
-def run_feed_wire(feed: Feed) -> RunFeed:
-    """Narrow a Feed for the runs response's `feeds` map (keyed by feed id).
-    Few feeds back the many runs on a page, so this is returned once per feed
-    instead of repeated on every item."""
-    return RunFeed(id=str(feed.id), name=str(feed.name))
-
-
-def watch_action_run_wire(run: WatchActionRun) -> WatchActionRunWire:
-    """One run's wire shape (the audit-log row): pure ids + run state. The
-    judged item is in the response's `feed_items` map (key `feed_item_id`), its
-    feed in `feeds`. `state` coerces to the WatchActionRunState enum; `result`
-    is the opaque kind-specific blob."""
-    return WatchActionRunWire(
-        id=str(run.id),
-        watch_id=str(run.watch_id),
-        action_id=str(run.action_id),
-        feed_item_id=str(run.feed_item_id),
-        state=WatchActionRunState(run.state),
-        result=run.result or {},
-        error=run.error,
-        scheduled_at=run.scheduled_at,
-        started_at=run.started_at,
-        completed_at=run.completed_at,
-        created_at=run.created_at,
-    )
-
-
-def watch_action_run_view(
-    run: WatchActionRun,
-    *,
-    feed_item: FeedItem | None = None,
-    feed: Feed | None = None,
-    action: WatchAction | None = None,
-) -> WatchActionRunView:
-    """One run's DETAIL shape (`GET /v1/action-activity/<id>`): the run wire plus
-    the joined item / feed / action it was judged against. Each is null when
-    absent (a pruned item/feed, a removed action), so the row still renders by
-    `run.feed_item_id`."""
-    return WatchActionRunView(
-        run=watch_action_run_wire(run),
-        feed_item=run_feed_item_wire(feed_item) if feed_item is not None else None,
-        feed=run_feed_wire(feed) if feed is not None else None,
-        action=watch_action_wire(action) if action is not None else None,
-    )
-
-
-def _delivery_fields(delivery: WatchActionDelivery) -> dict[str, Any]:
-    """The shared list-row fields of a delivery (everything but the payload).
-    The string columns (delivery / method / state) coerce to their enums on
-    the wire models."""
-    return {
-        "id": str(delivery.id),
-        "watch_id": str(delivery.watch_id),
-        "action_id": str(delivery.action_id),
-        "delivery": delivery.delivery,
-        "method": delivery.method,
-        "state": delivery.state,
-        "http_status": delivery.http_status,
-        "target_host": delivery.target_host,
-        "item_count": delivery.item_count,
-        "attempt": delivery.attempt,
-        "error": delivery.error,
-        "started_at": delivery.started_at,
-        "completed_at": delivery.completed_at,
-        "created_at": delivery.created_at,
-    }
-
-
-def watch_action_delivery_wire(delivery: WatchActionDelivery) -> WatchActionDeliveryWire:
-    """One delivery's LIST-row shape (no request_payload ; see the detail view)."""
-    return WatchActionDeliveryWire(**_delivery_fields(delivery))
-
-
-def watch_action_delivery_view(delivery: WatchActionDelivery) -> WatchActionDeliveryView:
-    """One delivery's DETAIL shape: the list row plus the stored request_payload."""
-    return WatchActionDeliveryView(**_delivery_fields(delivery), request_payload=delivery.request_payload or {})
+    """One action's add/edit response (real or `?dry_run=true`). NESTS the typed
+    action node under `action` (the response is no longer a flat WatchActionWire,
+    since the union alias can't be subclassed to null the id). The nested node's
+    `id` reflects PERSISTENCE, not the dry_run flag (mirrors `watch_mutation`,
+    which keeps the watch id on an update dry-run): a dry-run ADD builds an
+    unsaved row, so `action.id` is "" ; a dry-run EDIT targets the existing row,
+    whose id is unchanged, so it's shown."""
+    # The mutated action's kind was validated on write, so the wire always builds.
+    wire = watch_action_wire(action)
+    assert wire is not None
+    return WatchActionMutationResponse(action=wire, dry_run=dry_run)
 
 
 def watch_wire(watch: Watch, *, feed_ids: list[str]) -> WatchWire:
@@ -307,7 +236,7 @@ def watch_view(watch: Watch, *, feed_ids: list[str], actions: list[WatchAction])
     """GET-detail response: envelope + the initial path's ordered chain."""
     return WatchView(
         **watch_wire(watch, feed_ids=feed_ids).model_dump(),
-        actions=[watch_action_wire(a) for a in actions],
+        actions=[wire for a in actions if (wire := watch_action_wire(a)) is not None],
     )
 
 
@@ -318,6 +247,6 @@ def watch_mutation(
     confirm-preview shows the resulting watch."""
     return WatchMutationResponse(
         **watch_wire(watch, feed_ids=feed_ids).model_dump(),
-        actions=[watch_action_wire(a) for a in actions],
+        actions=[wire for a in actions if (wire := watch_action_wire(a)) is not None],
         dry_run=dry_run,
     )
