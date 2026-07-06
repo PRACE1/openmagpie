@@ -1,4 +1,5 @@
 import { Poppins, Geist_Mono } from "next/font/google";
+import { ThemeHeadScript } from "@magpie/ui";
 import { Providers } from "./providers";
 import { buildMetadata, siteMeta } from "@magpie/api-utils/site";
 import "./globals.css";
@@ -35,6 +36,7 @@ export default function RootLayout({
       className={`${poppins.variable} ${geistMono.variable}`}
     >
       <body className="bg-paper text-ink antialiased dark:bg-ink dark:text-paper">
+        <ThemeHeadScript />
         <Providers>{children}</Providers>
       </body>
     </html>
