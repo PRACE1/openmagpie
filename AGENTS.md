@@ -98,15 +98,32 @@ conventional-commit history, in TWO tracks: the product (`CHANGELOG.md` +
 `cli-v<x.y.z>` = the PyPI `openmagpie`). Each entry comes from a merged commit's
 SUBJECT line.
 
+- **The commit TYPE picks the section a reader sees.** Release notes are grouped
+  into emoji sections (`changelog-sections` in `release-please-config.json`):
+  ✨ Features (`feat`), 🐛 Bug Fixes (`fix`), ⚡ Performance (`perf`), ⏪ Reverts
+  (`revert`), 📝 Documentation (`docs`). Everything else (`refactor`, `chore`, `ci`,
+  `test`, `build`, `style`) is hidden, so those changes stay out of the notes
+  entirely. Pick the type deliberately: it decides both the section and whether a
+  change shows up at all.
 - **A changelog entry says what the feature DOES for a user, not how it's built.**
   Lead with the capability ("a watch action that pulls fields you declare out of
   each item"); leave out internal types, migration notes, and engine internals
   (that's implementation). Frame the product track for a server/product reader, the
   CLI track for a CLI user.
-- **For notes richer than the subject, write the commit / PR BODY.** release-please
-  appends it under the entry, so the body is the DURABLE home for release notes.
-- **release-please OWNS the release branches** (`release-please--branches--main*`):
-  it regenerates and force-pushes the changelog on every merge to main. A hand edit
-  to a release PR's `CHANGELOG.md` is clobbered if release-please re-runs before that
-  PR merges, so only touch one up right before merging (else use the commit body).
+- **Notes are authored on the FEATURE PR, not the release PR.** On a squash merge,
+  GitHub sets the merge commit's subject from the PR TITLE (which becomes the
+  one-line entry) and its body from the PR DESCRIPTION (appended under the entry as
+  the detail). So a feature PR's title + `## What` ARE the release note, captured at
+  merge time. The body EXPANDS the entry ("what it does and why"); it does not
+  repeat it. This depends on the repo setting **"Default to PR title and description
+  for squash merge commits"** being ON; without it the PR description never reaches
+  the notes.
+- **release-please OWNS `CHANGELOG.md` and the release branches**
+  (`release-please--branches--main*`): it regenerates and force-pushes the changelog
+  from the merged commits on every push to main. Do NOT author notes by editing
+  `CHANGELOG.md` on a release branch, it gets clobbered. Fix wording on the FEATURE
+  PR before merging (a merged subject can't be corrected without rewriting history).
+  A last-minute polish on the release PR is possible but fragile, since the next
+  merge to main re-runs release-please and overwrites it. The release PR is the ship
+  button, not where you write notes.
 - Prose follows the no-em-dash rule above.
