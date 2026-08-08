@@ -127,7 +127,18 @@ class ListenerErrorWrapper(Exception):
 
 
 class TwikitClient:
-    """Thin, proxy-bound wrapper around the twikit async client."""
+    """Thin, proxy-bound wrapper around the twikit async client.
+
+    One twikit ``Client`` per search call. twikit's ``Client.__init__``
+    creates an ``httpx.AsyncClient`` bound to the *currently running*
+    event loop, and ``search()`` drives twikit with a fresh
+    ``asyncio.run`` loop per call — so the twikit client must be
+    constructed inside that loop. A shared instance created at import
+    time dies with the first loop and later searches fail with
+    "Event loop is closed" (observed on the second/third source in a
+    multi-source feed poll). Cookies are resolved once here (cheap env /
+    file reads); only the twikit client is per-call.
+    """
 
     def __init__(
         self,
@@ -140,6 +151,8 @@ class TwikitClient:
         cookies_file: str | None = None,
         credentials_dir: str | None = None,
     ) -> None:
+        self._language = language
+        self._user_agent = user_agent
         self.proxy = proxy
         if cookies is not None:
             self._cookies = dict(cookies)
@@ -149,23 +162,19 @@ class TwikitClient:
                 cookies_file=cookies_file,
                 credentials_dir=credentials_dir,
             )
-        self._client = Client(language=language, proxy=self.proxy, user_agent=user_agent)
-        self._ready = False
 
-    def _ensure_session(self) -> None:
-        if self._ready:
-            return
+    async def _search_async(self, query: str, mode: TwikitProduct, count: int):
+        # Build the twikit client here, inside the event loop search()
+        # runs: twikit's Client binds its httpx.AsyncClient to this loop
+        # at construction (see class docstring).
+        client = Client(language=self._language, proxy=self.proxy, user_agent=self._user_agent)
         if self._cookies:
-            self._client.set_cookies(dict(self._cookies), clear_cookies=True)
+            client.set_cookies(dict(self._cookies), clear_cookies=True)
             log.info("session: loaded %d cookie(s)", len(self._cookies))
         else:
             log.warning("session: no cookies configured; guest mode only")
-        self._ready = True
-
-    async def _search_async(self, query: str, mode: TwikitProduct, count: int):
-        self._ensure_session()
         try:
-            return await self._client.search_tweet(query, mode, count=count)
+            return await client.search_tweet(query, mode, count=count)
         except TwitterException as exc:
             raise ListenerErrorWrapper(map_twikit_error(exc, {"query": query, "mode": mode})) from exc
         except Exception as exc:  # bootstrap failures (degraded shell) are not TwitterException

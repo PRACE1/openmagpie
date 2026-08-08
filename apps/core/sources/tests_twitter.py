@@ -111,6 +111,25 @@ class TwitterSearchConnectorTests(SimpleTestCase):
             list(conn.poll(spec, since=None))
         self.assertIn("rate_limited", str(ctx.exception))
 
+    def test_empty_404_maps_to_retryable_connector_error(self):
+        """X SearchTimeline empty-404 is a transient flake, not a dead tweet."""
+        from sources.connectors.twitter.errors import ListenerError
+
+        spec = TwitterSearchSourceSpec(kind="twitter_search", query="x")
+        err = ListenerError(
+            code="search_timeline_unavailable",
+            message="X SearchTimeline returned an empty 404 (transient upstream flake)",
+            retryable=True,
+            action="retry with backoff",
+        )
+        client = mock.Mock()
+        client.search.side_effect = ListenerErrorWrapper(err)
+        conn = TwitterSearchConnector()
+        conn._client = client
+        with self.assertRaises(ConnectorParseError) as ctx:
+            list(conn.poll(spec, since=None))
+        self.assertIn("search_timeline_unavailable", str(ctx.exception))
+
     def test_mode_top_maps_to_twikit_top(self):
         spec = TwitterSearchSourceSpec(kind="twitter_search", query="x", mode="top")
         conn, client = self._connector([_FakeTweet("1")])

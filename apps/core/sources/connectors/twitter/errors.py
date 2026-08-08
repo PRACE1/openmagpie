@@ -94,6 +94,23 @@ def map_twikit_error(exc: TwitterException, context: dict[str, Any] | None = Non
     reset = getattr(exc, "rate_limit_reset", None)
     headers = getattr(exc, "headers", None)
 
+    # X's SearchTimeline intermittently 404s with an EMPTY body (observed
+    # repeatedly on live polls: same query succeeds on retry seconds later,
+    # independent of session/cookies/query). That is a transient upstream
+    # flake on the search endpoint, NOT a deleted tweet/user — a genuine
+    # not_found carries a message. Retryable so the ops layer backs off
+    # instead of treating the source as dead.
+    if isinstance(exc, NotFound) and not str(exc).strip():
+        return ListenerError(
+            code="search_timeline_unavailable",
+            message="X SearchTimeline returned an empty 404 (transient upstream flake)",
+            retryable=True,
+            action="retry with backoff; watermark stays put so the next cycle re-reads",
+            context=context or {},
+            headers=headers,
+            rate_limit_reset=reset,
+        )
+
     retryable_actions: dict[str, tuple[bool, str]] = {
         "bad_request": (False, "fix query / payload; do not retry as-is"),
         "unauthorized": (False, "refresh session (guest token / cookies) and retry once"),
