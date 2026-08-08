@@ -176,9 +176,9 @@ graph TD
     SLACK -. planned .-> FEED
     LINKEDIN -. planned .-> FEED
     GITHUB -. planned .-> FEED
-    FACEBOOK -. soon to be added .-> FEED
-    TIKTOK -. soon to be added .-> FEED
-    INSTAGRAM -. soon to be added .-> FEED
+    FACEBOOK -. "soon to be added" .-> FEED
+    TIKTOK -. "soon to be added" .-> FEED
+    INSTAGRAM -. "soon to be added" .-> FEED
 
     FEED -- "new items" --> WATCH
     WATCH -- "action chain" --> FILTER
