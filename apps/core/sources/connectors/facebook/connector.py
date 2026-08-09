@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import Callable, Iterator
 from datetime import datetime
 from typing import ClassVar
@@ -28,37 +27,28 @@ class FacebookConnector(BaseConnector[FacebookSearchSourceSpec]):
         field_map: dict[str, str] | None = None,
         heartbeat: Callable[[], bool] | None = None,
     ) -> Iterator[SourcePayload]:
-        """Fetch posts from Facebook pages/groups newer than `since`."""
-        targets: list[str] = getattr(spec, "targets", []) or []
-        if not targets:
-            page_url = getattr(spec, "page_url", None)
-            if page_url:
-                targets = [page_url]
-
-        async def _fetch_all() -> list[NewFacebookPostPayload]:
-            posts: list[NewFacebookPostPayload] = []
-            async with FacebookClient(
-                headless=getattr(spec, "headless", True),
-                timeout_ms=getattr(spec, "timeout_ms", 30_000),
-                scroll_limit=getattr(spec, "scroll_limit", 5),
-            ) as client:
-                for target in targets:
-                    try:
-                        fetched = await client.fetch_page_posts(target)
-                        posts.extend(fetched)
-                    except Exception:
-                        continue
-                    if heartbeat:
-                        heartbeat()
-            return posts
+        """Fetch posts from a Facebook page/group newer than `since`."""
+        client = FacebookClient(
+            headless=getattr(spec, "headless", True),
+            timeout_ms=getattr(spec, "timeout_ms", 30_000),
+            scroll_limit=getattr(spec, "scroll_limit", 5),
+        )
 
         try:
-            loop = asyncio.get_running_loop()
-            all_posts = loop.run_until_complete(_fetch_all())
-        except RuntimeError:
-            all_posts = asyncio.run(_fetch_all())
+            posts = client.fetch_page_posts(spec.page_url)
+        except Exception:
+            return
 
-        for post in all_posts:
+        count = 0
+        max_count = getattr(spec, "count", 20)
+
+        for post in posts:
             if since is not None and post.occurred_at < since:
                 continue
+            if count >= max_count:
+                break
             yield post
+            count += 1
+
+        if heartbeat:
+            heartbeat()
