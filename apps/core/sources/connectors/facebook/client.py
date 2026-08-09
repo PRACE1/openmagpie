@@ -154,4 +154,19 @@ class FacebookClient:
             return NewFacebookPostPayload(
                 external_id=post_id or f"unknown_{datetime.now(UTC).timestamp()}",
                 kind=NewFacebookPostPayload.PAYLOAD_KIND,
-                occurred_at=datetime
+                occurred_at=datetime.now(UTC),
+                source="facebook_search",
+                title="",
+                content=content,
+                url=full_url or page_url,
+                author=author,
+                author_id=author_id,
+                lang="",
+                metrics={"likes": likes, "comments": comments, "shares": shares},
+            )
+        except Exception:
+            return None
+
+    def fetch_group_posts(self, group_url: str) -> list[NewFacebookPostPayload]:
+        """Alias for fetch_page_posts — group feeds are structurally similar."""
+        return self.fetch_page_posts(group_url)
