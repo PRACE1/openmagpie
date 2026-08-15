@@ -189,12 +189,13 @@ class TwitterSearchSourceSpec(BaseModel):
 
 
 
-
 class FacebookSearchSourceSpec(BaseModel):
     """Identity of one Facebook page/group search stream. Bound to FacebookSearchConnector.
 
     `page_url` is the Facebook page or group URL to monitor.
     `count` caps the per-cycle fetch. `lang` optionally narrows to posts in one language.
+    `cookies_file` is a path to exported JSON cookies for auth.
+    `terms` filters posts to only those containing any of the keywords.
     """
 
     SOURCE_KIND: ClassVar[str] = "facebook_search"
@@ -204,6 +205,8 @@ class FacebookSearchSourceSpec(BaseModel):
     page_url: str = Field(min_length=1)
     count: int = Field(default=20, ge=1, le=100)
     lang: str = ""
+    cookies_file: str = ""
+    terms: list[str] = Field(default_factory=list)
 
     @field_validator("page_url")
     @classmethod
