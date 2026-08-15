@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import os
 import re
 from datetime import UTC, datetime
 from typing import Any
@@ -21,13 +23,25 @@ class FacebookClient:
         headless: bool = True,
         timeout_ms: int = 30_000,
         scroll_limit: int = 5,
+        cookies_file: str | None = None,
     ) -> None:
         self.headless = headless
         self.timeout_ms = timeout_ms
         self.scroll_limit = scroll_limit
+        self.cookies_file = cookies_file
+
+    def _load_cookies(self, context) -> None:
+        """Load cookies from JSON file into Playwright context."""
+        if self.cookies_file and os.path.exists(self.cookies_file):
+            with open(self.cookies_file, encoding="utf-8") as f:
+                cookies = json.load(f)
+            # Handle both raw list and Netscape-ish wrappers
+            if isinstance(cookies, dict) and "cookies" in cookies:
+                cookies = cookies["cookies"]
+            context.add_cookies(cookies)
 
     def fetch_page_posts(self, page_url: str) -> list[NewFacebookPostPayload]:
-        """Scroll a public Facebook page and extract post payloads."""
+        """Scroll a Facebook page/group and extract post payloads."""
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=self.headless)
             context = browser.new_context(
@@ -38,6 +52,7 @@ class FacebookClient:
                     "Chrome/120.0.0.0 Safari/537.0"
                 ),
             )
+            self._load_cookies(context)
             context.add_init_script(
                 "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
             )
@@ -46,6 +61,7 @@ class FacebookClient:
 
             try:
                 page.goto(page_url, wait_until="networkidle")
+                # Dismiss cookie banner if present (EU / logged-out)
                 try:
                     page.click(
                         '[data-testid="cookie-policy-manage-dialog-accept-button"]',
