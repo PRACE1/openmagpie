@@ -32,6 +32,7 @@ class FacebookConnector(BaseConnector[FacebookSearchSourceSpec]):
             headless=getattr(spec, "headless", True),
             timeout_ms=getattr(spec, "timeout_ms", 30_000),
             scroll_limit=getattr(spec, "scroll_limit", 5),
+            cookies_file=getattr(spec, "cookies_file", None) or None,
         )
 
         try:
@@ -39,11 +40,14 @@ class FacebookConnector(BaseConnector[FacebookSearchSourceSpec]):
         except Exception:
             return
 
+        terms: list[str] = getattr(spec, "terms", []) or []
         count = 0
         max_count = getattr(spec, "count", 20)
 
         for post in posts:
             if since is not None and post.occurred_at < since:
+                continue
+            if terms and not any(term.lower() in post.content.lower() for term in terms):
                 continue
             if count >= max_count:
                 break
